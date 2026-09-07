@@ -51,36 +51,72 @@ st.markdown(
 )
 
 # ============================================================
+# V12 - DETECTOR LOCAL DE SURCOS
+# ============================================================
+#
+# Diferencia principal:
+# - NO obliga toda la fotografía a una sola dirección.
+# - Calcula la orientación local del surco en cada punto.
+# - Puede seguir surcos verticales, horizontales, diagonales
+#   y con curvas suaves.
+# - Primero detecta regiones con patrón real de viñedo.
+# - Los caminos y zonas sin patrón repetitivo ayudan a separar
+#   parcelas.
+# ============================================================
+
+
+# ============================================================
 # VEGETACIÓN
 # ============================================================
+
 def mascara_verde(bgr):
-    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+    rgb = cv2.cvtColor(
+        bgr,
+        cv2.COLOR_BGR2RGB
+    ).astype(np.float32)
+
     r = rgb[:, :, 0]
     g = rgb[:, :, 1]
     b = rgb[:, :, 2]
 
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    hh, ss, vv = cv2.split(hsv)
+    hsv = cv2.cvtColor(
+        bgr,
+        cv2.COLOR_BGR2HSV
+    )
 
-    exg = 2.0 * g - r - b
-    ngrdi = (g - r) / (g + r + 1e-6)
+    hh, ss, vv = cv2.split(
+        hsv
+    )
 
-    # Máscara calibrada para estas fotografías:
-    # admite verde débil pero intenta rechazar suelo café.
+    exg = (
+        2.0 * g -
+        r -
+        b
+    )
+
+    ngrdi = (
+        (g - r) /
+        (g + r + 1e-6)
+    )
+
     mask = (
-        (exg > 7.0) &
-        (ngrdi > -0.015) &
-        (hh >= 21) & (hh <= 108) &
-        (ss >= 16) &
-        (vv >= 22) &
-        (g >= r * 0.875) &
-        (g >= b * 0.875)
-    ).astype(np.uint8) * 255
+        (exg > 5.0) &
+        (ngrdi > -0.030) &
+        (hh >= 18) &
+        (hh <= 115) &
+        (ss >= 10) &
+        (vv >= 18) &
+        (g >= r * 0.84) &
+        (g >= b * 0.84)
+    ).astype(np.uint8)
 
     mask = cv2.morphologyEx(
         mask,
         cv2.MORPH_OPEN,
-        np.ones((2, 2), np.uint8),
+        np.ones(
+            (2, 2),
+            np.uint8
+        ),
         iterations=1
     )
 
@@ -88,1525 +124,2077 @@ def mascara_verde(bgr):
 
 
 # ============================================================
-# ÁNGULO DOMINANTE DE LOS SURCOS
+# DIFERENCIA ANGULAR
 # ============================================================
-def angulo_surcos(mask):
-    h, w = mask.shape
 
-    # Solo zona central para no dejar que caminos/edificios dominen.
-    x0, x1 = int(w * 0.12), int(w * 0.88)
-    y0, y1 = int(h * 0.12), int(h * 0.90)
+def diferencia_angular_rad(
+    a,
+    b
+):
+    d = abs(
+        float(a) -
+        float(b)
+    ) % np.pi
 
-    roi = mask[y0:y1, x0:x1]
-
-    edges = cv2.Canny(roi, 30, 100)
-
-    lines = cv2.HoughLinesP(
-        edges,
-        1,
-        np.pi / 180,
-        threshold=45,
-        minLineLength=max(45, int(h * 0.08)),
-        maxLineGap=18
+    return min(
+        d,
+        np.pi - d
     )
-
-    if lines is None:
-        return 90.0
-
-    vals = []
-
-    for x1l, y1l, x2l, y2l in np.asarray(lines).reshape(-1, 4):
-        dx = float(x2l - x1l)
-        dy = float(y2l - y1l)
-
-        length = np.hypot(dx, dy)
-        if length < 35:
-            continue
-
-        angle = np.degrees(np.arctan2(dy, dx))
-
-        while angle < 0:
-            angle += 180
-        while angle >= 180:
-            angle -= 180
-
-        # Solo estructuras aproximadamente verticales.
-        if 55 <= angle <= 125:
-            vals.append((angle, length))
-
-    if not vals:
-        return 90.0
-
-    angles = np.array([v[0] for v in vals])
-    weights = np.array([v[1] for v in vals])
-
-    bins = np.arange(55, 126, 2)
-    hist, edges_b = np.histogram(
-        angles,
-        bins=bins,
-        weights=weights
-    )
-
-    i = int(np.argmax(hist))
-    lo = edges_b[i]
-    hi = edges_b[i + 1]
-
-    sel = (angles >= lo) & (angles < hi)
-
-    if np.any(sel):
-        return float(np.average(angles[sel], weights=weights[sel]))
-
-    return float(np.median(angles))
-
-
-def rotar(img, angle):
-    h, w = img.shape[:2]
-    centro = (w / 2.0, h / 2.0)
-
-    # Llevar los surcos a vertical.
-    rot_deg = 90.0 - angle
-
-    M = cv2.getRotationMatrix2D(centro, rot_deg, 1.0)
-    Minv = cv2.invertAffineTransform(M)
-
-    out = cv2.warpAffine(
-        img,
-        M,
-        (w, h),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_REFLECT
-    )
-
-    return out, M, Minv
-
-
-def aplicar_matriz(points, M):
-    pts = np.asarray(points, dtype=np.float32)
-
-    if len(pts) == 0:
-        return pts
-
-    ones = np.ones((len(pts), 1), dtype=np.float32)
-    aug = np.hstack([pts, ones])
-
-    return aug @ M.T
 
 
 # ============================================================
-# DETECCIÓN AUTOMÁTICA DE PARCELA
+# CAMPO DE ORIENTACIÓN LOCAL
 # ============================================================
-def limites_verticales(mask):
+
+def campo_orientacion_local(
+    bgr
+):
     """
-    Busca el camino superior y el camino inferior.
+    Devuelve:
+    - vegetación
+    - dirección LOCAL del surco en cada píxel
+    - coherencia de la dirección
+    - respuesta visual del surco
+    - energía de textura
     """
-    h, w = mask.shape
-
-    density = (mask > 0).mean(axis=1).astype(np.float32)
-    density = gaussian_filter1d(
-        density,
-        sigma=max(7, h / 100)
-    )
-
-    # Camino superior.
-    top_range = np.arange(
-        int(h * 0.05),
-        int(h * 0.48)
-    )
-
-    y_top_road = int(
-        top_range[np.argmin(density[top_range])]
-    )
-
-    # Camino inferior.
-    bottom_range = np.arange(
-        int(h * 0.55),
-        int(h * 0.95)
-    )
-
-    y_bottom_road = int(
-        bottom_range[np.argmin(density[bottom_range])]
-    )
-
-    inset = max(8, int(h * 0.010))
-
-    y0 = y_top_road + inset
-    y1 = y_bottom_road - inset
-
-    # Protección por si una imagen distinta confunde los mínimos.
-    if y1 - y0 < h * 0.36:
-        y0 = int(h * 0.14)
-        y1 = int(h * 0.88)
-
-    return max(0, y0), min(h - 1, y1)
-
-
-def estimar_periodo(profile):
-    """
-    Estima la separación entre hileras.
-    """
-    p = profile.astype(np.float64)
-    p -= np.mean(p)
-
-    if np.std(p) < 1e-7:
-        return 20.0
-
-    ac = np.correlate(p, p, mode="full")
-    ac = ac[len(p)-1:]
-
-    width = len(profile)
-
-    a = max(8, int(width * 0.006))
-    b = min(int(width * 0.030), len(ac) - 1)
-
-    if b <= a:
-        return 20.0
-
-    peaks, _ = find_peaks(ac[a:b+1])
-
-    if len(peaks) == 0:
-        return max(16.0, width / 70.0)
-
-    vals = ac[a:b+1][peaks]
-    lag = float(a + peaks[np.argmax(vals)])
-
-    # En estas imágenes el primer armónico suele aparecer a media hilera.
-    # Si sale demasiado pequeño, se duplica.
-    if lag < width / 85.0:
-        lag *= 2.0
-
-    return float(np.clip(lag, 13.0, 35.0))
-
-
-def detectar_limites_laterales(mask, y0, y1):
-    """
-    Detecta automáticamente los caminos laterales que delimitan
-    la parcela principal. Devuelve x0, x1.
-    """
-    h, w = mask.shape
-
-    zone = (mask[y0:y1] > 0).astype(np.float32)
-
-    # Densidad verde por columna.
-    density = zone.mean(axis=0)
-    density = gaussian_filter1d(
-        density,
-        sigma=max(3.0, w / 450.0)
-    )
-
-    # Normalización robusta.
-    p20 = float(np.percentile(density, 20))
-    p65 = float(np.percentile(density, 65))
-
-    # Los caminos son bandas verticales con muy poca vegetación.
-    threshold = p20 + 0.22 * max(p65 - p20, 1e-6)
-
-    low = density < threshold
-
-    # Extraer bandas continuas de baja vegetación.
-    bands = []
-    i = 0
-
-    while i < w:
-        if not low[i]:
-            i += 1
-            continue
-
-        j = i + 1
-        while j < w and low[j]:
-            j += 1
-
-        width_band = j - i
-
-        # Camino/borde útil: debe tener cierto ancho.
-        if width_band >= max(5, int(w * 0.004)):
-            bands.append((i, j - 1, width_band))
-
-        i = j
-
-    center = w / 2.0
-
-    left_candidates = [
-        b for b in bands
-        if b[1] < center and b[1] > w * 0.03
-    ]
-
-    right_candidates = [
-        b for b in bands
-        if b[0] > center and b[0] < w * 0.97
-    ]
-
-    # Preferir caminos anchos y relativamente cercanos al bloque central.
-    if left_candidates:
-        left_band = max(
-            left_candidates,
-            key=lambda b: (
-                b[2] * 3.0
-                - abs(center - b[1]) * 0.012
-            )
-        )
-        x0 = int(left_band[1] + max(3, w * 0.003))
-    else:
-        x0 = int(w * 0.08)
-
-    if right_candidates:
-        right_band = max(
-            right_candidates,
-            key=lambda b: (
-                b[2] * 3.0
-                - abs(b[0] - center) * 0.012
-            )
-        )
-        x1 = int(right_band[0] - max(3, w * 0.003))
-    else:
-        x1 = int(w * 0.92)
-
-    # Salvaguardas.
-    if x1 - x0 < w * 0.35:
-        x0 = int(w * 0.08)
-        x1 = int(w * 0.92)
-
-    return max(0, x0), min(w - 1, x1)
-
-
-def semillas_surcos(mask, y0, y1):
-    """
-    V3.3 - detectar TODOS los surcos.
-
-    En vez de promediar toda la parcela (lo cual borra hileras
-    curvas o débiles), toma varios cortes horizontales y calcula
-    el espaciado típico entre surcos.
-
-    Después construye una retícula completa. Una hilera seca no
-    desaparece solo porque tenga poco verde.
-    """
-    x0, x1 = detectar_limites_laterales(
-        mask,
-        y0,
-        y1
-    )
-
-    zone = (
-        mask[
-            y0:y1,
-            x0:x1
-        ] > 0
+    green = mascara_verde(
+        bgr
     ).astype(np.float32)
 
-    height, width = zone.shape
-
-    if width < 30 or height < 30:
-        return (
-            np.array([], dtype=np.int32),
-            20.0,
-            int(x0),
-            int(x1)
-        )
-
-    # --------------------------------------------------------
-    # PERFILES EN VARIAS ALTURAS
-    # --------------------------------------------------------
-    profiles = []
-    periods = []
-    contrasts = []
-
-    centers = np.linspace(
-        0.12,
-        0.88,
-        9
-    )
-
-    band_h = max(
-        12,
-        int(height * 0.11)
-    )
-
-    for frac in centers:
-        yc = int(
-            round(
-                frac * (height - 1)
-            )
-        )
-
-        a = max(
-            0,
-            yc - band_h // 2
-        )
-
-        b = min(
-            height,
-            yc + band_h // 2 + 1
-        )
-
-        band = zone[a:b]
-
-        if band.size == 0:
-            continue
-
-        profile = band.mean(axis=0)
-        profile = gaussian_filter1d(
-            profile,
-            sigma=1.15
-        )
-
-        period = estimar_periodo(
-            profile
-        )
-
-        period = float(
-            np.clip(
-                period,
-                9.0,
-                40.0
-            )
-        )
-
-        contrast = float(
-            np.std(profile)
-        )
-
-        profiles.append(profile)
-        periods.append(period)
-        contrasts.append(contrast)
-
-    if not profiles:
-        return (
-            np.array([], dtype=np.int32),
-            20.0,
-            int(x0),
-            int(x1)
-        )
-
-    # --------------------------------------------------------
-    # REFINAR ESPACIADO CON DISTANCIAS ENTRE PICOS DE CADA BANDA
-    # --------------------------------------------------------
-    spacing_candidates = []
-
-    for profile, p0 in zip(
-        profiles,
-        periods
-    ):
-        peaks, _ = find_peaks(
-            profile,
-            distance=max(
-                5,
-                int(p0 * 0.45)
-            ),
-            prominence=max(
-                0.003,
-                float(profile.max()) * 0.010
-            ),
-            height=max(
-                0.006,
-                float(profile.max()) * 0.018
-            )
-        )
-
-        if len(peaks) >= 5:
-            diffs = np.diff(
-                peaks.astype(np.float32)
-            )
-
-            good = diffs[
-                (diffs >= 8.0) &
-                (diffs <= 42.0)
-            ]
-
-            if len(good):
-                # El valor más pequeño repetitivo suele corresponder
-                # al paso real; huecos secos pueden producir 2x o 3x.
-                med = float(
-                    np.median(good)
-                )
-
-                near = good[
-                    (good > med * 0.62) &
-                    (good < med * 1.38)
-                ]
-
-                if len(near):
-                    spacing_candidates.extend(
-                        near.tolist()
-                    )
-
-    if spacing_candidates:
-        spacing = float(
-            np.median(
-                spacing_candidates
-            )
-        )
-    else:
-        # Mediana robusta de las autocorrelaciones de todas las bandas.
-        spacing = float(
-            np.median(
-                periods
-            )
-        )
-
-    spacing = float(
-        np.clip(
-            spacing,
-            9.0,
-            36.0
-        )
-    )
-
-    # --------------------------------------------------------
-    # EVITAR ARMÓNICO 2X:
-    # comprobar si la mitad del espaciado también tiene señal
-    # repetitiva fuerte en las bandas.
-    # --------------------------------------------------------
-    half = spacing / 2.0
-
-    if half >= 8.0:
-        score_full = 0.0
-        score_half = 0.0
-
-        for profile in profiles:
-            for candidate, bucket in [
-                (spacing, "full"),
-                (half, "half")
-            ]:
-                best = -1.0
-
-                phase_steps = max(
-                    10,
-                    int(round(candidate * 1.5))
-                )
-
-                for phase in np.linspace(
-                    0,
-                    candidate,
-                    phase_steps,
-                    endpoint=False
-                ):
-                    xs = np.arange(
-                        phase,
-                        len(profile),
-                        candidate
-                    )
-
-                    if len(xs) < 4:
-                        continue
-
-                    values = []
-
-                    for x in xs:
-                        xi = int(round(x))
-                        a = max(0, xi - 2)
-                        b = min(
-                            len(profile),
-                            xi + 3
-                        )
-
-                        if b > a:
-                            values.append(
-                                float(
-                                    profile[a:b].mean()
-                                )
-                            )
-
-                    if values:
-                        best = max(
-                            best,
-                            float(np.mean(values))
-                        )
-
-                if bucket == "full":
-                    score_full += max(best, 0.0)
-                else:
-                    score_half += max(best, 0.0)
-
-        # Solo usar media separación si explica casi igual o mejor
-        # la estructura. Esto recupera hileras omitidas por armónicos.
-        if (
-            score_half >=
-            score_full * 0.94
-        ):
-            spacing = half
-
-    spacing = float(
-        np.clip(
-            spacing,
-            8.0,
-            36.0
-        )
-    )
-
-    # --------------------------------------------------------
-    # ELEGIR LA BANDA MÁS NÍTIDA PARA FIJAR LA FASE INICIAL
-    # --------------------------------------------------------
-    best_profile_index = int(
-        np.argmax(
-            np.asarray(
-                contrasts,
-                dtype=np.float32
-            )
-        )
-    )
-
-    ref_profile = profiles[
-        best_profile_index
-    ]
-
-    best_phase = 0.0
-    best_score = -1e9
-
-    phase_steps = max(
-        18,
-        int(round(spacing * 3))
-    )
-
-    for phase in np.linspace(
-        0,
-        spacing,
-        phase_steps,
-        endpoint=False
-    ):
-        xs = np.arange(
-            phase,
-            width,
-            spacing
-        )
-
-        if len(xs) < 4:
-            continue
-
-        values = []
-
-        for x in xs:
-            xi = int(round(x))
-
-            a = max(
-                0,
-                xi - 2
-            )
-
-            b = min(
-                width,
-                xi + 3
-            )
-
-            if b > a:
-                values.append(
-                    float(
-                        ref_profile[a:b].mean()
-                    )
-                )
-
-        if not values:
-            continue
-
-        score = float(
-            np.mean(values)
-        )
-
-        if score > best_score:
-            best_score = score
-            best_phase = float(phase)
-
-    # --------------------------------------------------------
-    # RETÍCULA COMPLETA: NO DEPENDE DE QUE CADA SURCO SEA VERDE
-    # --------------------------------------------------------
-    local_seeds = np.arange(
-        best_phase,
-        width,
-        spacing,
-        dtype=np.float32
-    )
-
-    # Solo quitar posiciones prácticamente encima del camino.
-    edge_margin = max(
-        1.0,
-        spacing * 0.08
-    )
-
-    local_seeds = local_seeds[
-        (local_seeds >= edge_margin) &
-        (
-            local_seeds <=
-            width - 1 - edge_margin
-        )
-    ]
-
-    # --------------------------------------------------------
-    # REFINAMIENTO MUY PEQUEÑO.
-    # Nunca mover una semilla suficiente para entrar al vecino.
-    # --------------------------------------------------------
-    full_profile = zone.mean(axis=0)
-
-    # Para surcos curvos, no usar el promedio puro:
-    # conservar la mejor evidencia entre varias bandas.
-    stacked = np.vstack(
-        profiles
-    )
-
-    robust_profile = (
-        0.55 *
-        gaussian_filter1d(
-            full_profile,
-            sigma=1.0
-        )
-        +
-        0.45 *
-        np.percentile(
-            stacked,
-            70,
-            axis=0
-        )
-    )
-
-    radius = max(
-        1,
-        int(
-            spacing * 0.18
-        )
-    )
-
-    refined = []
-
-    for s in local_seeds:
-        xi = int(round(s))
-
-        a = max(
-            0,
-            xi - radius
-        )
-
-        b = min(
-            width,
-            xi + radius + 1
-        )
-
-        if b <= a:
-            refined.append(
-                float(s + x0)
-            )
-            continue
-
-        local = robust_profile[
-            a:b
-        ]
-
-        # Si no hay señal, CONSERVAR la semilla de la retícula.
-        # Esto es lo que mantiene los surcos secos.
-        if (
-            local.size and
-            float(local.max()) >
-            max(
-                0.005,
-                float(
-                    np.median(
-                        robust_profile
-                    )
-                ) * 0.80
-            )
-        ):
-            best = (
-                a +
-                int(
-                    np.argmax(
-                        local
-                    )
-                )
-            )
-        else:
-            best = xi
-
-        refined.append(
-            float(best + x0)
-        )
-
-    seeds = np.asarray(
-        refined,
-        dtype=np.float32
-    )
-
-    # --------------------------------------------------------
-    # FORZAR ORDEN Y SEPARACIÓN.
-    # Si dos refinamientos se acercaron, volverlos a su retícula.
-    # --------------------------------------------------------
-    if len(seeds):
-        base = float(
-            local_seeds[0] + x0
-        )
-
-        regular = (
-            base +
-            np.arange(
-                len(seeds),
-                dtype=np.float32
-            ) * spacing
-        )
-
-        max_deviation = (
-            spacing * 0.20
-        )
-
-        seeds = np.clip(
-            seeds,
-            regular - max_deviation,
-            regular + max_deviation
-        )
-
-        # Garantizar que dos surcos nunca colapsen en uno.
-        for i in range(
-            1,
-            len(seeds)
-        ):
-            minimum = (
-                seeds[i - 1] +
-                spacing * 0.62
-            )
-
-            if seeds[i] < minimum:
-                seeds[i] = max(
-                    minimum,
-                    regular[i] -
-                    max_deviation
-                )
-
-    return (
-        np.rint(
-            seeds
-        ).astype(np.int32),
-        float(spacing),
-        int(x0),
-        int(x1)
-    )
-
-
-# ============================================================
-# RESPUESTA VISUAL DEL SURCO
-# ============================================================
-def crear_respuesta(bgr, green_mask):
-    """
-    Combina vegetación con textura vertical.
-    Esto permite seguir también hileras secas.
-    """
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-
-    # Bordes verticales de las plantas/surcos.
-    sx = cv2.Sobel(
+    gray = cv2.cvtColor(
+        bgr,
+        cv2.COLOR_BGR2GRAY
+    ).astype(np.float32) / 255.0
+
+    smooth = cv2.GaussianBlur(
         gray,
+        (0, 0),
+        1.0
+    )
+
+    gx = cv2.Sobel(
+        smooth,
         cv2.CV_32F,
         1,
         0,
         ksize=3
     )
 
-    sx = np.abs(sx)
-
-    p99 = np.percentile(sx, 99)
-
-    if p99 > 0:
-        sx = np.clip(sx / p99, 0, 1)
-    else:
-        sx[:] = 0
-
-    # Unir los dos bordes de una hilera para dar señal al centro.
-    sx = cv2.GaussianBlur(
-        sx,
-        (0, 0),
-        sigmaX=2.0,
-        sigmaY=1.0
-    )
-
-    gm = (green_mask > 0).astype(np.float32)
-
-    gm = cv2.GaussianBlur(
-        gm,
-        (0, 0),
-        sigmaX=2.0,
-        sigmaY=1.3
-    )
-
-    response = 0.70 * gm + 0.30 * sx
-
-    return response
-
-
-# ============================================================
-# SEGUIR UN SURCO SIN SALTAR AL VECINO
-# ============================================================
-def seguir_surco(response, green_mask, seed, left, right, y0, y1):
-    """
-    V3.3 - línea adaptativa SIN saltar al vecino.
-
-    Cada hilera tiene un carril independiente.
-    La trayectoria puede curvarse, pero:
-    - nunca cruza el punto medio hacia el surco vecino;
-    - siempre tiene una pequeña atracción hacia su posición nominal;
-    - si desaparece la vegetación, conserva la trayectoria.
-    """
-    height = max(
+    gy = cv2.Sobel(
+        smooth,
+        cv2.CV_32F,
+        0,
         1,
-        y1 - y0
+        ksize=3
     )
 
-    step = max(
-        4,
-        int(
-            height / 170
+    Jxx = cv2.GaussianBlur(
+        gx * gx,
+        (0, 0),
+        3.0
+    )
+
+    Jyy = cv2.GaussianBlur(
+        gy * gy,
+        (0, 0),
+        3.0
+    )
+
+    Jxy = cv2.GaussianBlur(
+        gx * gy,
+        (0, 0),
+        3.0
+    )
+
+    coherence = (
+        np.sqrt(
+            (Jxx - Jyy) ** 2 +
+            4.0 * Jxy ** 2
+        )
+        /
+        (
+            Jxx +
+            Jyy +
+            1e-8
         )
     )
 
-    ys = np.arange(
-        y0,
-        y1,
-        step,
+    # Dirección del gradiente.
+    gradient_angle = (
+        0.5 *
+        np.arctan2(
+            2.0 * Jxy,
+            Jxx - Jyy
+        )
+    )
+
+    # La dirección del SURCO es perpendicular al gradiente.
+    theta = (
+        gradient_angle +
+        np.pi / 2.0
+    ) % np.pi
+
+    # --------------------------------------------------------
+    # RESPUESTA VISUAL
+    # --------------------------------------------------------
+    green_blur = cv2.GaussianBlur(
+        green,
+        (0, 0),
+        1.7
+    )
+
+    local_background = cv2.GaussianBlur(
+        gray,
+        (0, 0),
+        5.0
+    )
+
+    darkness = np.maximum(
+        local_background -
+        gray,
+        0.0
+    )
+
+    p99 = float(
+        np.percentile(
+            darkness,
+            99
+        )
+    )
+
+    if p99 > 1e-6:
+        darkness = np.clip(
+            darkness / p99,
+            0.0,
+            1.0
+        )
+    else:
+        darkness[:] = 0.0
+
+    response = (
+        (
+            0.62 *
+            green_blur
+            +
+            0.38 *
+            darkness
+        )
+        *
+        (
+            0.35 +
+            0.65 *
+            coherence
+        )
+    )
+
+    response = cv2.GaussianBlur(
+        response.astype(np.float32),
+        (0, 0),
+        0.8
+    )
+
+    energy = (
+        Jxx +
+        Jyy
+    )
+
+    return (
+        green,
+        theta.astype(np.float32),
+        coherence.astype(np.float32),
+        response.astype(np.float32),
+        energy.astype(np.float32)
+    )
+
+
+# ============================================================
+# COMPONENTES / PARCELAS CON PATRÓN DE VIÑEDO
+# ============================================================
+
+def detectar_componentes_vinedo(
+    bgr,
+    tile=32
+):
+    """
+    Divide la imagen en pequeñas celdas.
+
+    Una celda se considera viñedo cuando tiene:
+    - vegetación,
+    - textura lineal,
+    - una orientación local clara.
+
+    Las celdas se conectan solo cuando sus direcciones son
+    compatibles. Así no se impone una sola dirección a toda
+    la fotografía.
+    """
+    (
+        green,
+        theta,
+        coherence,
+        response,
+        energy
+    ) = campo_orientacion_local(
+        bgr
+    )
+
+    h, w = green.shape
+
+    ny = (
+        h +
+        tile -
+        1
+    ) // tile
+
+    nx = (
+        w +
+        tile -
+        1
+    ) // tile
+
+    valid = np.zeros(
+        (ny, nx),
+        dtype=np.uint8
+    )
+
+    tile_angle = np.zeros(
+        (ny, nx),
+        dtype=np.float32
+    )
+
+    tile_weight = np.zeros(
+        (ny, nx),
+        dtype=np.float32
+    )
+
+    for iy in range(ny):
+        for ix in range(nx):
+
+            y0 = iy * tile
+            y1 = min(
+                h,
+                (iy + 1) * tile
+            )
+
+            x0 = ix * tile
+            x1 = min(
+                w,
+                (ix + 1) * tile
+            )
+
+            c = coherence[
+                y0:y1,
+                x0:x1
+            ]
+
+            th = theta[
+                y0:y1,
+                x0:x1
+            ]
+
+            g = green[
+                y0:y1,
+                x0:x1
+            ]
+
+            e = energy[
+                y0:y1,
+                x0:x1
+            ]
+
+            green_fraction = float(
+                np.mean(
+                    g > 0
+                )
+            )
+
+            coherence_mean = float(
+                np.mean(c)
+            )
+
+            energy_mean = float(
+                np.mean(e)
+            )
+
+            # Promedio angular correcto para direcciones de 0..180°.
+            weights = (
+                np.maximum(
+                    c - 0.20,
+                    0.0
+                )
+                *
+                (
+                    0.30 +
+                    0.70 * g
+                )
+            )
+
+            z = np.sum(
+                weights *
+                np.exp(
+                    1j *
+                    2.0 *
+                    th
+                )
+            )
+
+            if abs(z) > 1e-7:
+                local_angle = (
+                    np.angle(z) /
+                    2.0
+                ) % np.pi
+            else:
+                local_angle = np.pi / 2.0
+
+            tile_angle[
+                iy,
+                ix
+            ] = local_angle
+
+            tile_weight[
+                iy,
+                ix
+            ] = (
+                coherence_mean *
+                (
+                    0.20 +
+                    green_fraction
+                )
+            )
+
+            if (
+                coherence_mean > 0.34
+                and
+                energy_mean > 0.00018
+                and
+                green_fraction > 0.018
+            ):
+                valid[
+                    iy,
+                    ix
+                ] = 1
+
+    # --------------------------------------------------------
+    # UNION-FIND:
+    # conectar solo celdas vecinas de orientación parecida.
+    # Se usan 4 vecinos para que un camino tenga más facilidad
+    # de separar dos parcelas.
+    # --------------------------------------------------------
+    parent = np.arange(
+        ny * nx,
         dtype=np.int32
     )
 
-    lane_width = max(
-        5.0,
-        float(
-            right - left
-        )
-    )
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[
+                parent[a]
+            ]
+            a = parent[a]
 
-    # Margen de seguridad interno.
-    safety = max(
-        1.0,
-        lane_width * 0.12
-    )
+        return int(a)
 
-    hard_left = float(
-        left + safety
-    )
+    def union(a, b):
+        ra = find(a)
+        rb = find(b)
 
-    hard_right = float(
-        right - safety
-    )
+        if ra != rb:
+            parent[rb] = ra
 
-    if (
-        hard_right -
-        hard_left <
-        2.0
-    ):
-        hard_left = float(
-            left + 0.5
-        )
-        hard_right = float(
-            right - 0.5
-        )
+    for iy in range(ny):
+        for ix in range(nx):
 
-    seed = float(
-        np.clip(
-            seed,
-            hard_left,
-            hard_right
-        )
-    )
+            if valid[
+                iy,
+                ix
+            ] == 0:
+                continue
 
-    xs = []
-    greens = []
+            current = (
+                iy * nx +
+                ix
+            )
 
-    prev_x = seed
-    velocity = 0.0
+            for dy, dx in [
+                (1, 0),
+                (0, 1)
+            ]:
+                jy = iy + dy
+                jx = ix + dx
 
-    # Nunca mirar todo el carril:
-    # solo alrededor de la trayectoria actual.
-    search_radius = max(
-        2,
+                if not (
+                    0 <= jy < ny
+                    and
+                    0 <= jx < nx
+                ):
+                    continue
+
+                if valid[
+                    jy,
+                    jx
+                ] == 0:
+                    continue
+
+                if (
+                    diferencia_angular_rad(
+                        tile_angle[
+                            iy,
+                            ix
+                        ],
+                        tile_angle[
+                            jy,
+                            jx
+                        ]
+                    )
+                    <=
+                    np.deg2rad(
+                        22.0
+                    )
+                ):
+                    union(
+                        current,
+                        jy * nx + jx
+                    )
+
+    groups = {}
+
+    for iy in range(ny):
+        for ix in range(nx):
+
+            if valid[
+                iy,
+                ix
+            ] == 0:
+                continue
+
+            root = find(
+                iy * nx + ix
+            )
+
+            groups.setdefault(
+                root,
+                []
+            ).append(
+                (
+                    iy,
+                    ix
+                )
+            )
+
+    components = []
+
+    minimum_tiles = max(
+        8,
         int(
-            lane_width * 0.24
+            ny *
+            nx *
+            0.020
         )
     )
 
-    # Movimiento por paso extremadamente limitado.
-    max_step_shift = max(
-        0.65,
-        lane_width * 0.055
-    )
+    for cells in groups.values():
 
-    # Desviación máxima acumulada respecto del centro nominal.
-    # Permite curva, pero no alcanza el surco vecino.
-    max_total_deviation = (
-        lane_width * 0.32
-    )
+        if len(cells) < minimum_tiles:
+            continue
 
-    for y in ys:
-        ya = max(
-            y0,
-            y - step // 2 - 1
+        component_mask = np.zeros(
+            (h, w),
+            dtype=np.uint8
         )
 
-        yb = min(
-            y1,
-            y + step // 2 + 2
+        angles = []
+        weights = []
+
+        for iy, ix in cells:
+
+            y0 = iy * tile
+            y1 = min(
+                h,
+                (iy + 1) * tile
+            )
+
+            x0 = ix * tile
+            x1 = min(
+                w,
+                (ix + 1) * tile
+            )
+
+            component_mask[
+                y0:y1,
+                x0:x1
+            ] = 255
+
+            angles.append(
+                float(
+                    tile_angle[
+                        iy,
+                        ix
+                    ]
+                )
+            )
+
+            weights.append(
+                float(
+                    tile_weight[
+                        iy,
+                        ix
+                    ]
+                )
+            )
+
+        angles = np.asarray(
+            angles,
+            dtype=np.float64
         )
 
-        predicted = (
-            prev_x +
-            velocity
+        weights = np.asarray(
+            weights,
+            dtype=np.float64
         )
 
-        predicted = float(
-            np.clip(
-                predicted,
-                seed -
-                max_total_deviation,
-                seed +
-                max_total_deviation
+        z = np.sum(
+            weights *
+            np.exp(
+                1j *
+                2.0 *
+                angles
             )
         )
 
-        predicted = float(
-            np.clip(
-                predicted,
-                hard_left,
-                hard_right
+        if abs(z) > 1e-7:
+            mean_angle = (
+                np.angle(z) /
+                2.0
+            ) % np.pi
+        else:
+            mean_angle = float(
+                np.median(
+                    angles
+                )
+            )
+
+        ys, xs = np.where(
+            component_mask > 0
+        )
+
+        if len(xs) == 0:
+            continue
+
+        components.append({
+            "mask": component_mask,
+            "angle": float(
+                mean_angle
+            ),
+            "bbox": (
+                int(xs.min()),
+                int(ys.min()),
+                int(xs.max()) + 1,
+                int(ys.max()) + 1
+            ),
+            "tiles": int(
+                len(cells)
+            )
+        })
+
+    components.sort(
+        key=lambda c:
+        c["tiles"],
+        reverse=True
+    )
+
+    return (
+        green,
+        theta,
+        coherence,
+        response,
+        components,
+        ny,
+        nx
+    )
+
+
+# ============================================================
+# ESPACIADO ENTRE SURCOS
+# ============================================================
+
+def estimar_espaciado_local(
+    profile
+):
+    p = np.asarray(
+        profile,
+        dtype=np.float64
+    )
+
+    if len(p) < 20:
+        return None
+
+    p = gaussian_filter1d(
+        p,
+        sigma=1.0
+    )
+
+    trend = gaussian_filter1d(
+        p,
+        sigma=max(
+            4.0,
+            len(p) / 35.0
+        )
+    )
+
+    p = (
+        p -
+        trend
+    )
+
+    p -= np.mean(
+        p
+    )
+
+    if np.std(p) < 1e-7:
+        return None
+
+    ac = np.correlate(
+        p,
+        p,
+        mode="full"
+    )
+
+    ac = ac[
+        len(p) - 1:
+    ]
+
+    minimum = 6
+
+    maximum = min(
+        45,
+        len(ac) - 1
+    )
+
+    if maximum <= minimum:
+        return None
+
+    segment = ac[
+        minimum:
+        maximum + 1
+    ]
+
+    peaks, _ = find_peaks(
+        segment
+    )
+
+    if len(peaks) == 0:
+        lag = (
+            minimum +
+            int(
+                np.argmax(
+                    segment
+                )
+            )
+        )
+    else:
+        values = segment[
+            peaks
+        ]
+
+        maximum_value = float(
+            np.max(
+                values
+            )
+        )
+
+        strong = peaks[
+            values >=
+            maximum_value *
+            0.55
+        ]
+
+        if len(strong):
+            lag = (
+                minimum +
+                int(
+                    strong[0]
+                )
+            )
+        else:
+            lag = (
+                minimum +
+                int(
+                    peaks[
+                        np.argmax(
+                            values
+                        )
+                    ]
+                )
+            )
+
+    return float(
+        np.clip(
+            lag,
+            7.0,
+            45.0
+        )
+    )
+
+
+# ============================================================
+# SEMILLAS DE UN COMPONENTE
+# ============================================================
+
+def semillas_componente(
+    component,
+    response
+):
+    """
+    La orientación media se usa SOLO para colocar una semilla
+    inicial en cada surco.
+
+    Después de eso, la línea deja de depender del ángulo medio
+    y sigue la orientación LOCAL.
+    """
+    h, w = response.shape
+
+    x0, y0, x1, y1 = component[
+        "bbox"
+    ]
+
+    pad = 16
+
+    xa = max(
+        0,
+        x0 - pad
+    )
+
+    xb = min(
+        w,
+        x1 + pad
+    )
+
+    ya = max(
+        0,
+        y0 - pad
+    )
+
+    yb = min(
+        h,
+        y1 + pad
+    )
+
+    crop_response = response[
+        ya:yb,
+        xa:xb
+    ]
+
+    crop_mask = (
+        component[
+            "mask"
+        ][
+            ya:yb,
+            xa:xb
+        ] > 0
+    ).astype(np.uint8)
+
+    ch, cw = crop_response.shape
+
+    if (
+        ch < 20
+        or
+        cw < 20
+    ):
+        return (
+            [],
+            None
+        )
+
+    angle_deg = np.rad2deg(
+        component[
+            "angle"
+        ]
+    )
+
+    rotation = (
+        90.0 -
+        angle_deg
+    )
+
+    M = cv2.getRotationMatrix2D(
+        (
+            cw / 2.0,
+            ch / 2.0
+        ),
+        rotation,
+        1.0
+    )
+
+    Minv = cv2.invertAffineTransform(
+        M
+    )
+
+    rotated_response = cv2.warpAffine(
+        crop_response,
+        M,
+        (cw, ch),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT
+    )
+
+    rotated_mask = cv2.warpAffine(
+        crop_mask,
+        M,
+        (cw, ch),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT
+    )
+
+    ys, xs = np.where(
+        rotated_mask > 0
+    )
+
+    if len(xs) < 100:
+        return (
+            [],
+            None
+        )
+
+    rx0 = int(
+        xs.min()
+    )
+
+    rx1 = int(
+        xs.max()
+    ) + 1
+
+    ry0 = int(
+        ys.min()
+    )
+
+    ry1 = int(
+        ys.max()
+    ) + 1
+
+    profiles = []
+
+    # Varias franjas:
+    # así una zona seca no borra el surco del perfil.
+    for frac in np.linspace(
+        0.20,
+        0.80,
+        5
+    ):
+
+        yc = int(
+            ry0 +
+            frac *
+            (
+                ry1 -
+                ry0
+            )
+        )
+
+        band_height = max(
+            8,
+            int(
+                (
+                    ry1 -
+                    ry0
+                ) *
+                0.12
             )
         )
 
         a = max(
-            int(np.floor(hard_left)),
-            int(round(predicted)) -
-            search_radius
+            ry0,
+            yc -
+            band_height // 2
         )
 
         b = min(
-            int(np.ceil(hard_right)),
-            int(round(predicted)) +
-            search_radius
+            ry1,
+            yc +
+            band_height // 2
         )
 
         if b <= a:
-            x_new = predicted
-            local_peak = 0.0
-            local_median = 0.0
+            continue
 
-        else:
-            candidates = np.arange(
-                a,
-                b + 1,
-                dtype=np.int32
-            )
+        local_mask = (
+            rotated_mask[
+                a:b,
+                rx0:rx1
+            ] > 0
+        ).astype(np.float32)
 
-            visual = np.zeros(
-                len(candidates),
-                dtype=np.float32
-            )
+        denominator = np.maximum(
+            local_mask.sum(
+                axis=0
+            ),
+            1.0
+        )
 
-            for j, x in enumerate(
-                candidates
-            ):
-                xa = max(
-                    int(np.floor(hard_left)),
-                    x - 3
-                )
+        profile = (
+            rotated_response[
+                a:b,
+                rx0:rx1
+            ]
+            *
+            local_mask
+        ).sum(
+            axis=0
+        ) / denominator
 
-                xb = min(
-                    int(np.ceil(hard_right)) + 1,
-                    x + 4
-                )
-
-                patch = response[
-                    ya:yb,
-                    xa:xb
-                ]
-
-                visual[j] = (
-                    float(
-                        patch.mean()
-                    )
-                    if patch.size
-                    else 0.0
-                )
-
-            # Penalización 1: alejarse del punto previsto.
-            dist_pred = (
-                np.abs(
-                    candidates -
-                    predicted
-                ) /
-                max(
-                    search_radius,
-                    1
-                )
-            )
-
-            # Penalización 2: alejarse demasiado del surco nominal.
-            dist_seed = (
-                np.abs(
-                    candidates -
-                    seed
-                ) /
-                max(
-                    max_total_deviation,
-                    1.0
-                )
-            )
-
-            score = (
-                visual
-                - 0.26 * dist_pred
-                - 0.11 * dist_seed
-            )
-
-            best_index = int(
-                np.argmax(
-                    score
-                )
-            )
-
-            candidate_best = float(
-                candidates[
-                    best_index
-                ]
-            )
-
-            local_peak = float(
-                np.max(
-                    visual
-                )
-            )
-
-            local_median = float(
-                np.median(
-                    visual
-                )
-            )
-
-            strong_evidence = (
-                local_peak >= 0.040
-                and
-                (
-                    local_peak -
-                    local_median
-                ) >= 0.007
-            )
-
-            if strong_evidence:
-                target = candidate_best
-            else:
-                # Hueco seco: no perseguir otra hilera.
-                target = predicted
-                velocity *= 0.45
-
-            # Cambio máximo en un paso.
-            dx = float(
-                np.clip(
-                    target -
-                    prev_x,
-                    -max_step_shift,
-                    max_step_shift
-                )
-            )
-
-            x_new = (
-                prev_x +
-                dx
-            )
-
-            # Inercia suave.
-            velocity = (
-                0.86 *
-                velocity
-                +
-                0.14 *
-                dx
-            )
-
-        # Barreras absolutas.
-        x_new = float(
-            np.clip(
-                x_new,
-                seed -
-                max_total_deviation,
-                seed +
-                max_total_deviation
+        profiles.append(
+            gaussian_filter1d(
+                profile,
+                sigma=1.0
             )
         )
 
-        x_new = float(
-            np.clip(
-                x_new,
-                hard_left,
-                hard_right
+    if not profiles:
+        return (
+            [],
+            None
+        )
+
+    stacked = np.vstack(
+        profiles
+    )
+
+    profile = np.percentile(
+        stacked,
+        70,
+        axis=0
+    )
+
+    spacing = estimar_espaciado_local(
+        profile
+    )
+
+    if spacing is None:
+        return (
+            [],
+            None
+        )
+
+    peaks, _ = find_peaks(
+        profile,
+        distance=max(
+            4,
+            int(
+                spacing *
+                0.55
             )
+        ),
+        prominence=max(
+            0.008,
+            float(
+                profile.max()
+            ) *
+            0.040
+        ),
+        height=max(
+            0.015,
+            float(
+                profile.max()
+            ) *
+            0.080
+        )
+    )
+
+    if len(peaks) < 3:
+        return (
+            [],
+            spacing
+        )
+
+    # --------------------------------------------------------
+    # Retícula regular.
+    # Esto ayuda a no perder una hilera seca.
+    # --------------------------------------------------------
+    mods = np.mod(
+        peaks.astype(
+            np.float32
+        ),
+        spacing
+    )
+
+    z = np.mean(
+        np.exp(
+            1j *
+            2.0 *
+            np.pi *
+            mods /
+            spacing
+        )
+    )
+
+    phase = (
+        (
+            np.angle(z)
+            %
+            (
+                2.0 *
+                np.pi
+            )
+        )
+        *
+        spacing
+        /
+        (
+            2.0 *
+            np.pi
+        )
+    )
+
+    candidates = np.arange(
+        phase,
+        len(profile),
+        spacing
+    )
+
+    seeds = []
+
+    for candidate in candidates:
+
+        xr = float(
+            candidate +
+            rx0
         )
 
         xi = int(
             round(
-                x_new
+                xr
             )
         )
 
-        # Vegetación alrededor de la trayectoria.
-        xa = max(
-            int(np.floor(hard_left)),
-            xi - 4
+        if not (
+            0 <= xi < cw
+        ):
+            continue
+
+        a = max(
+            0,
+            xi - 2
         )
 
-        xb = min(
-            int(np.ceil(hard_right)) + 1,
-            xi + 5
+        b = min(
+            cw,
+            xi + 3
         )
 
-        patch_green = green_mask[
-            ya:yb,
-            xa:xb
-        ]
+        yy = np.where(
+            np.any(
+                rotated_mask[
+                    :,
+                    a:b
+                ] > 0,
+                axis=1
+            )
+        )[0]
 
-        green_score = (
-            float(
-                np.mean(
-                    patch_green > 0
+        if len(yy) < 8:
+            continue
+
+        # Usar el segmento continuo más largo.
+        breaks = np.where(
+            np.diff(
+                yy
+            ) > 1
+        )[0]
+
+        segments = np.split(
+            yy,
+            breaks + 1
+        )
+
+        segment = max(
+            segments,
+            key=len
+        )
+
+        if len(segment) < 8:
+            continue
+
+        yr = float(
+            np.median(
+                segment
+            )
+        )
+
+        point_rotated = np.array(
+            [
+                xr,
+                yr,
+                1.0
+            ],
+            dtype=np.float32
+        )
+
+        point_crop = (
+            point_rotated @
+            Minv.T
+        )
+
+        seeds.append(
+            (
+                float(
+                    point_crop[0] +
+                    xa
+                ),
+                float(
+                    point_crop[1] +
+                    ya
                 )
             )
-            if patch_green.size
-            else 0.0
-        )
-
-        xs.append(
-            x_new
-        )
-
-        greens.append(
-            green_score
-        )
-
-        prev_x = x_new
-
-    xs = np.asarray(
-        xs,
-        dtype=np.float32
-    )
-
-    greens = np.asarray(
-        greens,
-        dtype=np.float32
-    )
-
-    # Suavizado leve. No puede producir overshoot.
-    if len(xs) >= 7:
-        smooth = gaussian_filter1d(
-            xs,
-            sigma=1.0,
-            mode="nearest"
-        )
-
-        # Limitar otra vez después de suavizar.
-        xs = np.clip(
-            smooth,
-            seed -
-            max_total_deviation,
-            seed +
-            max_total_deviation
-        )
-
-        xs = np.clip(
-            xs,
-            hard_left,
-            hard_right
         )
 
     return (
-        np.column_stack(
-            [
-                xs,
-                ys
-            ]
-        ).astype(
-            np.float32
-        ),
-        greens
+        seeds,
+        float(
+            spacing
+        )
     )
 
 
 # ============================================================
-# CLASIFICACIÓN VERDE / ROJO
+# TRAZADO LOCAL DE UN SURCO
 # ============================================================
-def estado_verde(green_scores):
-    positive = green_scores[green_scores > 0]
 
-    if len(positive) >= 4:
+def trazar_direccion(
+    seed,
+    initial_direction,
+    component,
+    response,
+    theta,
+    coherence,
+    green,
+    spacing,
+    occupancy
+):
+    """
+    Sigue una sola dirección desde la semilla.
+
+    En cada paso:
+    1. consulta el ángulo LOCAL,
+    2. avanza unos píxeles,
+    3. busca el centro del surco cerca de la predicción,
+    4. nunca abandona la región del viñedo,
+    5. evita pegarse a una línea ya dibujada.
+    """
+    h, w = response.shape
+
+    support = cv2.dilate(
+        (
+            component[
+                "mask"
+            ] > 0
+        ).astype(np.uint8),
+        np.ones(
+            (17, 17),
+            np.uint8
+        ),
+        iterations=1
+    )
+
+    point = np.asarray(
+        seed,
+        dtype=np.float64
+    )
+
+    direction = np.asarray(
+        initial_direction,
+        dtype=np.float64
+    )
+
+    direction /= (
+        np.linalg.norm(
+            direction
+        ) +
+        1e-9
+    )
+
+    points = [
+        point.copy()
+    ]
+
+    green_scores = [
+        0.0
+    ]
+
+    weak_steps = 0
+
+    step_length = 4.0
+
+    search_radius = max(
+        2,
+        int(
+            spacing *
+            0.22
+        )
+    )
+
+    maximum_steps = max(
+        120,
+        int(
+            2.2 *
+            max(
+                h,
+                w
+            ) /
+            step_length
+        )
+    )
+
+    for _ in range(
+        maximum_steps
+    ):
+
+        xi = int(
+            round(
+                point[0]
+            )
+        )
+
+        yi = int(
+            round(
+                point[1]
+            )
+        )
+
+        if not (
+            1 <= xi < w - 1
+            and
+            1 <= yi < h - 1
+        ):
+            break
+
+        # ----------------------------------------------------
+        # Dirección local del surco.
+        # ----------------------------------------------------
+        local_theta = float(
+            theta[
+                yi,
+                xi
+            ]
+        )
+
+        local_vector = np.array(
+            [
+                np.cos(
+                    local_theta
+                ),
+                np.sin(
+                    local_theta
+                )
+            ],
+            dtype=np.float64
+        )
+
+        # La dirección de 0..180 no tiene signo.
+        # Elegir el signo que continúa hacia adelante.
+        if (
+            np.dot(
+                local_vector,
+                direction
+            ) < 0
+        ):
+            local_vector *= -1.0
+
+        local_coherence = float(
+            coherence[
+                yi,
+                xi
+            ]
+        )
+
+        # No dejar que una textura lateral gire la línea de golpe.
+        dot_value = float(
+            np.clip(
+                np.dot(
+                    local_vector,
+                    direction
+                ),
+                -1.0,
+                1.0
+            )
+        )
+
+        angle_change = float(
+            np.arccos(
+                dot_value
+            )
+        )
+
+        if (
+            local_coherence > 0.28
+            and
+            angle_change <
+            np.deg2rad(
+                40.0
+            )
+        ):
+            direction = (
+                0.78 *
+                direction
+                +
+                0.22 *
+                local_vector
+            )
+
+            direction /= (
+                np.linalg.norm(
+                    direction
+                )
+                +
+                1e-9
+            )
+
+        predicted = (
+            point +
+            direction *
+            step_length
+        )
+
+        perpendicular = np.array(
+            [
+                -direction[1],
+                direction[0]
+            ],
+            dtype=np.float64
+        )
+
+        best_point = None
+        best_score = -1e9
+        best_response = 0.0
+        best_green = 0.0
+
+        # ----------------------------------------------------
+        # Buscar el centro real cerca de la predicción.
+        # ----------------------------------------------------
+        for offset in np.linspace(
+            -search_radius,
+            search_radius,
+            (
+                search_radius *
+                2 +
+                1
+            )
+        ):
+
+            candidate = (
+                predicted +
+                perpendicular *
+                offset
+            )
+
+            cx = int(
+                round(
+                    candidate[0]
+                )
+            )
+
+            cy = int(
+                round(
+                    candidate[1]
+                )
+            )
+
+            if not (
+                0 <= cx < w
+                and
+                0 <= cy < h
+            ):
+                continue
+
+            if support[
+                cy,
+                cx
+            ] == 0:
+                continue
+
+            visual = float(
+                response[
+                    cy,
+                    cx
+                ]
+            )
+
+            coherent = float(
+                coherence[
+                    cy,
+                    cx
+                ]
+            )
+
+            local_green = float(
+                green[
+                    cy,
+                    cx
+                ]
+            )
+
+            score = (
+                visual
+                +
+                0.10 *
+                coherent
+                -
+                0.018 *
+                abs(
+                    float(offset)
+                )
+            )
+
+            # Evitar que una línea se pegue a otro surco ya trazado.
+            if occupancy[
+                cy,
+                cx
+            ] > 0:
+                score -= 0.35
+
+            if score > best_score:
+                best_score = score
+                best_point = candidate
+                best_response = visual
+                best_green = local_green
+
+        if best_point is None:
+            break
+
+        # ----------------------------------------------------
+        # Tramo seco:
+        # seguir la trayectoria prevista durante un hueco corto.
+        # No perseguir automáticamente otra hilera verde.
+        # ----------------------------------------------------
+        if best_response < 0.055:
+            weak_steps += 1
+            best_point = predicted
+
+            bx = int(
+                round(
+                    best_point[0]
+                )
+            )
+
+            by = int(
+                round(
+                    best_point[1]
+                )
+            )
+
+            if not (
+                0 <= bx < w
+                and
+                0 <= by < h
+                and
+                support[
+                    by,
+                    bx
+                ] > 0
+            ):
+                break
+
+        else:
+            weak_steps = max(
+                0,
+                weak_steps - 1
+            )
+
+        # Camino/zona sin estructura demasiado larga = detener.
+        if weak_steps > 10:
+            break
+
+        movement = (
+            best_point -
+            point
+        )
+
+        movement_norm = float(
+            np.linalg.norm(
+                movement
+            )
+        )
+
+        if movement_norm > 1e-6:
+            movement /= movement_norm
+
+            # Suavizar cambios de trayectoria.
+            if (
+                np.dot(
+                    movement,
+                    direction
+                ) > 0.72
+            ):
+                direction = (
+                    0.85 *
+                    direction
+                    +
+                    0.15 *
+                    movement
+                )
+
+                direction /= (
+                    np.linalg.norm(
+                        direction
+                    )
+                    +
+                    1e-9
+                )
+
+        point = best_point
+
+        points.append(
+            point.copy()
+        )
+
+        # Medir verde en una pequeña zona alrededor.
+        px = int(
+            round(
+                point[0]
+            )
+        )
+
+        py = int(
+            round(
+                point[1]
+            )
+        )
+
+        y0 = max(
+            0,
+            py - 4
+        )
+
+        y1 = min(
+            h,
+            py + 5
+        )
+
+        x0 = max(
+            0,
+            px - 4
+        )
+
+        x1 = min(
+            w,
+            px + 5
+        )
+
+        patch = green[
+            y0:y1,
+            x0:x1
+        ]
+
+        green_scores.append(
+            float(
+                np.mean(
+                    patch > 0
+                )
+            )
+            if patch.size
+            else 0.0
+        )
+
+    return (
+        np.asarray(
+            points,
+            dtype=np.float32
+        ),
+        np.asarray(
+            green_scores,
+            dtype=np.float32
+        )
+    )
+
+
+def trazar_surco_local(
+    seed,
+    component,
+    response,
+    theta,
+    coherence,
+    green,
+    spacing,
+    occupancy
+):
+    h, w = response.shape
+
+    sx = int(
+        np.clip(
+            round(
+                seed[0]
+            ),
+            0,
+            w - 1
+        )
+    )
+
+    sy = int(
+        np.clip(
+            round(
+                seed[1]
+            ),
+            0,
+            h - 1
+        )
+    )
+
+    local_theta = float(
+        theta[
+            sy,
+            sx
+        ]
+    )
+
+    # Si la orientación local de la semilla es poco clara,
+    # usar la orientación media SOLO para arrancar.
+    if (
+        float(
+            coherence[
+                sy,
+                sx
+            ]
+        ) < 0.22
+        or
+        diferencia_angular_rad(
+            local_theta,
+            component[
+                "angle"
+            ]
+        )
+        >
+        np.deg2rad(
+            40
+        )
+    ):
+        local_theta = float(
+            component[
+                "angle"
+            ]
+        )
+
+    direction = np.array(
+        [
+            np.cos(
+                local_theta
+            ),
+            np.sin(
+                local_theta
+            )
+        ],
+        dtype=np.float64
+    )
+
+    forward, forward_green = trazar_direccion(
+        seed,
+        direction,
+        component,
+        response,
+        theta,
+        coherence,
+        green,
+        spacing,
+        occupancy
+    )
+
+    backward, backward_green = trazar_direccion(
+        seed,
+        -direction,
+        component,
+        response,
+        theta,
+        coherence,
+        green,
+        spacing,
+        occupancy
+    )
+
+    if len(backward) > 1:
+        points = np.vstack(
+            [
+                backward[
+                    :0:-1
+                ],
+                forward
+            ]
+        )
+
+        green_scores = np.concatenate(
+            [
+                backward_green[
+                    :0:-1
+                ],
+                forward_green
+            ]
+        )
+    else:
+        points = forward
+        green_scores = forward_green
+
+    return (
+        points,
+        green_scores
+    )
+
+
+# ============================================================
+# COLOR VERDE / ROJO
+# ============================================================
+
+def estados_color(
+    green_scores
+):
+    values = np.asarray(
+        green_scores,
+        dtype=np.float32
+    )
+
+    positive = values[
+        values > 0.005
+    ]
+
+    if len(positive) >= 5:
         threshold = float(
             np.clip(
-                np.percentile(positive, 35) * 0.62,
+                np.percentile(
+                    positive,
+                    32
+                ) *
+                0.65,
                 0.025,
-                0.085
+                0.12
             )
         )
     else:
         threshold = 0.045
 
-    state = green_scores >= threshold
+    state = (
+        values >=
+        threshold
+    )
 
-    # Mayoría local para evitar segmentos rojo/verde de 1 píxel.
+    # Suavizar cambios aislados.
     if len(state) >= 5:
         original = state.copy()
 
-        for i in range(2, len(state) - 2):
+        for i in range(
+            2,
+            len(state) - 2
+        ):
             state[i] = (
-                np.sum(original[i-2:i+3]) >= 3
+                np.sum(
+                    original[
+                        i - 2:
+                        i + 3
+                    ]
+                ) >= 3
             )
 
     return state
 
 
 # ============================================================
-# ANÁLISIS PRINCIPAL
+# ANÁLISIS PRINCIPAL V12
 # ============================================================
-def analizar(pil_img):
+
+def analizar(
+    pil_img
+):
     original = cv2.cvtColor(
-        np.asarray(pil_img),
+        np.asarray(
+            pil_img.convert(
+                "RGB"
+            )
+        ),
         cv2.COLOR_RGB2BGR
     )
 
     h, w = original.shape[:2]
 
-    mask0 = mascara_verde(original)
-
-    angle = angulo_surcos(mask0)
-
-    rot_img, M, Minv = rotar(
+    (
+        green,
+        theta,
+        coherence,
+        response,
+        components,
+        ny,
+        nx
+    ) = detectar_componentes_vinedo(
         original,
-        angle
+        tile=max(
+            24,
+            int(
+                min(
+                    h,
+                    w
+                ) /
+                18
+            )
+        )
     )
 
-    rot_mask = cv2.warpAffine(
-        mask0,
-        M,
-        (w, h),
-        flags=cv2.INTER_NEAREST,
-        borderMode=cv2.BORDER_CONSTANT
-    )
-
-    # Encontrar parcela solo después de hacer verticales los surcos.
-    y0, y1 = limites_verticales(rot_mask)
-
-    seeds, spacing, x0_detectado, x1_detectado = semillas_surcos(
-        rot_mask,
-        y0,
-        y1
-    )
-
-    if len(seeds) < 5:
+    if not components:
         raise RuntimeError(
-            "No se detectó una parcela de surcos suficientemente clara."
+            "No se encontró una zona con patrón claro de surcos."
         )
 
     # --------------------------------------------------------
-    # Limites laterales automáticos:
-    # desde medio espacio antes del primer surco
-    # hasta medio espacio después del último.
+    # Evitar escenas donde solo hay una franja pequeña de viñedo.
+    # Esto reduce líneas falsas sobre jardines, edificios o caminos.
     # --------------------------------------------------------
-    # Límites duros detectados por los caminos laterales.
-    # Ninguna línea puede dibujarse fuera de esta parcela.
-    x0 = int(x0_detectado)
-    x1 = int(x1_detectado)
-
-    # Ignorar absolutamente todo fuera de esta parcela.
-    parcel_mask = np.zeros_like(rot_mask)
-
-    parcel_mask[y0:y1, x0:x1] = (
-        rot_mask[y0:y1, x0:x1]
+    total_component_tiles = sum(
+        component[
+            "tiles"
+        ]
+        for component in components
     )
 
-    response = crear_respuesta(
-        rot_img,
-        parcel_mask
+    tile_coverage = (
+        total_component_tiles /
+        max(
+            ny * nx,
+            1
+        )
     )
 
-    tracks = []
-
-    for i, seed in enumerate(seeds):
-        # Fronteras a mitad de distancia entre hileras.
-        if i == 0:
-            left = x0
-        else:
-            left = int(
-                (seeds[i - 1] + seed) / 2
-            )
-
-        if i == len(seeds) - 1:
-            right = x1
-        else:
-            right = int(
-                (seed + seeds[i + 1]) / 2
-            )
-
-        if right - left < 5:
-            continue
-
-        pts, green = seguir_surco(
-            response,
-            parcel_mask,
-            int(seed),
-            left,
-            right,
-            y0,
-            y1
+    if tile_coverage < 0.16:
+        raise RuntimeError(
+            "La imagen no contiene suficiente superficie de viñedo "
+            "para hacer un trazado confiable."
         )
 
-        # ====================================================
-        # V3.3 - CONSERVAR TODAS LAS HILERAS DE LA RETÍCULA
-        # ====================================================
-        # Si la geometría determinó que aquí corresponde un surco,
-        # no lo eliminamos por falta de verde.
-        # Un surco seco sigue siendo un surco.
-
-        tracks.append({
-            "points": pts,
-            "green": green
-        })
-
-    # --------------------------------------------------------
-    # DIBUJAR EN LA FOTO ORIGINAL
-    # --------------------------------------------------------
-    # La rotación se usa únicamente para analizar.
-    # La fotografía final NO se rota, recorta ni deforma.
     final = original.copy()
+
+    occupancy = np.zeros(
+        (h, w),
+        dtype=np.uint8
+    )
+
+    all_tracks = []
 
     total_green = 0
     total_red = 0
 
-    # Máscara del rectángulo lógico en coordenadas rotadas.
-    # No se dibuja; solo sirve como diagnóstico.
-    mask_preview_rot = np.zeros_like(rot_mask)
-    mask_preview_rot[y0:y1, x0:x1] = 255
+    accepted_components = 0
 
-    mask_preview = cv2.warpAffine(
-        mask_preview_rot,
-        Minv,
-        (w, h),
-        flags=cv2.INTER_NEAREST,
-        borderMode=cv2.BORDER_CONSTANT
-    )
+    component_angles = []
 
-    for number, tr in enumerate(tracks, 1):
-        pts_rot = tr["points"]
-        green = tr["green"]
+    # Procesar primero los bloques más grandes.
+    for component in components:
 
-        state = estado_verde(
-            green
+        seeds, spacing = semillas_componente(
+            component,
+            response
         )
 
-        # Transformar SOLO las coordenadas de la trayectoria
-        # de vuelta a la imagen original.
-        pts = aplicar_matriz(
-            pts_rot,
-            Minv
-        )
-
-        first_drawn = None
-
-        for j in range(
-            len(pts) - 1
+        if (
+            spacing is None
+            or
+            len(seeds) < 4
         ):
-            p1 = pts[j]
-            p2 = pts[j + 1]
+            continue
 
-            if not (
-                np.all(np.isfinite(p1))
-                and np.all(np.isfinite(p2))
-            ):
-                continue
+        accepted_components += 1
 
-            x1p = int(
-                np.clip(
-                    round(p1[0]),
-                    0,
-                    w - 1
-                )
-            )
-
-            y1p = int(
-                np.clip(
-                    round(p1[1]),
-                    0,
-                    h - 1
-                )
-            )
-
-            x2p = int(
-                np.clip(
-                    round(p2[0]),
-                    0,
-                    w - 1
-                )
-            )
-
-            y2p = int(
-                np.clip(
-                    round(p2[1]),
-                    0,
-                    h - 1
-                )
-            )
-
-            # Protección final:
-            # los dos extremos deben seguir dentro de la parcela lógica.
-            if (
-                mask_preview[y1p, x1p] == 0
-                or mask_preview[y2p, x2p] == 0
-            ):
-                continue
-
-            is_green = bool(
-                state[j]
-                or state[
-                    min(
-                        j + 1,
-                        len(state) - 1
-                    )
+        component_angles.append(
+            np.rad2deg(
+                component[
+                    "angle"
                 ]
             )
+        )
 
-            if is_green:
-                color = (
-                    0,
-                    240,
-                    0
-                )
-                total_green += 1
-            else:
-                color = (
-                    0,
-                    0,
-                    255
-                )
-                total_red += 1
+        for seed in seeds:
 
-            cv2.line(
-                final,
-                (x1p, y1p),
-                (x2p, y2p),
-                color,
-                1,
-                cv2.LINE_AA
+            points, green_scores = trazar_surco_local(
+                seed,
+                component,
+                response,
+                theta,
+                coherence,
+                green,
+                spacing,
+                occupancy
             )
 
-            if first_drawn is None:
-                first_drawn = (
-                    x1p,
-                    y1p
+            if len(points) < 8:
+                continue
+
+            # ------------------------------------------------
+            # Conservar incluso surcos parciales.
+            # La semilla ya proviene del patrón repetitivo.
+            # ------------------------------------------------
+            line_length = float(
+                np.sum(
+                    np.linalg.norm(
+                        np.diff(
+                            points,
+                            axis=0
+                        ),
+                        axis=1
+                    )
+                )
+            )
+
+            if line_length < max(
+                24.0,
+                spacing * 2.5
+            ):
+                continue
+
+            states = estados_color(
+                green_scores
+            )
+
+            track_index = len(
+                all_tracks
+            ) + 1
+
+            # Dibujar segmentos uno por uno.
+            for j in range(
+                len(points) - 1
+            ):
+
+                p1 = points[j]
+                p2 = points[j + 1]
+
+                if not (
+                    np.all(
+                        np.isfinite(
+                            p1
+                        )
+                    )
+                    and
+                    np.all(
+                        np.isfinite(
+                            p2
+                        )
+                    )
+                ):
+                    continue
+
+                x1 = int(
+                    np.clip(
+                        round(
+                            p1[0]
+                        ),
+                        0,
+                        w - 1
+                    )
                 )
 
-        # Numeración cerca del inicio real de la línea.
-        if first_drawn is not None:
-            label = str(
-                number
+                y1 = int(
+                    np.clip(
+                        round(
+                            p1[1]
+                        ),
+                        0,
+                        h - 1
+                    )
+                )
+
+                x2 = int(
+                    np.clip(
+                        round(
+                            p2[0]
+                        ),
+                        0,
+                        w - 1
+                    )
+                )
+
+                y2 = int(
+                    np.clip(
+                        round(
+                            p2[1]
+                        ),
+                        0,
+                        h - 1
+                    )
+                )
+
+                green_segment = bool(
+                    states[
+                        min(
+                            j,
+                            len(
+                                states
+                            ) - 1
+                        )
+                    ]
+                    or
+                    states[
+                        min(
+                            j + 1,
+                            len(
+                                states
+                            ) - 1
+                        )
+                    ]
+                )
+
+                if green_segment:
+                    color = (
+                        0,
+                        240,
+                        0
+                    )
+                    total_green += 1
+                else:
+                    color = (
+                        0,
+                        0,
+                        255
+                    )
+                    total_red += 1
+
+                cv2.line(
+                    final,
+                    (
+                        x1,
+                        y1
+                    ),
+                    (
+                        x2,
+                        y2
+                    ),
+                    color,
+                    1,
+                    cv2.LINE_AA
+                )
+
+            # Numeración en la parte media para no amontonar arriba.
+            middle = points[
+                len(
+                    points
+                ) // 2
+            ]
+
+            mx = int(
+                np.clip(
+                    round(
+                        middle[0]
+                    ),
+                    0,
+                    w - 1
+                )
             )
 
-            label_x = max(
-                0,
-                first_drawn[0] - 4
-            )
-
-            label_y = max(
-                13,
-                first_drawn[1] - 4
+            my = int(
+                np.clip(
+                    round(
+                        middle[1]
+                    ),
+                    0,
+                    h - 1
+                )
             )
 
             cv2.putText(
                 final,
-                label,
+                str(
+                    track_index
+                ),
                 (
-                    label_x,
-                    label_y
+                    mx + 4,
+                    my - 4
                 ),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.30,
@@ -1621,10 +2209,12 @@ def analizar(pil_img):
 
             cv2.putText(
                 final,
-                label,
+                str(
+                    track_index
+                ),
                 (
-                    label_x,
-                    label_y
+                    mx + 4,
+                    my - 4
                 ),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.30,
@@ -1637,32 +2227,103 @@ def analizar(pil_img):
                 cv2.LINE_AA
             )
 
-    total = total_green + total_red
+            # ------------------------------------------------
+            # Marcar ocupación DESPUÉS de terminar el surco.
+            # Esto evita que los siguientes se peguen al mismo.
+            # ------------------------------------------------
+            track_pixels = np.rint(
+                points
+            ).astype(
+                np.int32
+            )
+
+            occupancy_line = np.zeros(
+                (h, w),
+                dtype=np.uint8
+            )
+
+            cv2.polylines(
+                occupancy_line,
+                [
+                    track_pixels
+                ],
+                False,
+                255,
+                max(
+                    2,
+                    int(
+                        spacing *
+                        0.28
+                    )
+                ),
+                cv2.LINE_AA
+            )
+
+            occupancy = np.maximum(
+                occupancy,
+                occupancy_line
+            )
+
+            all_tracks.append(
+                points
+            )
+
+    if (
+        accepted_components == 0
+        or
+        len(all_tracks) < 4
+    ):
+        raise RuntimeError(
+            "Se encontró vegetación, pero no un patrón repetitivo "
+            "de surcos suficientemente claro."
+        )
+
+    total = (
+        total_green +
+        total_red
+    )
 
     green_pct = (
-        100.0 * total_green / total
-        if total else 0.0
+        100.0 *
+        total_green /
+        total
+        if total
+        else 0.0
     )
 
     red_pct = (
-        100.0 - green_pct
-        if total else 0.0
+        100.0 -
+        green_pct
+        if total
+        else 0.0
     )
+
+    # Solo dato informativo:
+    # promedio de orientaciones de componentes.
+    mean_angle = float(
+        np.mean(
+            component_angles
+        )
+    ) if component_angles else 0.0
 
     return {
         "image": cv2.cvtColor(
             final,
             cv2.COLOR_BGR2RGB
         ),
-        "mask": mask_preview,
-        "count": len(tracks),
-        "green_pct": green_pct,
-        "red_pct": red_pct,
-        "angle": angle
+        "count": int(
+            len(
+                all_tracks
+            )
+        ),
+        "green_pct": float(
+            green_pct
+        ),
+        "red_pct": float(
+            red_pct
+        ),
+        "angle": mean_angle
     }
-
-
-
 
 
 # ============================================================
