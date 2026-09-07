@@ -1,4 +1,5 @@
 import io
+import base64
 import os
 import csv
 import math
@@ -14,6 +15,34 @@ from PIL import Image
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks, savgol_filter
 from scipy.interpolate import UnivariateSpline
+
+
+# ============================================================
+# LOGO TERROCORE
+# ============================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+LOGO_PATH = BASE_DIR / "logo_terrocore.png"
+
+
+def cargar_logo_base64():
+    """
+    Convierte el logo PNG a Base64 para mostrarlo
+    dentro del encabezado HTML de Streamlit.
+    """
+    try:
+        if LOGO_PATH.exists():
+            return base64.b64encode(
+                LOGO_PATH.read_bytes()
+            ).decode("utf-8")
+    except Exception:
+        pass
+
+    return ""
+
+
+LOGO_TERROCORE_BASE64 = cargar_logo_base64()
+
 
 st.set_page_config(
     page_title="TerroCore image AI",
@@ -102,6 +131,24 @@ st.markdown(
         line-height:1;
         filter: drop-shadow(0 3px 8px rgba(0,0,0,.18));
     }
+
+    .terro-logo-box {
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        margin-right:14px;
+        min-width:120px;
+    }
+
+    .terro-logo-box img {
+        display:block;
+        width:150px;
+        max-width:100%;
+        height:auto;
+        object-fit:contain;
+        filter: drop-shadow(0 3px 8px rgba(0,0,0,.18));
+    }
+
 
     .terro-kicker {
         font-family: Georgia, serif;
@@ -306,6 +353,15 @@ st.markdown(
     @media (max-width: 900px) {
         h1 { font-size: 2.15rem !important; }
         .block-container { padding-left: .8rem; padding-right: .8rem; }
+
+        .terro-logo-box {
+            min-width:84px;
+            margin-right:8px;
+        }
+
+        .terro-logo-box img {
+            width:105px;
+        }
     }
     </style>
     """,
@@ -316,22 +372,38 @@ st.markdown(
 # CABECERA
 # ============================================================
 
+if LOGO_TERROCORE_BASE64:
+    logo_html = (
+        f'<div class="terro-logo-box">'
+        f'<img src="data:image/png;base64,{LOGO_TERROCORE_BASE64}" '
+        f'alt="TerroCore">'
+        f'</div>'
+    )
+else:
+    logo_html = '<div class="terro-grape">🍇</div>'
+
+
 st.markdown(
-    """
+    f"""
     <div class="terro-brand">
-        <div class="terro-grape">🍇</div>
+        {logo_html}
         <div>
-            <div style="font-family:Georgia,serif;font-size:2.65rem;font-weight:700;color:white;line-height:1.0;">
+            <div style="
+                font-family:Georgia,serif;
+                font-size:2.65rem;
+                font-weight:700;
+                color:white;
+                line-height:1.0;
+            ">
                 TerroCore image AI
             </div>
+
             <div class="terro-kicker">
-                """ +
-                (
+                {
                     "Análisis inteligente del viñedo"
                     if st.session_state.idioma_terrocore == "ES"
                     else "Analyse intelligente du vignoble"
-                ) +
-                """
+                }
             </div>
         </div>
     </div>
