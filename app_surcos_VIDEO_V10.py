@@ -172,6 +172,12 @@ st.markdown(
         opacity:1 !important;
     }
 
+
+    /* BOTONES DE IDIOMA EN PANEL DERECHO */
+    button[kind="secondary"] {
+        min-height: 44px !important;
+    }
+
     /* FILE UPLOADER */
     [data-testid="stFileUploaderDropzone"] {
         background: rgba(79,30,38,.34) !important;
@@ -307,60 +313,31 @@ st.markdown(
 )
 
 # ============================================================
-# CABECERA + SELECTOR ES / FR
+# CABECERA
 # ============================================================
 
-brand_col, lang_col = st.columns(
-    [7.2, 2.8],
-    vertical_alignment="center"
-)
-
-with brand_col:
-    st.markdown(
-        """
-        <div class="terro-brand">
-            <div class="terro-grape">🍇</div>
-            <div>
-                <div style="font-family:Georgia,serif;font-size:2.65rem;font-weight:700;color:white;line-height:1.0;">
-                    TerroCore image AI
-                </div>
-                <div class="terro-kicker">
-                    """ +
-                    (
-                        "Análisis inteligente del viñedo"
-                        if st.session_state.idioma_terrocore == "ES"
-                        else "Analyse intelligente du vignoble"
-                    ) +
-                    """
-                </div>
+st.markdown(
+    """
+    <div class="terro-brand">
+        <div class="terro-grape">🍇</div>
+        <div>
+            <div style="font-family:Georgia,serif;font-size:2.65rem;font-weight:700;color:white;line-height:1.0;">
+                TerroCore image AI
+            </div>
+            <div class="terro-kicker">
+                """ +
+                (
+                    "Análisis inteligente del viñedo"
+                    if st.session_state.idioma_terrocore == "ES"
+                    else "Analyse intelligente du vignoble"
+                ) +
+                """
             </div>
         </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with lang_col:
-    l1, l2 = st.columns(2)
-
-    with l1:
-        if st.button(
-            "🇪🇸 Español",
-            key="lang_es_v13",
-            use_container_width=True,
-            disabled=st.session_state.idioma_terrocore == "ES"
-        ):
-            st.session_state.idioma_terrocore = "ES"
-            st.rerun()
-
-    with l2:
-        if st.button(
-            "🇫🇷 Français",
-            key="lang_fr_v13",
-            use_container_width=True,
-            disabled=st.session_state.idioma_terrocore == "FR"
-        ):
-            st.session_state.idioma_terrocore = "FR"
-            st.rerun()
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 st.markdown(
     f'<div class="terro-sub">'
@@ -3359,6 +3336,41 @@ main_col, side_col = st.columns(
 # ============================================================
 
 with side_col:
+
+    # ========================================================
+    # SELECTOR DE IDIOMA
+    # Justo arriba de "1. Tipo de archivo"
+    # ========================================================
+    idioma_es_col, idioma_fr_col = st.columns(
+        2,
+        gap="medium"
+    )
+
+    with idioma_es_col:
+        if st.button(
+            "🇪🇸 ES Español",
+            key="lang_es_v15_abajo",
+            use_container_width=True,
+            disabled=st.session_state.idioma_terrocore == "ES"
+        ):
+            st.session_state.idioma_terrocore = "ES"
+            st.rerun()
+
+    with idioma_fr_col:
+        if st.button(
+            "🇫🇷 FR Français",
+            key="lang_fr_v15_abajo",
+            use_container_width=True,
+            disabled=st.session_state.idioma_terrocore == "FR"
+        ):
+            st.session_state.idioma_terrocore = "FR"
+            st.rerun()
+
+    # Espacio pequeño entre los botones y el panel siguiente
+    st.markdown(
+        "<div style='height:10px;'></div>",
+        unsafe_allow_html=True
+    )
 
     with st.container(border=True):
         st.markdown(
