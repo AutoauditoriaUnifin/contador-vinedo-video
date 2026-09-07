@@ -16,426 +16,71 @@ from scipy.signal import find_peaks
 from scipy.interpolate import UnivariateSpline
 
 st.set_page_config(
-    page_title="TerroCore image AI",
-    page_icon="🍇",
+    page_title="Contador de surcos",
+    page_icon="🎥",
     layout="wide"
 )
 
-# ============================================================
-# IDIOMA ES / FR
-# ============================================================
+st.markdown("""
+<style>
+.block-container {
+    max-width: 1600px;
+    padding-top: 1rem;
+    padding-bottom: 2rem;
+}
+.card {
+    border:1px solid #303846;
+    border-radius:10px;
+    padding:14px;
+    margin-top:10px;
+}
+.sub {
+    color:#a9b2bf;
+    margin-bottom:1rem;
+}
+</style>
+""", unsafe_allow_html=True)
 
-if "idioma_terrocore" not in st.session_state:
-    st.session_state.idioma_terrocore = "ES"
-
-
-def tr(es, fr):
-    """Texto visible según el idioma seleccionado."""
-    return es if st.session_state.idioma_terrocore == "ES" else fr
-
-
-# ============================================================
-# DISEÑO - COLOR VINO #722F37
-# ============================================================
-
+st.title("🍇 Contador automático de surcos – Video e Imágenes V10.3")
 st.markdown(
-    """
-    <style>
-    :root {
-        --wine: #722F37;
-        --wine-dark: #4F1E26;
-        --wine-mid: #5E2630;
-        --wine-light: #8D4A53;
-        --cream: #FFF7F3;
-        --soft: #F2DDE0;
-        --green: #22D34F;
-        --red: #FF3B3B;
-    }
-
-    html, body,
-    [data-testid="stAppViewContainer"],
-    [data-testid="stMain"],
-    .stApp {
-        background:
-            radial-gradient(circle at 50% -10%, rgba(255,255,255,0.06), transparent 35%),
-            linear-gradient(180deg, #722F37 0%, #662832 100%) !important;
-        color: #FFFFFF !important;
-    }
-
-    [data-testid="stHeader"] {
-        background: rgba(0,0,0,0) !important;
-    }
-
-    .block-container {
-        max-width: 1550px;
-        padding-top: 0.4rem;
-        padding-bottom: 2rem;
-    }
-
-    h1, h2, h3, h4, h5, h6,
-    p, label, .stMarkdown, .stCaption,
-    [data-testid="stMetricLabel"],
-    [data-testid="stMetricValue"] {
-        color: #FFFFFF !important;
-    }
-
-    h1 {
-        font-size: 2.8rem !important;
-        line-height: 1.05 !important;
-        margin-bottom: 0.2rem !important;
-        letter-spacing: -0.03em;
-    }
-
-    h2, h3 {
-        letter-spacing: -0.015em;
-    }
-
-    .terro-brand {
-        display:flex;
-        align-items:center;
-        gap:14px;
-        margin-top:0.25rem;
-    }
-
-    .terro-grape {
-        font-size:3rem;
-        line-height:1;
-        filter: drop-shadow(0 3px 8px rgba(0,0,0,.18));
-    }
-
-    .terro-kicker {
-        font-family: Georgia, serif;
-        color:#F5DADD !important;
-        font-size:1.25rem;
-        margin-top:-2px;
-    }
-
-    .terro-sub {
-        color: #FFF3F1 !important;
-        font-size: 1rem;
-        margin-top: 0.7rem;
-        margin-bottom: 0.9rem;
-        opacity: .96;
-    }
-
-    /* CONTENEDORES */
-    [data-testid="stVerticalBlockBorderWrapper"] {
-        border-color: rgba(255,255,255,0.22) !important;
-        background: rgba(73, 20, 29, 0.14) !important;
-        border-radius: 12px !important;
-        box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
-    }
-
-    /* BOTONES */
-    .stButton > button,
-    .stDownloadButton > button {
-        background: linear-gradient(180deg, #FFFDFC, #F6E9E7) !important;
-        color: #722F37 !important;
-        border: 1px solid #F2D5D8 !important;
-        border-radius: 10px !important;
-        font-weight: 800 !important;
-        min-height: 42px !important;
-        box-shadow: 0 3px 10px rgba(0,0,0,0.18) !important;
-        opacity: 1 !important;
-    }
-
-    .stButton > button *,
-    .stDownloadButton > button * {
-        color: #722F37 !important;
-        fill: #722F37 !important;
-        font-weight: 800 !important;
-        opacity: 1 !important;
-    }
-
-    .stButton > button:hover,
-    .stDownloadButton > button:hover {
-        background: #FFFFFF !important;
-        color: #4F1E26 !important;
-        border-color: #FFFFFF !important;
-        transform: translateY(-1px);
-        box-shadow: 0 5px 14px rgba(0,0,0,0.23) !important;
-    }
-
-    .stButton > button:disabled,
-    .stDownloadButton > button:disabled {
-        background: #D7C0C4 !important;
-        color: #69454B !important;
-        border-color: #CDB1B6 !important;
-        opacity: .78 !important;
-        box-shadow: none !important;
-    }
-
-    .stButton > button:disabled *,
-    .stDownloadButton > button:disabled * {
-        color:#69454B !important;
-        fill:#69454B !important;
-        opacity:1 !important;
-    }
-
-    /* FILE UPLOADER */
-    [data-testid="stFileUploaderDropzone"] {
-        background: rgba(79,30,38,.34) !important;
-        border: 1.5px dashed rgba(255,255,255,.75) !important;
-        border-radius: 10px !important;
-        min-height: 96px !important;
-    }
-
-    [data-testid="stFileUploaderDropzone"] * {
-        color: #FFFFFF !important;
-    }
-
-    [data-testid="stFileUploader"] button {
-        background: #FFFDFC !important;
-        color: #722F37 !important;
-        border: 1px solid #F2D5D8 !important;
-        border-radius: 8px !important;
-        font-weight: 800 !important;
-    }
-
-    [data-testid="stFileUploader"] button * {
-        color:#722F37 !important;
-        fill:#722F37 !important;
-    }
-
-    /* RADIO */
-    div[role="radiogroup"] label,
-    div[role="radiogroup"] label *,
-    [data-testid="stRadio"] * {
-        color: #FFFFFF !important;
-        font-weight: 700;
-    }
-
-    /* TABLAS */
-    [data-testid="stDataFrame"] {
-        border: 1px solid rgba(255,255,255,.18);
-        border-radius: 10px !important;
-        overflow: hidden !important;
-        box-shadow: 0 4px 14px rgba(0,0,0,.11);
-    }
-
-    /* MÉTRICAS */
-    [data-testid="stMetric"] {
-        background: rgba(96, 31, 42, .45);
-        border: 1px solid rgba(255,255,255,.15);
-        border-radius: 11px;
-        padding: .8rem .9rem;
-    }
-
-    [data-testid="stMetricValue"] {
-        font-size: 1.8rem !important;
-    }
-
-    /* ALERTAS */
-    [data-testid="stAlert"] {
-        background: rgba(255,255,255,.13) !important;
-        border: 1px solid rgba(255,255,255,.24) !important;
-        border-radius: 10px !important;
-    }
-
-    [data-testid="stAlert"] * {
-        color:#FFFFFF !important;
-    }
-
-    /* SELECT */
-    div[data-baseweb="select"] > div {
-        background: rgba(79,30,38,.65) !important;
-        color:#FFFFFF !important;
-        border-color: rgba(255,255,255,.2) !important;
-    }
-
-    div[data-baseweb="select"] * {
-        color:#FFFFFF !important;
-    }
-
-    .legend-bar {
-        display:flex;
-        gap:0;
-        align-items:center;
-        margin-top:-6px;
-        margin-bottom:8px;
-        width:max-content;
-        border-radius:0 0 8px 8px;
-        overflow:hidden;
-        box-shadow: 0 3px 12px rgba(0,0,0,.16);
-    }
-
-    .legend-chip {
-        background:#301419;
-        color:white;
-        padding:7px 14px;
-        font-size:.86rem;
-        border-right:1px solid rgba(255,255,255,.12);
-    }
-
-    .dot-green, .dot-red {
-        width:13px;
-        height:13px;
-        border-radius:50%;
-        display:inline-block;
-        margin-right:7px;
-        vertical-align:-1px;
-    }
-
-    .dot-green { background:#22D34F; }
-    .dot-red { background:#FF3B3B; }
-
-    .scene-card-title {
-        color:white;
-        font-weight:700;
-        font-size:.95rem;
-        margin-top:.2rem;
-    }
-
-    .scene-card-sub {
-        color:#F5E5E7;
-        font-size:.82rem;
-        margin-top:-.25rem;
-        margin-bottom:.35rem;
-    }
-
-    hr {
-        border-color: rgba(255,255,255,0.18) !important;
-    }
-
-    @media (max-width: 900px) {
-        h1 { font-size: 2.15rem !important; }
-        .block-container { padding-left: .8rem; padding-right: .8rem; }
-    }
-    </style>
-    """,
+    '<div class="sub">'
+    'Extrae automáticamente los fotogramas más útiles, evita escenas consecutivas muy parecidas '
+    'y estima los surcos visibles por escena/parcela candidata.'
+    '</div>',
     unsafe_allow_html=True
 )
-
-# ============================================================
-# CABECERA + SELECTOR ES / FR
-# ============================================================
-
-brand_col, lang_col = st.columns(
-    [7.2, 2.8],
-    vertical_alignment="center"
-)
-
-with brand_col:
-    st.markdown(
-        """
-        <div class="terro-brand">
-            <div class="terro-grape">🍇</div>
-            <div>
-                <div style="font-family:Georgia,serif;font-size:2.65rem;font-weight:700;color:white;line-height:1.0;">
-                    TerroCore image AI
-                </div>
-                <div class="terro-kicker">
-                    """ +
-                    (
-                        "Análisis inteligente del viñedo"
-                        if st.session_state.idioma_terrocore == "ES"
-                        else "Analyse intelligente du vignoble"
-                    ) +
-                    """
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with lang_col:
-    l1, l2 = st.columns(2)
-
-    with l1:
-        if st.button(
-            "🇪🇸 Español",
-            key="lang_es_v13",
-            use_container_width=True,
-            disabled=st.session_state.idioma_terrocore == "ES"
-        ):
-            st.session_state.idioma_terrocore = "ES"
-            st.rerun()
-
-    with l2:
-        if st.button(
-            "🇫🇷 Français",
-            key="lang_fr_v13",
-            use_container_width=True,
-            disabled=st.session_state.idioma_terrocore == "FR"
-        ):
-            st.session_state.idioma_terrocore = "FR"
-            st.rerun()
-
-st.markdown(
-    f'<div class="terro-sub">'
-    f'{tr("Analiza video e imágenes del viñedo, sigue la forma local de los surcos y reduce los saltos de una hilera a otra.", "Analyse les vidéos et les images du vignoble, suit la forme locale des rangs et réduit les sauts d’un rang à l’autre.")}'
-    f'</div>',
-    unsafe_allow_html=True
-)
-
-# ============================================================
-# V12 - DETECTOR LOCAL DE SURCOS
-# ============================================================
-#
-# Diferencia principal:
-# - NO obliga toda la fotografía a una sola dirección.
-# - Calcula la orientación local del surco en cada punto.
-# - Puede seguir surcos verticales, horizontales, diagonales
-#   y con curvas suaves.
-# - Primero detecta regiones con patrón real de viñedo.
-# - Los caminos y zonas sin patrón repetitivo ayudan a separar
-#   parcelas.
-# ============================================================
-
 
 # ============================================================
 # VEGETACIÓN
 # ============================================================
-
 def mascara_verde(bgr):
-    rgb = cv2.cvtColor(
-        bgr,
-        cv2.COLOR_BGR2RGB
-    ).astype(np.float32)
-
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
     r = rgb[:, :, 0]
     g = rgb[:, :, 1]
     b = rgb[:, :, 2]
 
-    hsv = cv2.cvtColor(
-        bgr,
-        cv2.COLOR_BGR2HSV
-    )
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    hh, ss, vv = cv2.split(hsv)
 
-    hh, ss, vv = cv2.split(
-        hsv
-    )
+    exg = 2.0 * g - r - b
+    ngrdi = (g - r) / (g + r + 1e-6)
 
-    exg = (
-        2.0 * g -
-        r -
-        b
-    )
-
-    ngrdi = (
-        (g - r) /
-        (g + r + 1e-6)
-    )
-
+    # Máscara calibrada para estas fotografías:
+    # admite verde débil pero intenta rechazar suelo café.
     mask = (
-        (exg > 5.0) &
-        (ngrdi > -0.030) &
-        (hh >= 18) &
-        (hh <= 115) &
-        (ss >= 10) &
-        (vv >= 18) &
-        (g >= r * 0.84) &
-        (g >= b * 0.84)
-    ).astype(np.uint8)
+        (exg > 7.0) &
+        (ngrdi > -0.015) &
+        (hh >= 21) & (hh <= 108) &
+        (ss >= 16) &
+        (vv >= 22) &
+        (g >= r * 0.875) &
+        (g >= b * 0.875)
+    ).astype(np.uint8) * 255
 
     mask = cv2.morphologyEx(
         mask,
         cv2.MORPH_OPEN,
-        np.ones(
-            (2, 2),
-            np.uint8
-        ),
+        np.ones((2, 2), np.uint8),
         iterations=1
     )
 
@@ -443,1988 +88,1525 @@ def mascara_verde(bgr):
 
 
 # ============================================================
-# DIFERENCIA ANGULAR
+# ÁNGULO DOMINANTE DE LOS SURCOS
 # ============================================================
+def angulo_surcos(mask):
+    h, w = mask.shape
 
-def diferencia_angular_rad(
-    a,
-    b
-):
-    d = abs(
-        float(a) -
-        float(b)
-    ) % np.pi
+    # Solo zona central para no dejar que caminos/edificios dominen.
+    x0, x1 = int(w * 0.12), int(w * 0.88)
+    y0, y1 = int(h * 0.12), int(h * 0.90)
 
-    return min(
-        d,
-        np.pi - d
-    )
+    roi = mask[y0:y1, x0:x1]
 
+    edges = cv2.Canny(roi, 30, 100)
 
-# ============================================================
-# CAMPO DE ORIENTACIÓN LOCAL
-# ============================================================
-
-def campo_orientacion_local(
-    bgr
-):
-    """
-    Devuelve:
-    - vegetación
-    - dirección LOCAL del surco en cada píxel
-    - coherencia de la dirección
-    - respuesta visual del surco
-    - energía de textura
-    """
-    green = mascara_verde(
-        bgr
-    ).astype(np.float32)
-
-    gray = cv2.cvtColor(
-        bgr,
-        cv2.COLOR_BGR2GRAY
-    ).astype(np.float32) / 255.0
-
-    smooth = cv2.GaussianBlur(
-        gray,
-        (0, 0),
-        1.0
-    )
-
-    gx = cv2.Sobel(
-        smooth,
-        cv2.CV_32F,
+    lines = cv2.HoughLinesP(
+        edges,
         1,
-        0,
-        ksize=3
+        np.pi / 180,
+        threshold=45,
+        minLineLength=max(45, int(h * 0.08)),
+        maxLineGap=18
     )
 
-    gy = cv2.Sobel(
-        smooth,
-        cv2.CV_32F,
-        0,
-        1,
-        ksize=3
-    )
+    if lines is None:
+        return 90.0
 
-    Jxx = cv2.GaussianBlur(
-        gx * gx,
-        (0, 0),
-        3.0
-    )
+    vals = []
 
-    Jyy = cv2.GaussianBlur(
-        gy * gy,
-        (0, 0),
-        3.0
-    )
+    for x1l, y1l, x2l, y2l in np.asarray(lines).reshape(-1, 4):
+        dx = float(x2l - x1l)
+        dy = float(y2l - y1l)
 
-    Jxy = cv2.GaussianBlur(
-        gx * gy,
-        (0, 0),
-        3.0
-    )
-
-    coherence = (
-        np.sqrt(
-            (Jxx - Jyy) ** 2 +
-            4.0 * Jxy ** 2
-        )
-        /
-        (
-            Jxx +
-            Jyy +
-            1e-8
-        )
-    )
-
-    # Dirección del gradiente.
-    gradient_angle = (
-        0.5 *
-        np.arctan2(
-            2.0 * Jxy,
-            Jxx - Jyy
-        )
-    )
-
-    # La dirección del SURCO es perpendicular al gradiente.
-    theta = (
-        gradient_angle +
-        np.pi / 2.0
-    ) % np.pi
-
-    # --------------------------------------------------------
-    # RESPUESTA VISUAL
-    # --------------------------------------------------------
-    green_blur = cv2.GaussianBlur(
-        green,
-        (0, 0),
-        1.7
-    )
-
-    local_background = cv2.GaussianBlur(
-        gray,
-        (0, 0),
-        5.0
-    )
-
-    darkness = np.maximum(
-        local_background -
-        gray,
-        0.0
-    )
-
-    p99 = float(
-        np.percentile(
-            darkness,
-            99
-        )
-    )
-
-    if p99 > 1e-6:
-        darkness = np.clip(
-            darkness / p99,
-            0.0,
-            1.0
-        )
-    else:
-        darkness[:] = 0.0
-
-    response = (
-        (
-            0.62 *
-            green_blur
-            +
-            0.38 *
-            darkness
-        )
-        *
-        (
-            0.35 +
-            0.65 *
-            coherence
-        )
-    )
-
-    response = cv2.GaussianBlur(
-        response.astype(np.float32),
-        (0, 0),
-        0.8
-    )
-
-    energy = (
-        Jxx +
-        Jyy
-    )
-
-    return (
-        green,
-        theta.astype(np.float32),
-        coherence.astype(np.float32),
-        response.astype(np.float32),
-        energy.astype(np.float32)
-    )
-
-
-# ============================================================
-# COMPONENTES / PARCELAS CON PATRÓN DE VIÑEDO
-# ============================================================
-
-def detectar_componentes_vinedo(
-    bgr,
-    tile=32
-):
-    """
-    Divide la imagen en pequeñas celdas.
-
-    Una celda se considera viñedo cuando tiene:
-    - vegetación,
-    - textura lineal,
-    - una orientación local clara.
-
-    Las celdas se conectan solo cuando sus direcciones son
-    compatibles. Así no se impone una sola dirección a toda
-    la fotografía.
-    """
-    (
-        green,
-        theta,
-        coherence,
-        response,
-        energy
-    ) = campo_orientacion_local(
-        bgr
-    )
-
-    h, w = green.shape
-
-    ny = (
-        h +
-        tile -
-        1
-    ) // tile
-
-    nx = (
-        w +
-        tile -
-        1
-    ) // tile
-
-    valid = np.zeros(
-        (ny, nx),
-        dtype=np.uint8
-    )
-
-    tile_angle = np.zeros(
-        (ny, nx),
-        dtype=np.float32
-    )
-
-    tile_weight = np.zeros(
-        (ny, nx),
-        dtype=np.float32
-    )
-
-    for iy in range(ny):
-        for ix in range(nx):
-
-            y0 = iy * tile
-            y1 = min(
-                h,
-                (iy + 1) * tile
-            )
-
-            x0 = ix * tile
-            x1 = min(
-                w,
-                (ix + 1) * tile
-            )
-
-            c = coherence[
-                y0:y1,
-                x0:x1
-            ]
-
-            th = theta[
-                y0:y1,
-                x0:x1
-            ]
-
-            g = green[
-                y0:y1,
-                x0:x1
-            ]
-
-            e = energy[
-                y0:y1,
-                x0:x1
-            ]
-
-            green_fraction = float(
-                np.mean(
-                    g > 0
-                )
-            )
-
-            coherence_mean = float(
-                np.mean(c)
-            )
-
-            energy_mean = float(
-                np.mean(e)
-            )
-
-            # Promedio angular correcto para direcciones de 0..180°.
-            weights = (
-                np.maximum(
-                    c - 0.20,
-                    0.0
-                )
-                *
-                (
-                    0.30 +
-                    0.70 * g
-                )
-            )
-
-            z = np.sum(
-                weights *
-                np.exp(
-                    1j *
-                    2.0 *
-                    th
-                )
-            )
-
-            if abs(z) > 1e-7:
-                local_angle = (
-                    np.angle(z) /
-                    2.0
-                ) % np.pi
-            else:
-                local_angle = np.pi / 2.0
-
-            tile_angle[
-                iy,
-                ix
-            ] = local_angle
-
-            tile_weight[
-                iy,
-                ix
-            ] = (
-                coherence_mean *
-                (
-                    0.20 +
-                    green_fraction
-                )
-            )
-
-            if (
-                coherence_mean > 0.34
-                and
-                energy_mean > 0.00018
-                and
-                green_fraction > 0.018
-            ):
-                valid[
-                    iy,
-                    ix
-                ] = 1
-
-    # --------------------------------------------------------
-    # UNION-FIND:
-    # conectar solo celdas vecinas de orientación parecida.
-    # Se usan 4 vecinos para que un camino tenga más facilidad
-    # de separar dos parcelas.
-    # --------------------------------------------------------
-    parent = np.arange(
-        ny * nx,
-        dtype=np.int32
-    )
-
-    def find(a):
-        while parent[a] != a:
-            parent[a] = parent[
-                parent[a]
-            ]
-            a = parent[a]
-
-        return int(a)
-
-    def union(a, b):
-        ra = find(a)
-        rb = find(b)
-
-        if ra != rb:
-            parent[rb] = ra
-
-    for iy in range(ny):
-        for ix in range(nx):
-
-            if valid[
-                iy,
-                ix
-            ] == 0:
-                continue
-
-            current = (
-                iy * nx +
-                ix
-            )
-
-            for dy, dx in [
-                (1, 0),
-                (0, 1)
-            ]:
-                jy = iy + dy
-                jx = ix + dx
-
-                if not (
-                    0 <= jy < ny
-                    and
-                    0 <= jx < nx
-                ):
-                    continue
-
-                if valid[
-                    jy,
-                    jx
-                ] == 0:
-                    continue
-
-                if (
-                    diferencia_angular_rad(
-                        tile_angle[
-                            iy,
-                            ix
-                        ],
-                        tile_angle[
-                            jy,
-                            jx
-                        ]
-                    )
-                    <=
-                    np.deg2rad(
-                        22.0
-                    )
-                ):
-                    union(
-                        current,
-                        jy * nx + jx
-                    )
-
-    groups = {}
-
-    for iy in range(ny):
-        for ix in range(nx):
-
-            if valid[
-                iy,
-                ix
-            ] == 0:
-                continue
-
-            root = find(
-                iy * nx + ix
-            )
-
-            groups.setdefault(
-                root,
-                []
-            ).append(
-                (
-                    iy,
-                    ix
-                )
-            )
-
-    components = []
-
-    minimum_tiles = max(
-        8,
-        int(
-            ny *
-            nx *
-            0.020
-        )
-    )
-
-    for cells in groups.values():
-
-        if len(cells) < minimum_tiles:
+        length = np.hypot(dx, dy)
+        if length < 35:
             continue
 
-        component_mask = np.zeros(
-            (h, w),
-            dtype=np.uint8
-        )
+        angle = np.degrees(np.arctan2(dy, dx))
 
-        angles = []
-        weights = []
+        while angle < 0:
+            angle += 180
+        while angle >= 180:
+            angle -= 180
 
-        for iy, ix in cells:
+        # Solo estructuras aproximadamente verticales.
+        if 55 <= angle <= 125:
+            vals.append((angle, length))
 
-            y0 = iy * tile
-            y1 = min(
-                h,
-                (iy + 1) * tile
-            )
+    if not vals:
+        return 90.0
 
-            x0 = ix * tile
-            x1 = min(
-                w,
-                (ix + 1) * tile
-            )
+    angles = np.array([v[0] for v in vals])
+    weights = np.array([v[1] for v in vals])
 
-            component_mask[
-                y0:y1,
-                x0:x1
-            ] = 255
-
-            angles.append(
-                float(
-                    tile_angle[
-                        iy,
-                        ix
-                    ]
-                )
-            )
-
-            weights.append(
-                float(
-                    tile_weight[
-                        iy,
-                        ix
-                    ]
-                )
-            )
-
-        angles = np.asarray(
-            angles,
-            dtype=np.float64
-        )
-
-        weights = np.asarray(
-            weights,
-            dtype=np.float64
-        )
-
-        z = np.sum(
-            weights *
-            np.exp(
-                1j *
-                2.0 *
-                angles
-            )
-        )
-
-        if abs(z) > 1e-7:
-            mean_angle = (
-                np.angle(z) /
-                2.0
-            ) % np.pi
-        else:
-            mean_angle = float(
-                np.median(
-                    angles
-                )
-            )
-
-        ys, xs = np.where(
-            component_mask > 0
-        )
-
-        if len(xs) == 0:
-            continue
-
-        components.append({
-            "mask": component_mask,
-            "angle": float(
-                mean_angle
-            ),
-            "bbox": (
-                int(xs.min()),
-                int(ys.min()),
-                int(xs.max()) + 1,
-                int(ys.max()) + 1
-            ),
-            "tiles": int(
-                len(cells)
-            )
-        })
-
-    components.sort(
-        key=lambda c:
-        c["tiles"],
-        reverse=True
+    bins = np.arange(55, 126, 2)
+    hist, edges_b = np.histogram(
+        angles,
+        bins=bins,
+        weights=weights
     )
 
-    return (
-        green,
-        theta,
-        coherence,
-        response,
-        components,
-        ny,
-        nx
+    i = int(np.argmax(hist))
+    lo = edges_b[i]
+    hi = edges_b[i + 1]
+
+    sel = (angles >= lo) & (angles < hi)
+
+    if np.any(sel):
+        return float(np.average(angles[sel], weights=weights[sel]))
+
+    return float(np.median(angles))
+
+
+def rotar(img, angle):
+    h, w = img.shape[:2]
+    centro = (w / 2.0, h / 2.0)
+
+    # Llevar los surcos a vertical.
+    rot_deg = 90.0 - angle
+
+    M = cv2.getRotationMatrix2D(centro, rot_deg, 1.0)
+    Minv = cv2.invertAffineTransform(M)
+
+    out = cv2.warpAffine(
+        img,
+        M,
+        (w, h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT
     )
+
+    return out, M, Minv
+
+
+def aplicar_matriz(points, M):
+    pts = np.asarray(points, dtype=np.float32)
+
+    if len(pts) == 0:
+        return pts
+
+    ones = np.ones((len(pts), 1), dtype=np.float32)
+    aug = np.hstack([pts, ones])
+
+    return aug @ M.T
 
 
 # ============================================================
-# ESPACIADO ENTRE SURCOS
+# DETECCIÓN AUTOMÁTICA DE PARCELA
 # ============================================================
+def limites_verticales(mask):
+    """
+    Busca el camino superior y el camino inferior.
+    """
+    h, w = mask.shape
 
-def estimar_espaciado_local(
-    profile
-):
-    p = np.asarray(
-        profile,
-        dtype=np.float64
+    density = (mask > 0).mean(axis=1).astype(np.float32)
+    density = gaussian_filter1d(
+        density,
+        sigma=max(7, h / 100)
     )
 
-    if len(p) < 20:
-        return None
-
-    p = gaussian_filter1d(
-        p,
-        sigma=1.0
+    # Camino superior.
+    top_range = np.arange(
+        int(h * 0.05),
+        int(h * 0.48)
     )
 
-    trend = gaussian_filter1d(
-        p,
-        sigma=max(
-            4.0,
-            len(p) / 35.0
-        )
+    y_top_road = int(
+        top_range[np.argmin(density[top_range])]
     )
 
-    p = (
-        p -
-        trend
+    # Camino inferior.
+    bottom_range = np.arange(
+        int(h * 0.55),
+        int(h * 0.95)
     )
 
-    p -= np.mean(
-        p
+    y_bottom_road = int(
+        bottom_range[np.argmin(density[bottom_range])]
     )
+
+    inset = max(8, int(h * 0.010))
+
+    y0 = y_top_road + inset
+    y1 = y_bottom_road - inset
+
+    # Protección por si una imagen distinta confunde los mínimos.
+    if y1 - y0 < h * 0.36:
+        y0 = int(h * 0.14)
+        y1 = int(h * 0.88)
+
+    return max(0, y0), min(h - 1, y1)
+
+
+def estimar_periodo(profile):
+    """
+    Estima la separación entre hileras.
+    """
+    p = profile.astype(np.float64)
+    p -= np.mean(p)
 
     if np.std(p) < 1e-7:
-        return None
+        return 20.0
 
-    ac = np.correlate(
-        p,
-        p,
-        mode="full"
-    )
+    ac = np.correlate(p, p, mode="full")
+    ac = ac[len(p)-1:]
 
-    ac = ac[
-        len(p) - 1:
-    ]
+    width = len(profile)
 
-    minimum = 6
+    a = max(8, int(width * 0.006))
+    b = min(int(width * 0.030), len(ac) - 1)
 
-    maximum = min(
-        45,
-        len(ac) - 1
-    )
+    if b <= a:
+        return 20.0
 
-    if maximum <= minimum:
-        return None
-
-    segment = ac[
-        minimum:
-        maximum + 1
-    ]
-
-    peaks, _ = find_peaks(
-        segment
-    )
+    peaks, _ = find_peaks(ac[a:b+1])
 
     if len(peaks) == 0:
-        lag = (
-            minimum +
-            int(
-                np.argmax(
-                    segment
-                )
+        return max(16.0, width / 70.0)
+
+    vals = ac[a:b+1][peaks]
+    lag = float(a + peaks[np.argmax(vals)])
+
+    # En estas imágenes el primer armónico suele aparecer a media hilera.
+    # Si sale demasiado pequeño, se duplica.
+    if lag < width / 85.0:
+        lag *= 2.0
+
+    return float(np.clip(lag, 13.0, 35.0))
+
+
+def detectar_limites_laterales(mask, y0, y1):
+    """
+    Detecta automáticamente los caminos laterales que delimitan
+    la parcela principal. Devuelve x0, x1.
+    """
+    h, w = mask.shape
+
+    zone = (mask[y0:y1] > 0).astype(np.float32)
+
+    # Densidad verde por columna.
+    density = zone.mean(axis=0)
+    density = gaussian_filter1d(
+        density,
+        sigma=max(3.0, w / 450.0)
+    )
+
+    # Normalización robusta.
+    p20 = float(np.percentile(density, 20))
+    p65 = float(np.percentile(density, 65))
+
+    # Los caminos son bandas verticales con muy poca vegetación.
+    threshold = p20 + 0.22 * max(p65 - p20, 1e-6)
+
+    low = density < threshold
+
+    # Extraer bandas continuas de baja vegetación.
+    bands = []
+    i = 0
+
+    while i < w:
+        if not low[i]:
+            i += 1
+            continue
+
+        j = i + 1
+        while j < w and low[j]:
+            j += 1
+
+        width_band = j - i
+
+        # Camino/borde útil: debe tener cierto ancho.
+        if width_band >= max(5, int(w * 0.004)):
+            bands.append((i, j - 1, width_band))
+
+        i = j
+
+    center = w / 2.0
+
+    left_candidates = [
+        b for b in bands
+        if b[1] < center and b[1] > w * 0.03
+    ]
+
+    right_candidates = [
+        b for b in bands
+        if b[0] > center and b[0] < w * 0.97
+    ]
+
+    # Preferir caminos anchos y relativamente cercanos al bloque central.
+    if left_candidates:
+        left_band = max(
+            left_candidates,
+            key=lambda b: (
+                b[2] * 3.0
+                - abs(center - b[1]) * 0.012
             )
         )
+        x0 = int(left_band[1] + max(3, w * 0.003))
     else:
-        values = segment[
-            peaks
-        ]
+        x0 = int(w * 0.08)
 
-        maximum_value = float(
-            np.max(
-                values
+    if right_candidates:
+        right_band = max(
+            right_candidates,
+            key=lambda b: (
+                b[2] * 3.0
+                - abs(b[0] - center) * 0.012
             )
         )
+        x1 = int(right_band[0] - max(3, w * 0.003))
+    else:
+        x1 = int(w * 0.92)
 
-        strong = peaks[
-            values >=
-            maximum_value *
-            0.55
-        ]
+    # Salvaguardas.
+    if x1 - x0 < w * 0.35:
+        x0 = int(w * 0.08)
+        x1 = int(w * 0.92)
 
-        if len(strong):
-            lag = (
-                minimum +
-                int(
-                    strong[0]
-                )
-            )
-        else:
-            lag = (
-                minimum +
-                int(
-                    peaks[
-                        np.argmax(
-                            values
-                        )
-                    ]
-                )
-            )
-
-    return float(
-        np.clip(
-            lag,
-            7.0,
-            45.0
-        )
-    )
+    return max(0, x0), min(w - 1, x1)
 
 
-# ============================================================
-# SEMILLAS DE UN COMPONENTE
-# ============================================================
-
-def semillas_componente(
-    component,
-    response
-):
+def semillas_surcos(mask, y0, y1):
     """
-    La orientación media se usa SOLO para colocar una semilla
-    inicial en cada surco.
+    V3.3 - detectar TODOS los surcos.
 
-    Después de eso, la línea deja de depender del ángulo medio
-    y sigue la orientación LOCAL.
+    En vez de promediar toda la parcela (lo cual borra hileras
+    curvas o débiles), toma varios cortes horizontales y calcula
+    el espaciado típico entre surcos.
+
+    Después construye una retícula completa. Una hilera seca no
+    desaparece solo porque tenga poco verde.
     """
-    h, w = response.shape
-
-    x0, y0, x1, y1 = component[
-        "bbox"
-    ]
-
-    pad = 16
-
-    xa = max(
-        0,
-        x0 - pad
+    x0, x1 = detectar_limites_laterales(
+        mask,
+        y0,
+        y1
     )
 
-    xb = min(
-        w,
-        x1 + pad
-    )
-
-    ya = max(
-        0,
-        y0 - pad
-    )
-
-    yb = min(
-        h,
-        y1 + pad
-    )
-
-    crop_response = response[
-        ya:yb,
-        xa:xb
-    ]
-
-    crop_mask = (
-        component[
-            "mask"
-        ][
-            ya:yb,
-            xa:xb
+    zone = (
+        mask[
+            y0:y1,
+            x0:x1
         ] > 0
-    ).astype(np.uint8)
+    ).astype(np.float32)
 
-    ch, cw = crop_response.shape
+    height, width = zone.shape
 
-    if (
-        ch < 20
-        or
-        cw < 20
-    ):
+    if width < 30 or height < 30:
         return (
-            [],
-            None
+            np.array([], dtype=np.int32),
+            20.0,
+            int(x0),
+            int(x1)
         )
 
-    angle_deg = np.rad2deg(
-        component[
-            "angle"
-        ]
-    )
-
-    rotation = (
-        90.0 -
-        angle_deg
-    )
-
-    M = cv2.getRotationMatrix2D(
-        (
-            cw / 2.0,
-            ch / 2.0
-        ),
-        rotation,
-        1.0
-    )
-
-    Minv = cv2.invertAffineTransform(
-        M
-    )
-
-    rotated_response = cv2.warpAffine(
-        crop_response,
-        M,
-        (cw, ch),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT
-    )
-
-    rotated_mask = cv2.warpAffine(
-        crop_mask,
-        M,
-        (cw, ch),
-        flags=cv2.INTER_NEAREST,
-        borderMode=cv2.BORDER_CONSTANT
-    )
-
-    ys, xs = np.where(
-        rotated_mask > 0
-    )
-
-    if len(xs) < 100:
-        return (
-            [],
-            None
-        )
-
-    rx0 = int(
-        xs.min()
-    )
-
-    rx1 = int(
-        xs.max()
-    ) + 1
-
-    ry0 = int(
-        ys.min()
-    )
-
-    ry1 = int(
-        ys.max()
-    ) + 1
-
+    # --------------------------------------------------------
+    # PERFILES EN VARIAS ALTURAS
+    # --------------------------------------------------------
     profiles = []
+    periods = []
+    contrasts = []
 
-    # Varias franjas:
-    # así una zona seca no borra el surco del perfil.
-    for frac in np.linspace(
-        0.20,
-        0.80,
-        5
-    ):
+    centers = np.linspace(
+        0.12,
+        0.88,
+        9
+    )
 
+    band_h = max(
+        12,
+        int(height * 0.11)
+    )
+
+    for frac in centers:
         yc = int(
-            ry0 +
-            frac *
-            (
-                ry1 -
-                ry0
-            )
-        )
-
-        band_height = max(
-            8,
-            int(
-                (
-                    ry1 -
-                    ry0
-                ) *
-                0.12
+            round(
+                frac * (height - 1)
             )
         )
 
         a = max(
-            ry0,
-            yc -
-            band_height // 2
+            0,
+            yc - band_h // 2
         )
 
         b = min(
-            ry1,
-            yc +
-            band_height // 2
+            height,
+            yc + band_h // 2 + 1
         )
 
-        if b <= a:
+        band = zone[a:b]
+
+        if band.size == 0:
             continue
 
-        local_mask = (
-            rotated_mask[
-                a:b,
-                rx0:rx1
-            ] > 0
-        ).astype(np.float32)
-
-        denominator = np.maximum(
-            local_mask.sum(
-                axis=0
-            ),
-            1.0
+        profile = band.mean(axis=0)
+        profile = gaussian_filter1d(
+            profile,
+            sigma=1.15
         )
 
-        profile = (
-            rotated_response[
-                a:b,
-                rx0:rx1
-            ]
-            *
-            local_mask
-        ).sum(
-            axis=0
-        ) / denominator
+        period = estimar_periodo(
+            profile
+        )
 
-        profiles.append(
-            gaussian_filter1d(
-                profile,
-                sigma=1.0
+        period = float(
+            np.clip(
+                period,
+                9.0,
+                40.0
             )
         )
 
-    if not profiles:
-        return (
-            [],
-            None
+        contrast = float(
+            np.std(profile)
         )
 
+        profiles.append(profile)
+        periods.append(period)
+        contrasts.append(contrast)
+
+    if not profiles:
+        return (
+            np.array([], dtype=np.int32),
+            20.0,
+            int(x0),
+            int(x1)
+        )
+
+    # --------------------------------------------------------
+    # REFINAR ESPACIADO CON DISTANCIAS ENTRE PICOS DE CADA BANDA
+    # --------------------------------------------------------
+    spacing_candidates = []
+
+    for profile, p0 in zip(
+        profiles,
+        periods
+    ):
+        peaks, _ = find_peaks(
+            profile,
+            distance=max(
+                5,
+                int(p0 * 0.45)
+            ),
+            prominence=max(
+                0.003,
+                float(profile.max()) * 0.010
+            ),
+            height=max(
+                0.006,
+                float(profile.max()) * 0.018
+            )
+        )
+
+        if len(peaks) >= 5:
+            diffs = np.diff(
+                peaks.astype(np.float32)
+            )
+
+            good = diffs[
+                (diffs >= 8.0) &
+                (diffs <= 42.0)
+            ]
+
+            if len(good):
+                # El valor más pequeño repetitivo suele corresponder
+                # al paso real; huecos secos pueden producir 2x o 3x.
+                med = float(
+                    np.median(good)
+                )
+
+                near = good[
+                    (good > med * 0.62) &
+                    (good < med * 1.38)
+                ]
+
+                if len(near):
+                    spacing_candidates.extend(
+                        near.tolist()
+                    )
+
+    if spacing_candidates:
+        spacing = float(
+            np.median(
+                spacing_candidates
+            )
+        )
+    else:
+        # Mediana robusta de las autocorrelaciones de todas las bandas.
+        spacing = float(
+            np.median(
+                periods
+            )
+        )
+
+    spacing = float(
+        np.clip(
+            spacing,
+            9.0,
+            36.0
+        )
+    )
+
+    # --------------------------------------------------------
+    # EVITAR ARMÓNICO 2X:
+    # comprobar si la mitad del espaciado también tiene señal
+    # repetitiva fuerte en las bandas.
+    # --------------------------------------------------------
+    half = spacing / 2.0
+
+    if half >= 8.0:
+        score_full = 0.0
+        score_half = 0.0
+
+        for profile in profiles:
+            for candidate, bucket in [
+                (spacing, "full"),
+                (half, "half")
+            ]:
+                best = -1.0
+
+                phase_steps = max(
+                    10,
+                    int(round(candidate * 1.5))
+                )
+
+                for phase in np.linspace(
+                    0,
+                    candidate,
+                    phase_steps,
+                    endpoint=False
+                ):
+                    xs = np.arange(
+                        phase,
+                        len(profile),
+                        candidate
+                    )
+
+                    if len(xs) < 4:
+                        continue
+
+                    values = []
+
+                    for x in xs:
+                        xi = int(round(x))
+                        a = max(0, xi - 2)
+                        b = min(
+                            len(profile),
+                            xi + 3
+                        )
+
+                        if b > a:
+                            values.append(
+                                float(
+                                    profile[a:b].mean()
+                                )
+                            )
+
+                    if values:
+                        best = max(
+                            best,
+                            float(np.mean(values))
+                        )
+
+                if bucket == "full":
+                    score_full += max(best, 0.0)
+                else:
+                    score_half += max(best, 0.0)
+
+        # Solo usar media separación si explica casi igual o mejor
+        # la estructura. Esto recupera hileras omitidas por armónicos.
+        if (
+            score_half >=
+            score_full * 0.94
+        ):
+            spacing = half
+
+    spacing = float(
+        np.clip(
+            spacing,
+            8.0,
+            36.0
+        )
+    )
+
+    # --------------------------------------------------------
+    # ELEGIR LA BANDA MÁS NÍTIDA PARA FIJAR LA FASE INICIAL
+    # --------------------------------------------------------
+    best_profile_index = int(
+        np.argmax(
+            np.asarray(
+                contrasts,
+                dtype=np.float32
+            )
+        )
+    )
+
+    ref_profile = profiles[
+        best_profile_index
+    ]
+
+    best_phase = 0.0
+    best_score = -1e9
+
+    phase_steps = max(
+        18,
+        int(round(spacing * 3))
+    )
+
+    for phase in np.linspace(
+        0,
+        spacing,
+        phase_steps,
+        endpoint=False
+    ):
+        xs = np.arange(
+            phase,
+            width,
+            spacing
+        )
+
+        if len(xs) < 4:
+            continue
+
+        values = []
+
+        for x in xs:
+            xi = int(round(x))
+
+            a = max(
+                0,
+                xi - 2
+            )
+
+            b = min(
+                width,
+                xi + 3
+            )
+
+            if b > a:
+                values.append(
+                    float(
+                        ref_profile[a:b].mean()
+                    )
+                )
+
+        if not values:
+            continue
+
+        score = float(
+            np.mean(values)
+        )
+
+        if score > best_score:
+            best_score = score
+            best_phase = float(phase)
+
+    # --------------------------------------------------------
+    # RETÍCULA COMPLETA: NO DEPENDE DE QUE CADA SURCO SEA VERDE
+    # --------------------------------------------------------
+    local_seeds = np.arange(
+        best_phase,
+        width,
+        spacing,
+        dtype=np.float32
+    )
+
+    # Solo quitar posiciones prácticamente encima del camino.
+    edge_margin = max(
+        1.0,
+        spacing * 0.08
+    )
+
+    local_seeds = local_seeds[
+        (local_seeds >= edge_margin) &
+        (
+            local_seeds <=
+            width - 1 - edge_margin
+        )
+    ]
+
+    # --------------------------------------------------------
+    # REFINAMIENTO MUY PEQUEÑO.
+    # Nunca mover una semilla suficiente para entrar al vecino.
+    # --------------------------------------------------------
+    full_profile = zone.mean(axis=0)
+
+    # Para surcos curvos, no usar el promedio puro:
+    # conservar la mejor evidencia entre varias bandas.
     stacked = np.vstack(
         profiles
     )
 
-    profile = np.percentile(
-        stacked,
-        70,
-        axis=0
-    )
-
-    spacing = estimar_espaciado_local(
-        profile
-    )
-
-    if spacing is None:
-        return (
-            [],
-            None
+    robust_profile = (
+        0.55 *
+        gaussian_filter1d(
+            full_profile,
+            sigma=1.0
         )
-
-    peaks, _ = find_peaks(
-        profile,
-        distance=max(
-            4,
-            int(
-                spacing *
-                0.55
-            )
-        ),
-        prominence=max(
-            0.008,
-            float(
-                profile.max()
-            ) *
-            0.040
-        ),
-        height=max(
-            0.015,
-            float(
-                profile.max()
-            ) *
-            0.080
+        +
+        0.45 *
+        np.percentile(
+            stacked,
+            70,
+            axis=0
         )
     )
 
-    if len(peaks) < 3:
-        return (
-            [],
-            spacing
-        )
-
-    # --------------------------------------------------------
-    # Retícula regular.
-    # Esto ayuda a no perder una hilera seca.
-    # --------------------------------------------------------
-    mods = np.mod(
-        peaks.astype(
-            np.float32
-        ),
-        spacing
-    )
-
-    z = np.mean(
-        np.exp(
-            1j *
-            2.0 *
-            np.pi *
-            mods /
-            spacing
+    radius = max(
+        1,
+        int(
+            spacing * 0.18
         )
     )
 
-    phase = (
-        (
-            np.angle(z)
-            %
-            (
-                2.0 *
-                np.pi
-            )
-        )
-        *
-        spacing
-        /
-        (
-            2.0 *
-            np.pi
-        )
-    )
+    refined = []
 
-    candidates = np.arange(
-        phase,
-        len(profile),
-        spacing
-    )
-
-    seeds = []
-
-    for candidate in candidates:
-
-        xr = float(
-            candidate +
-            rx0
-        )
-
-        xi = int(
-            round(
-                xr
-            )
-        )
-
-        if not (
-            0 <= xi < cw
-        ):
-            continue
+    for s in local_seeds:
+        xi = int(round(s))
 
         a = max(
             0,
-            xi - 2
+            xi - radius
         )
 
         b = min(
-            cw,
-            xi + 3
+            width,
+            xi + radius + 1
         )
 
-        yy = np.where(
-            np.any(
-                rotated_mask[
-                    :,
-                    a:b
-                ] > 0,
-                axis=1
+        if b <= a:
+            refined.append(
+                float(s + x0)
             )
-        )[0]
-
-        if len(yy) < 8:
             continue
 
-        # Usar el segmento continuo más largo.
-        breaks = np.where(
-            np.diff(
-                yy
-            ) > 1
-        )[0]
+        local = robust_profile[
+            a:b
+        ]
 
-        segments = np.split(
-            yy,
-            breaks + 1
-        )
-
-        segment = max(
-            segments,
-            key=len
-        )
-
-        if len(segment) < 8:
-            continue
-
-        yr = float(
-            np.median(
-                segment
-            )
-        )
-
-        point_rotated = np.array(
-            [
-                xr,
-                yr,
-                1.0
-            ],
-            dtype=np.float32
-        )
-
-        point_crop = (
-            point_rotated @
-            Minv.T
-        )
-
-        seeds.append(
-            (
-                float(
-                    point_crop[0] +
-                    xa
-                ),
-                float(
-                    point_crop[1] +
-                    ya
-                )
-            )
-        )
-
-    return (
-        seeds,
-        float(
-            spacing
-        )
-    )
-
-
-# ============================================================
-# TRAZADO LOCAL DE UN SURCO
-# ============================================================
-
-def trazar_direccion(
-    seed,
-    initial_direction,
-    component,
-    response,
-    theta,
-    coherence,
-    green,
-    spacing,
-    occupancy
-):
-    """
-    Sigue una sola dirección desde la semilla.
-
-    Mejora importante:
-    - penaliza saltos laterales grandes;
-    - conserva una banda alrededor del centro del surco;
-    - no deja que la línea cruce fácilmente a la hilera vecina.
-    """
-    h, w = response.shape
-
-    support = cv2.erode(
-        (
-            component[
-                "mask"
-            ] > 0
-        ).astype(np.uint8),
-        np.ones(
-            (5, 5),
-            np.uint8
-        ),
-        iterations=1
-    )
-
-    point = np.asarray(
-        seed,
-        dtype=np.float64
-    )
-
-    direction = np.asarray(
-        initial_direction,
-        dtype=np.float64
-    )
-
-    direction /= (
-        np.linalg.norm(
-            direction
-        ) +
-        1e-9
-    )
-
-    initial_direction = direction.copy()
-    initial_perpendicular = np.array(
-        [
-            -initial_direction[1],
-            initial_direction[0]
-        ],
-        dtype=np.float64
-    )
-    seed_point = point.copy()
-
-    points = [
-        point.copy()
-    ]
-
-    green_scores = [
-        0.0
-    ]
-
-    weak_steps = 0
-    step_length = 3.5
-    search_radius = max(
-        2,
-        int(
-            spacing *
-            0.16
-        )
-    )
-    max_lateral_drift = max(
-        3.0,
-        float(spacing) * 0.42
-    )
-
-    maximum_steps = max(
-        120,
-        int(
-            2.2 *
+        # Si no hay señal, CONSERVAR la semilla de la retícula.
+        # Esto es lo que mantiene los surcos secos.
+        if (
+            local.size and
+            float(local.max()) >
             max(
-                h,
-                w
-            ) /
-            step_length
-        )
-    )
-
-    for _ in range(
-        maximum_steps
-    ):
-
-        xi = int(
-            round(
-                point[0]
-            )
-        )
-        yi = int(
-            round(
-                point[1]
-            )
-        )
-
-        if not (
-            1 <= xi < w - 1
-            and
-            1 <= yi < h - 1
-        ):
-            break
-
-        local_theta = float(
-            theta[
-                yi,
-                xi
-            ]
-        )
-
-        local_vector = np.array(
-            [
-                np.cos(
-                    local_theta
-                ),
-                np.sin(
-                    local_theta
-                )
-            ],
-            dtype=np.float64
-        )
-
-        if (
-            np.dot(
-                local_vector,
-                direction
-            ) < 0
-        ):
-            local_vector *= -1.0
-
-        local_coherence = float(
-            coherence[
-                yi,
-                xi
-            ]
-        )
-
-        dot_value = float(
-            np.clip(
-                np.dot(
-                    local_vector,
-                    direction
-                ),
-                -1.0,
-                1.0
-            )
-        )
-        angle_change = float(
-            np.arccos(
-                dot_value
-            )
-        )
-
-        if (
-            local_coherence > 0.30
-            and
-            angle_change <
-            np.deg2rad(
-                28.0
-            )
-        ):
-            direction = (
-                0.84 *
-                direction
-                +
-                0.16 *
-                local_vector
-            )
-            direction /= (
-                np.linalg.norm(
-                    direction
-                ) +
-                1e-9
-            )
-
-        predicted = (
-            point +
-            direction *
-            step_length
-        )
-
-        perpendicular = np.array(
-            [
-                -direction[1],
-                direction[0]
-            ],
-            dtype=np.float64
-        )
-
-        best_point = None
-        best_score = -1e9
-        best_response = 0.0
-
-        for offset in np.linspace(
-            -search_radius,
-            search_radius,
-            (
-                search_radius * 2 + 1
-            )
-        ):
-            candidate = (
-                predicted +
-                perpendicular *
-                offset
-            )
-
-            cx = int(
-                round(
-                    candidate[0]
-                )
-            )
-            cy = int(
-                round(
-                    candidate[1]
-                )
-            )
-
-            if not (
-                0 <= cx < w and
-                0 <= cy < h
-            ):
-                continue
-            if support[cy, cx] == 0:
-                continue
-
-            visual = float(response[cy, cx])
-            coherent = float(coherence[cy, cx])
-            local_green = float(green[cy, cx])
-
-            candidate_theta = float(theta[cy, cx])
-            angle_penalty = diferencia_angular_rad(
-                candidate_theta,
-                float(np.arctan2(direction[1], direction[0]) % np.pi)
-            )
-
-            lateral_from_seed = abs(
+                0.005,
                 float(
-                    np.dot(
-                        candidate - seed_point,
-                        initial_perpendicular
+                    np.median(
+                        robust_profile
+                    )
+                ) * 0.80
+            )
+        ):
+            best = (
+                a +
+                int(
+                    np.argmax(
+                        local
                     )
                 )
             )
-
-            # Castigar zonas ya ocupadas y saltos a la hilera vecina.
-            score = (
-                1.15 * visual
-                + 0.16 * coherent
-                + 0.05 * local_green
-                - 0.030 * abs(float(offset))
-                - 0.30 * angle_penalty
-                - 0.085 * max(0.0, lateral_from_seed - max_lateral_drift)
-            )
-
-            if occupancy[cy, cx] > 0:
-                score -= 0.50
-
-            # Si el punto se aleja demasiado del eje original,
-            # descartar casi por completo.
-            if lateral_from_seed > max_lateral_drift + spacing * 0.22:
-                score -= 0.90
-
-            # Verificación de cresta local: el centro del surco debe ser
-            # mejor que sus laterales cercanos, si no puede ser otra hilera.
-            side1 = candidate + perpendicular * max(1.5, spacing * 0.22)
-            side2 = candidate - perpendicular * max(1.5, spacing * 0.22)
-            s_ok = True
-            side_penalty = 0.0
-            for side in (side1, side2):
-                sx = int(round(side[0]))
-                sy = int(round(side[1]))
-                if 0 <= sx < w and 0 <= sy < h:
-                    sv = float(response[sy, sx])
-                    if sv > visual + 0.03:
-                        side_penalty += 0.24
-                else:
-                    s_ok = False
-            score -= side_penalty
-
-            if score > best_score:
-                best_score = score
-                best_point = candidate
-                best_response = visual
-
-        if best_point is None:
-            break
-
-        if best_response < 0.050:
-            weak_steps += 1
-            best_point = predicted
-            bx = int(round(best_point[0]))
-            by = int(round(best_point[1]))
-            if not (
-                0 <= bx < w and
-                0 <= by < h and
-                support[by, bx] > 0
-            ):
-                break
         else:
-            weak_steps = max(0, weak_steps - 1)
+            best = xi
 
-        if weak_steps > 8:
-            break
-
-        movement = best_point - point
-        movement_norm = float(np.linalg.norm(movement))
-        if movement_norm > 1e-6:
-            movement /= movement_norm
-            if np.dot(movement, direction) > 0.82:
-                direction = (
-                    0.88 * direction +
-                    0.12 * movement
-                )
-                direction /= (
-                    np.linalg.norm(direction) + 1e-9
-                )
-
-        point = best_point
-        points.append(point.copy())
-
-        px = int(round(point[0]))
-        py = int(round(point[1]))
-        y0 = max(0, py - 4)
-        y1 = min(h, py + 5)
-        x0 = max(0, px - 4)
-        x1 = min(w, px + 5)
-        patch = green[y0:y1, x0:x1]
-        green_scores.append(
-            float(np.mean(patch > 0)) if patch.size else 0.0
+        refined.append(
+            float(best + x0)
         )
 
-    return (
-        np.asarray(points, dtype=np.float32),
-        np.asarray(green_scores, dtype=np.float32)
-    )
-
-
-def trazar_surco_local(
-    seed,
-    component,
-    response,
-    theta,
-    coherence,
-    green,
-    spacing,
-    occupancy
-):
-    h, w = response.shape
-
-    sx = int(
-        np.clip(
-            round(
-                seed[0]
-            ),
-            0,
-            w - 1
-        )
-    )
-
-    sy = int(
-        np.clip(
-            round(
-                seed[1]
-            ),
-            0,
-            h - 1
-        )
-    )
-
-    local_theta = float(
-        theta[
-            sy,
-            sx
-        ]
-    )
-
-    # Si la orientación local de la semilla es poco clara,
-    # usar la orientación media SOLO para arrancar.
-    if (
-        float(
-            coherence[
-                sy,
-                sx
-            ]
-        ) < 0.22
-        or
-        diferencia_angular_rad(
-            local_theta,
-            component[
-                "angle"
-            ]
-        )
-        >
-        np.deg2rad(
-            40
-        )
-    ):
-        local_theta = float(
-            component[
-                "angle"
-            ]
-        )
-
-    direction = np.array(
-        [
-            np.cos(
-                local_theta
-            ),
-            np.sin(
-                local_theta
-            )
-        ],
-        dtype=np.float64
-    )
-
-    forward, forward_green = trazar_direccion(
-        seed,
-        direction,
-        component,
-        response,
-        theta,
-        coherence,
-        green,
-        spacing,
-        occupancy
-    )
-
-    backward, backward_green = trazar_direccion(
-        seed,
-        -direction,
-        component,
-        response,
-        theta,
-        coherence,
-        green,
-        spacing,
-        occupancy
-    )
-
-    if len(backward) > 1:
-        points = np.vstack(
-            [
-                backward[
-                    :0:-1
-                ],
-                forward
-            ]
-        )
-
-        green_scores = np.concatenate(
-            [
-                backward_green[
-                    :0:-1
-                ],
-                forward_green
-            ]
-        )
-    else:
-        points = forward
-        green_scores = forward_green
-
-    return (
-        points,
-        green_scores
-    )
-
-
-# ============================================================
-# COLOR VERDE / ROJO
-# ============================================================
-
-def estados_color(
-    green_scores
-):
-    values = np.asarray(
-        green_scores,
+    seeds = np.asarray(
+        refined,
         dtype=np.float32
     )
 
-    positive = values[
-        values > 0.005
-    ]
+    # --------------------------------------------------------
+    # FORZAR ORDEN Y SEPARACIÓN.
+    # Si dos refinamientos se acercaron, volverlos a su retícula.
+    # --------------------------------------------------------
+    if len(seeds):
+        base = float(
+            local_seeds[0] + x0
+        )
 
-    if len(positive) >= 5:
+        regular = (
+            base +
+            np.arange(
+                len(seeds),
+                dtype=np.float32
+            ) * spacing
+        )
+
+        max_deviation = (
+            spacing * 0.20
+        )
+
+        seeds = np.clip(
+            seeds,
+            regular - max_deviation,
+            regular + max_deviation
+        )
+
+        # Garantizar que dos surcos nunca colapsen en uno.
+        for i in range(
+            1,
+            len(seeds)
+        ):
+            minimum = (
+                seeds[i - 1] +
+                spacing * 0.62
+            )
+
+            if seeds[i] < minimum:
+                seeds[i] = max(
+                    minimum,
+                    regular[i] -
+                    max_deviation
+                )
+
+    return (
+        np.rint(
+            seeds
+        ).astype(np.int32),
+        float(spacing),
+        int(x0),
+        int(x1)
+    )
+
+
+# ============================================================
+# RESPUESTA VISUAL DEL SURCO
+# ============================================================
+def crear_respuesta(bgr, green_mask):
+    """
+    Combina vegetación con textura vertical.
+    Esto permite seguir también hileras secas.
+    """
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+    # Bordes verticales de las plantas/surcos.
+    sx = cv2.Sobel(
+        gray,
+        cv2.CV_32F,
+        1,
+        0,
+        ksize=3
+    )
+
+    sx = np.abs(sx)
+
+    p99 = np.percentile(sx, 99)
+
+    if p99 > 0:
+        sx = np.clip(sx / p99, 0, 1)
+    else:
+        sx[:] = 0
+
+    # Unir los dos bordes de una hilera para dar señal al centro.
+    sx = cv2.GaussianBlur(
+        sx,
+        (0, 0),
+        sigmaX=2.0,
+        sigmaY=1.0
+    )
+
+    gm = (green_mask > 0).astype(np.float32)
+
+    gm = cv2.GaussianBlur(
+        gm,
+        (0, 0),
+        sigmaX=2.0,
+        sigmaY=1.3
+    )
+
+    response = 0.70 * gm + 0.30 * sx
+
+    return response
+
+
+# ============================================================
+# SEGUIR UN SURCO SIN SALTAR AL VECINO
+# ============================================================
+def seguir_surco(response, green_mask, seed, left, right, y0, y1):
+    """
+    V3.3 - línea adaptativa SIN saltar al vecino.
+
+    Cada hilera tiene un carril independiente.
+    La trayectoria puede curvarse, pero:
+    - nunca cruza el punto medio hacia el surco vecino;
+    - siempre tiene una pequeña atracción hacia su posición nominal;
+    - si desaparece la vegetación, conserva la trayectoria.
+    """
+    height = max(
+        1,
+        y1 - y0
+    )
+
+    step = max(
+        4,
+        int(
+            height / 170
+        )
+    )
+
+    ys = np.arange(
+        y0,
+        y1,
+        step,
+        dtype=np.int32
+    )
+
+    lane_width = max(
+        5.0,
+        float(
+            right - left
+        )
+    )
+
+    # Margen de seguridad interno.
+    safety = max(
+        1.0,
+        lane_width * 0.12
+    )
+
+    hard_left = float(
+        left + safety
+    )
+
+    hard_right = float(
+        right - safety
+    )
+
+    if (
+        hard_right -
+        hard_left <
+        2.0
+    ):
+        hard_left = float(
+            left + 0.5
+        )
+        hard_right = float(
+            right - 0.5
+        )
+
+    seed = float(
+        np.clip(
+            seed,
+            hard_left,
+            hard_right
+        )
+    )
+
+    xs = []
+    greens = []
+
+    prev_x = seed
+    velocity = 0.0
+
+    # Nunca mirar todo el carril:
+    # solo alrededor de la trayectoria actual.
+    search_radius = max(
+        2,
+        int(
+            lane_width * 0.24
+        )
+    )
+
+    # Movimiento por paso extremadamente limitado.
+    max_step_shift = max(
+        0.65,
+        lane_width * 0.055
+    )
+
+    # Desviación máxima acumulada respecto del centro nominal.
+    # Permite curva, pero no alcanza el surco vecino.
+    max_total_deviation = (
+        lane_width * 0.32
+    )
+
+    for y in ys:
+        ya = max(
+            y0,
+            y - step // 2 - 1
+        )
+
+        yb = min(
+            y1,
+            y + step // 2 + 2
+        )
+
+        predicted = (
+            prev_x +
+            velocity
+        )
+
+        predicted = float(
+            np.clip(
+                predicted,
+                seed -
+                max_total_deviation,
+                seed +
+                max_total_deviation
+            )
+        )
+
+        predicted = float(
+            np.clip(
+                predicted,
+                hard_left,
+                hard_right
+            )
+        )
+
+        a = max(
+            int(np.floor(hard_left)),
+            int(round(predicted)) -
+            search_radius
+        )
+
+        b = min(
+            int(np.ceil(hard_right)),
+            int(round(predicted)) +
+            search_radius
+        )
+
+        if b <= a:
+            x_new = predicted
+            local_peak = 0.0
+            local_median = 0.0
+
+        else:
+            candidates = np.arange(
+                a,
+                b + 1,
+                dtype=np.int32
+            )
+
+            visual = np.zeros(
+                len(candidates),
+                dtype=np.float32
+            )
+
+            for j, x in enumerate(
+                candidates
+            ):
+                xa = max(
+                    int(np.floor(hard_left)),
+                    x - 3
+                )
+
+                xb = min(
+                    int(np.ceil(hard_right)) + 1,
+                    x + 4
+                )
+
+                patch = response[
+                    ya:yb,
+                    xa:xb
+                ]
+
+                visual[j] = (
+                    float(
+                        patch.mean()
+                    )
+                    if patch.size
+                    else 0.0
+                )
+
+            # Penalización 1: alejarse del punto previsto.
+            dist_pred = (
+                np.abs(
+                    candidates -
+                    predicted
+                ) /
+                max(
+                    search_radius,
+                    1
+                )
+            )
+
+            # Penalización 2: alejarse demasiado del surco nominal.
+            dist_seed = (
+                np.abs(
+                    candidates -
+                    seed
+                ) /
+                max(
+                    max_total_deviation,
+                    1.0
+                )
+            )
+
+            score = (
+                visual
+                - 0.26 * dist_pred
+                - 0.11 * dist_seed
+            )
+
+            best_index = int(
+                np.argmax(
+                    score
+                )
+            )
+
+            candidate_best = float(
+                candidates[
+                    best_index
+                ]
+            )
+
+            local_peak = float(
+                np.max(
+                    visual
+                )
+            )
+
+            local_median = float(
+                np.median(
+                    visual
+                )
+            )
+
+            strong_evidence = (
+                local_peak >= 0.040
+                and
+                (
+                    local_peak -
+                    local_median
+                ) >= 0.007
+            )
+
+            if strong_evidence:
+                target = candidate_best
+            else:
+                # Hueco seco: no perseguir otra hilera.
+                target = predicted
+                velocity *= 0.45
+
+            # Cambio máximo en un paso.
+            dx = float(
+                np.clip(
+                    target -
+                    prev_x,
+                    -max_step_shift,
+                    max_step_shift
+                )
+            )
+
+            x_new = (
+                prev_x +
+                dx
+            )
+
+            # Inercia suave.
+            velocity = (
+                0.86 *
+                velocity
+                +
+                0.14 *
+                dx
+            )
+
+        # Barreras absolutas.
+        x_new = float(
+            np.clip(
+                x_new,
+                seed -
+                max_total_deviation,
+                seed +
+                max_total_deviation
+            )
+        )
+
+        x_new = float(
+            np.clip(
+                x_new,
+                hard_left,
+                hard_right
+            )
+        )
+
+        xi = int(
+            round(
+                x_new
+            )
+        )
+
+        # Vegetación alrededor de la trayectoria.
+        xa = max(
+            int(np.floor(hard_left)),
+            xi - 4
+        )
+
+        xb = min(
+            int(np.ceil(hard_right)) + 1,
+            xi + 5
+        )
+
+        patch_green = green_mask[
+            ya:yb,
+            xa:xb
+        ]
+
+        green_score = (
+            float(
+                np.mean(
+                    patch_green > 0
+                )
+            )
+            if patch_green.size
+            else 0.0
+        )
+
+        xs.append(
+            x_new
+        )
+
+        greens.append(
+            green_score
+        )
+
+        prev_x = x_new
+
+    xs = np.asarray(
+        xs,
+        dtype=np.float32
+    )
+
+    greens = np.asarray(
+        greens,
+        dtype=np.float32
+    )
+
+    # Suavizado leve. No puede producir overshoot.
+    if len(xs) >= 7:
+        smooth = gaussian_filter1d(
+            xs,
+            sigma=1.0,
+            mode="nearest"
+        )
+
+        # Limitar otra vez después de suavizar.
+        xs = np.clip(
+            smooth,
+            seed -
+            max_total_deviation,
+            seed +
+            max_total_deviation
+        )
+
+        xs = np.clip(
+            xs,
+            hard_left,
+            hard_right
+        )
+
+    return (
+        np.column_stack(
+            [
+                xs,
+                ys
+            ]
+        ).astype(
+            np.float32
+        ),
+        greens
+    )
+
+
+# ============================================================
+# CLASIFICACIÓN VERDE / ROJO
+# ============================================================
+def estado_verde(green_scores):
+    positive = green_scores[green_scores > 0]
+
+    if len(positive) >= 4:
         threshold = float(
             np.clip(
-                np.percentile(
-                    positive,
-                    32
-                ) *
-                0.65,
+                np.percentile(positive, 35) * 0.62,
                 0.025,
-                0.12
+                0.085
             )
         )
     else:
         threshold = 0.045
 
-    state = (
-        values >=
-        threshold
-    )
+    state = green_scores >= threshold
 
-    # Suavizar cambios aislados.
+    # Mayoría local para evitar segmentos rojo/verde de 1 píxel.
     if len(state) >= 5:
         original = state.copy()
 
-        for i in range(
-            2,
-            len(state) - 2
-        ):
+        for i in range(2, len(state) - 2):
             state[i] = (
-                np.sum(
-                    original[
-                        i - 2:
-                        i + 3
-                    ]
-                ) >= 3
+                np.sum(original[i-2:i+3]) >= 3
             )
 
     return state
 
 
 # ============================================================
-# ANÁLISIS PRINCIPAL V12
+# ANÁLISIS PRINCIPAL
 # ============================================================
-
-def analizar(
-    pil_img
-):
+def analizar(pil_img):
     original = cv2.cvtColor(
-        np.asarray(
-            pil_img.convert(
-                "RGB"
-            )
-        ),
+        np.asarray(pil_img),
         cv2.COLOR_RGB2BGR
     )
 
     h, w = original.shape[:2]
 
-    (
-        green,
-        theta,
-        coherence,
-        response,
-        components,
-        ny,
-        nx
-    ) = detectar_componentes_vinedo(
+    mask0 = mascara_verde(original)
+
+    angle = angulo_surcos(mask0)
+
+    rot_img, M, Minv = rotar(
         original,
-        tile=max(
-            24,
-            int(
-                min(
-                    h,
-                    w
-                ) /
-                18
+        angle
+    )
+
+    rot_mask = cv2.warpAffine(
+        mask0,
+        M,
+        (w, h),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT
+    )
+
+    # Encontrar parcela solo después de hacer verticales los surcos.
+    y0, y1 = limites_verticales(rot_mask)
+
+    seeds, spacing, x0_detectado, x1_detectado = semillas_surcos(
+        rot_mask,
+        y0,
+        y1
+    )
+
+    if len(seeds) < 5:
+        raise RuntimeError(
+            "No se detectó una parcela de surcos suficientemente clara."
+        )
+
+    # --------------------------------------------------------
+    # Limites laterales automáticos:
+    # desde medio espacio antes del primer surco
+    # hasta medio espacio después del último.
+    # --------------------------------------------------------
+    # Límites duros detectados por los caminos laterales.
+    # Ninguna línea puede dibujarse fuera de esta parcela.
+    x0 = int(x0_detectado)
+    x1 = int(x1_detectado)
+
+    # Ignorar absolutamente todo fuera de esta parcela.
+    parcel_mask = np.zeros_like(rot_mask)
+
+    parcel_mask[y0:y1, x0:x1] = (
+        rot_mask[y0:y1, x0:x1]
+    )
+
+    response = crear_respuesta(
+        rot_img,
+        parcel_mask
+    )
+
+    tracks = []
+
+    for i, seed in enumerate(seeds):
+        # Fronteras a mitad de distancia entre hileras.
+        if i == 0:
+            left = x0
+        else:
+            left = int(
+                (seeds[i - 1] + seed) / 2
             )
-        )
-    )
 
-    if not components:
-        raise RuntimeError(
-            tr("No se encontró una zona con patrón claro de surcos.", "Aucune zone présentant un motif clair de rangs n’a été détectée.")
+        if i == len(seeds) - 1:
+            right = x1
+        else:
+            right = int(
+                (seed + seeds[i + 1]) / 2
+            )
+
+        if right - left < 5:
+            continue
+
+        pts, green = seguir_surco(
+            response,
+            parcel_mask,
+            int(seed),
+            left,
+            right,
+            y0,
+            y1
         )
+
+        # ====================================================
+        # V3.3 - CONSERVAR TODAS LAS HILERAS DE LA RETÍCULA
+        # ====================================================
+        # Si la geometría determinó que aquí corresponde un surco,
+        # no lo eliminamos por falta de verde.
+        # Un surco seco sigue siendo un surco.
+
+        tracks.append({
+            "points": pts,
+            "green": green
+        })
 
     # --------------------------------------------------------
-    # Evitar escenas donde solo hay una franja pequeña de viñedo.
-    # Esto reduce líneas falsas sobre jardines, edificios o caminos.
+    # DIBUJAR EN LA FOTO ORIGINAL
     # --------------------------------------------------------
-    total_component_tiles = sum(
-        component[
-            "tiles"
-        ]
-        for component in components
-    )
-
-    tile_coverage = (
-        total_component_tiles /
-        max(
-            ny * nx,
-            1
-        )
-    )
-
-    if tile_coverage < 0.16:
-        raise RuntimeError(
-            tr("La imagen no contiene suficiente superficie de viñedo para hacer un trazado confiable.", "L’image ne contient pas une surface de vignoble suffisante pour effectuer un tracé fiable.")
-        )
-
+    # La rotación se usa únicamente para analizar.
+    # La fotografía final NO se rota, recorta ni deforma.
     final = original.copy()
-
-    occupancy = np.zeros(
-        (h, w),
-        dtype=np.uint8
-    )
-
-    all_tracks = []
 
     total_green = 0
     total_red = 0
 
-    accepted_components = 0
+    # Máscara del rectángulo lógico en coordenadas rotadas.
+    # No se dibuja; solo sirve como diagnóstico.
+    mask_preview_rot = np.zeros_like(rot_mask)
+    mask_preview_rot[y0:y1, x0:x1] = 255
 
-    component_angles = []
+    mask_preview = cv2.warpAffine(
+        mask_preview_rot,
+        Minv,
+        (w, h),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT
+    )
 
-    # Procesar primero los bloques más grandes.
-    for component in components:
+    for number, tr in enumerate(tracks, 1):
+        pts_rot = tr["points"]
+        green = tr["green"]
 
-        seeds, spacing = semillas_componente(
-            component,
-            response
+        state = estado_verde(
+            green
         )
 
-        if (
-            spacing is None
-            or
-            len(seeds) < 4
+        # Transformar SOLO las coordenadas de la trayectoria
+        # de vuelta a la imagen original.
+        pts = aplicar_matriz(
+            pts_rot,
+            Minv
+        )
+
+        first_drawn = None
+
+        for j in range(
+            len(pts) - 1
         ):
-            continue
+            p1 = pts[j]
+            p2 = pts[j + 1]
 
-        accepted_components += 1
-
-        component_angles.append(
-            np.rad2deg(
-                component[
-                    "angle"
-                ]
-            )
-        )
-
-        for seed in seeds:
-
-            points, green_scores = trazar_surco_local(
-                seed,
-                component,
-                response,
-                theta,
-                coherence,
-                green,
-                spacing,
-                occupancy
-            )
-
-            if len(points) < 8:
-                continue
-
-            # Descartar semillas que caen sobre un surco ya trazado.
-            occupied_hits = 0
-            for px_test, py_test in np.rint(points[::max(1, len(points)//12)]).astype(np.int32):
-                if 0 <= px_test < w and 0 <= py_test < h and occupancy[py_test, px_test] > 0:
-                    occupied_hits += 1
-            if occupied_hits >= 3:
-                continue
-
-            # ------------------------------------------------
-            # Conservar incluso surcos parciales.
-            # La semilla ya proviene del patrón repetitivo.
-            # ------------------------------------------------
-            line_length = float(
-                np.sum(
-                    np.linalg.norm(
-                        np.diff(
-                            points,
-                            axis=0
-                        ),
-                        axis=1
-                    )
-                )
-            )
-
-            if line_length < max(
-                24.0,
-                spacing * 2.5
+            if not (
+                np.all(np.isfinite(p1))
+                and np.all(np.isfinite(p2))
             ):
                 continue
 
-            states = estados_color(
-                green_scores
-            )
-
-            track_index = len(
-                all_tracks
-            ) + 1
-
-            # Dibujar segmentos uno por uno.
-            for j in range(
-                len(points) - 1
-            ):
-
-                p1 = points[j]
-                p2 = points[j + 1]
-
-                if not (
-                    np.all(
-                        np.isfinite(
-                            p1
-                        )
-                    )
-                    and
-                    np.all(
-                        np.isfinite(
-                            p2
-                        )
-                    )
-                ):
-                    continue
-
-                x1 = int(
-                    np.clip(
-                        round(
-                            p1[0]
-                        ),
-                        0,
-                        w - 1
-                    )
-                )
-
-                y1 = int(
-                    np.clip(
-                        round(
-                            p1[1]
-                        ),
-                        0,
-                        h - 1
-                    )
-                )
-
-                x2 = int(
-                    np.clip(
-                        round(
-                            p2[0]
-                        ),
-                        0,
-                        w - 1
-                    )
-                )
-
-                y2 = int(
-                    np.clip(
-                        round(
-                            p2[1]
-                        ),
-                        0,
-                        h - 1
-                    )
-                )
-
-                green_segment = bool(
-                    states[
-                        min(
-                            j,
-                            len(
-                                states
-                            ) - 1
-                        )
-                    ]
-                    or
-                    states[
-                        min(
-                            j + 1,
-                            len(
-                                states
-                            ) - 1
-                        )
-                    ]
-                )
-
-                if green_segment:
-                    color = (
-                        0,
-                        240,
-                        0
-                    )
-                    total_green += 1
-                else:
-                    color = (
-                        0,
-                        0,
-                        255
-                    )
-                    total_red += 1
-
-                cv2.line(
-                    final,
-                    (
-                        x1,
-                        y1
-                    ),
-                    (
-                        x2,
-                        y2
-                    ),
-                    color,
-                    2,
-                    cv2.LINE_AA
-                )
-
-            # Numeración en la parte media para no amontonar arriba.
-            middle = points[
-                len(
-                    points
-                ) // 2
-            ]
-
-            mx = int(
+            x1p = int(
                 np.clip(
-                    round(
-                        middle[0]
-                    ),
+                    round(p1[0]),
                     0,
                     w - 1
                 )
             )
 
-            my = int(
+            y1p = int(
                 np.clip(
-                    round(
-                        middle[1]
-                    ),
+                    round(p1[1]),
                     0,
                     h - 1
                 )
             )
 
+            x2p = int(
+                np.clip(
+                    round(p2[0]),
+                    0,
+                    w - 1
+                )
+            )
+
+            y2p = int(
+                np.clip(
+                    round(p2[1]),
+                    0,
+                    h - 1
+                )
+            )
+
+            # Protección final:
+            # los dos extremos deben seguir dentro de la parcela lógica.
+            if (
+                mask_preview[y1p, x1p] == 0
+                or mask_preview[y2p, x2p] == 0
+            ):
+                continue
+
+            is_green = bool(
+                state[j]
+                or state[
+                    min(
+                        j + 1,
+                        len(state) - 1
+                    )
+                ]
+            )
+
+            if is_green:
+                color = (
+                    0,
+                    240,
+                    0
+                )
+                total_green += 1
+            else:
+                color = (
+                    0,
+                    0,
+                    255
+                )
+                total_red += 1
+
+            cv2.line(
+                final,
+                (x1p, y1p),
+                (x2p, y2p),
+                color,
+                1,
+                cv2.LINE_AA
+            )
+
+            if first_drawn is None:
+                first_drawn = (
+                    x1p,
+                    y1p
+                )
+
+        # Numeración cerca del inicio real de la línea.
+        if first_drawn is not None:
+            label = str(
+                number
+            )
+
+            label_x = max(
+                0,
+                first_drawn[0] - 4
+            )
+
+            label_y = max(
+                13,
+                first_drawn[1] - 4
+            )
+
             cv2.putText(
                 final,
-                str(
-                    track_index
-                ),
+                label,
                 (
-                    mx + 4,
-                    my - 4
+                    label_x,
+                    label_y
                 ),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.30,
@@ -2439,12 +1621,10 @@ def analizar(
 
             cv2.putText(
                 final,
-                str(
-                    track_index
-                ),
+                label,
                 (
-                    mx + 4,
-                    my - 4
+                    label_x,
+                    label_y
                 ),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.30,
@@ -2457,102 +1637,32 @@ def analizar(
                 cv2.LINE_AA
             )
 
-            # ------------------------------------------------
-            # Marcar ocupación DESPUÉS de terminar el surco.
-            # Esto evita que los siguientes se peguen al mismo.
-            # ------------------------------------------------
-            track_pixels = np.rint(
-                points
-            ).astype(
-                np.int32
-            )
-
-            occupancy_line = np.zeros(
-                (h, w),
-                dtype=np.uint8
-            )
-
-            cv2.polylines(
-                occupancy_line,
-                [
-                    track_pixels
-                ],
-                False,
-                255,
-                max(
-                    2,
-                    int(
-                        spacing *
-                        0.28
-                    )
-                ),
-                cv2.LINE_AA
-            )
-
-            occupancy = np.maximum(
-                occupancy,
-                occupancy_line
-            )
-
-            all_tracks.append(
-                points
-            )
-
-    if (
-        accepted_components == 0
-        or
-        len(all_tracks) < 4
-    ):
-        raise RuntimeError(
-            tr("Se encontró vegetación, pero no un patrón repetitivo de surcos suficientemente claro.", "De la végétation a été détectée, mais le motif répétitif des rangs n’est pas suffisamment clair.")
-        )
-
-    total = (
-        total_green +
-        total_red
-    )
+    total = total_green + total_red
 
     green_pct = (
-        100.0 *
-        total_green /
-        total
-        if total
-        else 0.0
+        100.0 * total_green / total
+        if total else 0.0
     )
 
     red_pct = (
-        100.0 -
-        green_pct
-        if total
-        else 0.0
+        100.0 - green_pct
+        if total else 0.0
     )
-
-    # Solo dato informativo:
-    # promedio de orientaciones de componentes.
-    mean_angle = float(
-        np.mean(
-            component_angles
-        )
-    ) if component_angles else 0.0
 
     return {
         "image": cv2.cvtColor(
             final,
             cv2.COLOR_BGR2RGB
         ),
-        "count": int(
-            len(
-                all_tracks
-            )
-        ),
-        "green_pct": float(
-            green_pct
-        ),
-        "red_pct": float(
-            red_pct
-        ),
-        "angle": mean_angle
+        "mask": mask_preview,
+        "count": len(tracks),
+        "green_pct": green_pct,
+        "red_pct": red_pct,
+        "angle": angle
     }
+
+
+
 
 
 # ============================================================
@@ -2676,7 +1786,7 @@ def extraer_candidatos(video_path):
 
     if not cap.isOpened():
         raise RuntimeError(
-            tr("No se pudo abrir el video.", "Impossible d’ouvrir la vidéo.")
+            "No se pudo abrir el video."
         )
 
     fps = float(
@@ -2746,7 +1856,7 @@ def extraer_candidatos(video_path):
 
     if not candidates:
         raise RuntimeError(
-            tr("No se encontraron fotogramas suficientemente claros.", "Aucune image suffisamment nette n’a été trouvée.")
+            "No se encontraron fotogramas suficientemente claros."
         )
 
     # --------------------------------------------------------
@@ -2884,7 +1994,7 @@ def analizar_frames_video(info):
 
     if not analyzed:
         raise RuntimeError(
-            tr("Los fotogramas fueron extraídos, pero no se pudo detectar una parcela clara.", "Les images ont été extraites, mais aucune parcelle suffisamment claire n’a pu être détectée.")
+            "Los fotogramas fueron extraídos, pero no se pudo detectar una parcela clara."
         )
 
     # --------------------------------------------------------
@@ -3087,665 +2197,285 @@ def crear_zip_resultados_imagenes(items):
     return mem.getvalue()
 
 
-
 # ============================================================
-# EXPORTACIÓN EXCEL
-# ============================================================
-
-def crear_excel_video(items):
-    buffer = io.BytesIO()
-
-    rows = []
-    for item in items:
-        rows.append({
-            "Escena": item["scene"],
-            "Tiempo": formato_tiempo(item["time"]),
-            "Surcos_estimados": item["count"],
-            "Verde_pct": round(item["green_pct"], 1),
-            "Rojo_pct": round(item["red_pct"], 1),
-            "Angulo": round(item["angle"], 1)
-        })
-
-    df = pd.DataFrame(rows)
-
-    with pd.ExcelWriter(
-        buffer,
-        engine="openpyxl"
-    ) as writer:
-        df.to_excel(
-            writer,
-            index=False,
-            sheet_name="Resultados"
-        )
-
-        ws = writer.book["Resultados"]
-        ws.freeze_panes = "A2"
-
-        for col in ws.columns:
-            width = max(
-                len(str(cell.value))
-                if cell.value is not None
-                else 0
-                for cell in col
-            ) + 2
-
-            ws.column_dimensions[
-                col[0].column_letter
-            ].width = min(
-                max(width, 12),
-                24
-            )
-
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-def crear_excel_imagenes(items):
-    buffer = io.BytesIO()
-
-    rows = []
-    for item in items:
-        rows.append({
-            "Imagen": item["name"],
-            "Surcos_estimados": item["count"],
-            "Verde_pct": round(item["green_pct"], 1),
-            "Rojo_pct": round(item["red_pct"], 1),
-            "Angulo": round(item["angle"], 1)
-        })
-
-    df = pd.DataFrame(rows)
-
-    with pd.ExcelWriter(
-        buffer,
-        engine="openpyxl"
-    ) as writer:
-        df.to_excel(
-            writer,
-            index=False,
-            sheet_name="Resultados"
-        )
-
-        ws = writer.book["Resultados"]
-        ws.freeze_panes = "A2"
-
-        for col in ws.columns:
-            width = max(
-                len(str(cell.value))
-                if cell.value is not None
-                else 0
-                for cell in col
-            ) + 2
-
-            ws.column_dimensions[
-                col[0].column_letter
-            ].width = min(
-                max(width, 12),
-                28
-            )
-
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-# ============================================================
-# INTERFAZ PRO V13
+# INTERFAZ V10.3 - VIDEO E IMÁGENES
 # ============================================================
 
-if "video_v13_items" not in st.session_state:
-    st.session_state.video_v13_items = None
+# ----------------------------
+# Estado de VIDEO
+# ----------------------------
+if "video_v103_items" not in st.session_state:
+    st.session_state.video_v103_items = None
 
-if "video_v13_duration" not in st.session_state:
-    st.session_state.video_v13_duration = None
+if "video_v103_duration" not in st.session_state:
+    st.session_state.video_v103_duration = None
 
-if "video_v13_signature" not in st.session_state:
-    st.session_state.video_v13_signature = None
+if "video_v103_signature" not in st.session_state:
+    st.session_state.video_v103_signature = None
 
-if "imagenes_v13_items" not in st.session_state:
-    st.session_state.imagenes_v13_items = None
+# ----------------------------
+# Estado de IMÁGENES
+# ----------------------------
+if "imagenes_v103_items" not in st.session_state:
+    st.session_state.imagenes_v103_items = None
 
-if "escena_activa_v13" not in st.session_state:
-    st.session_state.escena_activa_v13 = 0
 
-
-main_col, side_col = st.columns(
-    [2.15, 1.0],
+left, right = st.columns(
+    [4.6, 1.4],
     gap="medium"
 )
 
+with right:
+    st.markdown("### 1. Tipo de archivo")
+
+    modo = st.radio(
+        "Selecciona qué quieres analizar:",
+        [
+            "🎥 Video",
+            "🖼️ Imágenes"
+        ],
+        label_visibility="collapsed"
+    )
+
+
 # ============================================================
-# PANEL DERECHO - CONTROLES
+# MODO VIDEO
 # ============================================================
 
-with side_col:
+if modo == "🎥 Video":
 
-    with st.container(border=True):
-        st.markdown(
-            tr(
-                "### 1. Tipo de archivo",
-                "### 1. Type de fichier"
-            )
-        )
+    uploaded_video = None
 
-        modo = st.radio(
-            tr(
-                "Selecciona qué quieres analizar:",
-                "Sélectionnez ce que vous souhaitez analyser :"
-            ),
-            options=["video", "imagenes"],
-            format_func=lambda value: (
-                tr("🎥 Video", "🎥 Vidéo")
-                if value == "video"
-                else tr("🖼️ Imágenes", "🖼️ Images")
-            ),
-            horizontal=True,
+    with right:
+        st.markdown("### 2. Subir video")
+
+        uploaded_video = st.file_uploader(
+            "Selecciona el video",
+            type=["mp4", "mov", "avi", "m4v"],
             label_visibility="collapsed",
-            key="modo_v13"
+            key="uploader_video_v103"
         )
 
-    if modo == "video":
-        with st.container(border=True):
-            st.markdown(
-                tr(
-                    "### 2. Subir archivo de video",
-                    "### 2. Importer un fichier vidéo"
-                )
+        st.caption(
+            "Busca fotogramas útiles, cuenta los surcos "
+            "y después puedes borrar las escenas que no quieras."
+        )
+
+        if uploaded_video is not None:
+            current_signature = (
+                f"{uploaded_video.name}:"
+                f"{getattr(uploaded_video, 'size', 0)}"
             )
 
-            uploaded_video = st.file_uploader(
-                tr(
-                    "Haz clic para subir un video o arrástralo aquí",
-                    "Cliquez pour importer une vidéo ou déposez-la ici"
-                ),
-                type=["mp4", "mov", "avi", "m4v"],
-                key="uploader_video_v13",
-                help=tr(
-                    "Formatos: MP4, MOV, AVI, M4V",
-                    "Formats : MP4, MOV, AVI, M4V"
-                )
+            if (
+                st.session_state.video_v103_signature is not None
+                and
+                st.session_state.video_v103_signature != current_signature
+            ):
+                st.session_state.video_v103_items = None
+                st.session_state.video_v103_duration = None
+
+        analyze_video = st.button(
+            "🎥 Analizar video",
+            type="primary",
+            use_container_width=True,
+            disabled=uploaded_video is None,
+            key="analizar_video_v103"
+        )
+
+
+    if analyze_video and uploaded_video is not None:
+
+        suffix = Path(
+            uploaded_video.name
+        ).suffix or ".mp4"
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=suffix
+        ) as tmp:
+            tmp.write(
+                uploaded_video.getbuffer()
+            )
+            temp_path = Path(
+                tmp.name
             )
 
-            st.caption(
-                tr(
-                    "Formatos: MP4, MOV, AVI, M4V · máximo configurado: 500 MB",
-                    "Formats : MP4, MOV, AVI, M4V · maximum configuré : 500 Mo"
-                )
-            )
-
-            if uploaded_video is not None:
-                current_signature = (
-                    f"{uploaded_video.name}:"
-                    f"{getattr(uploaded_video, 'size', 0)}"
-                )
-
-                if (
-                    st.session_state.video_v13_signature is not None
-                    and
-                    st.session_state.video_v13_signature
-                    != current_signature
-                ):
-                    st.session_state.video_v13_items = None
-                    st.session_state.video_v13_duration = None
-
-            analizar_video = st.button(
-                tr(
-                    "▶ Analizar video",
-                    "▶ Analyser la vidéo"
-                ),
-                type="primary",
-                use_container_width=True,
-                disabled=uploaded_video is None,
-                key="analizar_video_v13"
-            )
-
-        if analizar_video and uploaded_video is not None:
-            suffix = Path(
-                uploaded_video.name
-            ).suffix or ".mp4"
-
-            with tempfile.NamedTemporaryFile(
-                delete=False,
-                suffix=suffix
-            ) as tmp:
-                tmp.write(
-                    uploaded_video.getbuffer()
-                )
-                temp_path = Path(
-                    tmp.name
-                )
-
-            try:
-                progress = st.progress(
-                    0,
-                    text=tr(
-                        "Buscando fotogramas útiles...",
-                        "Recherche des images utiles..."
-                    )
-                )
-
-                info = extraer_candidatos(
-                    temp_path
-                )
-
-                progress.progress(
-                    35,
-                    text=tr(
-                        f"Se seleccionaron {len(info['frames'])} fotogramas. Contando surcos...",
-                        f"{len(info['frames'])} images ont été sélectionnées. Comptage des rangs..."
-                    )
-                )
-
-                items = analizar_frames_video(
-                    info
-                )
-
-                progress.progress(
-                    100,
-                    text=tr(
-                        "Análisis terminado.",
-                        "Analyse terminée."
-                    )
-                )
-
-                st.session_state.video_v13_items = items
-                st.session_state.video_v13_duration = float(
-                    info["duration"]
-                )
-                st.session_state.video_v13_signature = (
-                    f"{uploaded_video.name}:"
-                    f"{getattr(uploaded_video, 'size', 0)}"
-                )
-                st.session_state.escena_activa_v13 = 0
-
-            except Exception as exc:
-                st.error(
-                    tr(
-                        "No se pudo completar el análisis del video.",
-                        "L’analyse de la vidéo n’a pas pu être terminée."
-                    )
-                )
-                st.caption(str(exc))
-                st.session_state.video_v13_items = None
-
-            finally:
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
-
-    else:
-        with st.container(border=True):
-            st.markdown(
-                tr(
-                    "### 2. Subir imágenes",
-                    "### 2. Importer des images"
-                )
-            )
-
-            uploaded_images = st.file_uploader(
-                tr(
-                    "Selecciona una o varias fotografías",
-                    "Sélectionnez une ou plusieurs photographies"
-                ),
-                type=["jpg", "jpeg", "png"],
-                accept_multiple_files=True,
-                key="uploader_images_v13"
-            )
-
-            st.caption(
-                tr(
-                    "Puedes seleccionar varias imágenes desde el teléfono.",
-                    "Vous pouvez sélectionner plusieurs images depuis votre téléphone."
-                )
-            )
-
-            analizar_imagenes = st.button(
-                tr(
-                    "🖼 Analizar imágenes",
-                    "🖼 Analyser les images"
-                ),
-                type="primary",
-                use_container_width=True,
-                disabled=not uploaded_images,
-                key="analizar_images_v13"
-            )
-
-        if analizar_imagenes and uploaded_images:
-            analyzed_images = []
-
+        try:
             progress = st.progress(
                 0,
-                text=tr(
-                    "Analizando fotografías...",
-                    "Analyse des photographies..."
+                text="Buscando los mejores fotogramas..."
+            )
+
+            info = extraer_candidatos(
+                temp_path
+            )
+
+            progress.progress(
+                35,
+                text=(
+                    f"Se seleccionaron {len(info['frames'])} fotogramas. "
+                    "Contando surcos..."
                 )
             )
 
-            total_images = len(
-                uploaded_images
+            items = analizar_frames_video(
+                info
             )
 
-            for index, uploaded_image in enumerate(
-                uploaded_images,
-                1
-            ):
-                try:
-                    pil = Image.open(
-                        uploaded_image
-                    ).convert("RGB")
+            progress.progress(
+                100,
+                text="Análisis terminado."
+            )
 
-                    result = analizar(
-                        pil
-                    )
+            st.session_state.video_v103_items = items
+            st.session_state.video_v103_duration = float(
+                info["duration"]
+            )
+            st.session_state.video_v103_signature = (
+                f"{uploaded_video.name}:"
+                f"{getattr(uploaded_video, 'size', 0)}"
+            )
 
-                    annotated = cv2.cvtColor(
-                        result["image"],
-                        cv2.COLOR_RGB2BGR
-                    )
+        except Exception as exc:
+            st.error(
+                "No se pudo completar el análisis del video."
+            )
+            st.exception(exc)
+            st.session_state.video_v103_items = None
 
-                    analyzed_images.append({
-                        "id": f"{index}_{uploaded_image.name}",
-                        "name": uploaded_image.name,
-                        "count": int(result["count"]),
-                        "green_pct": float(result["green_pct"]),
-                        "red_pct": float(result["red_pct"]),
-                        "angle": float(result["angle"]),
-                        "annotated": annotated
-                    })
-
-                except Exception as exc:
-                    st.warning(
-                        tr(
-                            f"No se pudo analizar {uploaded_image.name}: {exc}",
-                            f"Impossible d’analyser {uploaded_image.name} : {exc}"
-                        )
-                    )
-
-                progress.progress(
-                    int(
-                        100 *
-                        index /
-                        max(
-                            total_images,
-                            1
-                        )
-                    ),
-                    text=tr(
-                        f"Analizando imagen {index} de {total_images}...",
-                        f"Analyse de l’image {index} sur {total_images}..."
-                    )
+        finally:
+            try:
+                os.remove(
+                    temp_path
                 )
-
-            st.session_state.imagenes_v13_items = analyzed_images
-            st.session_state.escena_activa_v13 = 0
-
-
-# ============================================================
-# RECUPERAR RESULTADOS ACTIVOS
-# ============================================================
-
-if modo == "video":
-    active_items = st.session_state.video_v13_items or []
-    duration_text = formato_tiempo(
-        st.session_state.video_v13_duration or 0
-    )
-else:
-    active_items = st.session_state.imagenes_v13_items or []
-    duration_text = "—"
+            except Exception:
+                pass
 
 
-# ============================================================
-# PANEL PRINCIPAL - FOTOGRAMA GRANDE
-# ============================================================
+    video_items = st.session_state.video_v103_items
 
-with main_col:
-    if active_items:
-        active_index = min(
-            st.session_state.escena_activa_v13,
-            len(active_items) - 1
+    if video_items:
+
+        duration_text = formato_tiempo(
+            st.session_state.video_v103_duration or 0
         )
 
-        active_item = active_items[
-            active_index
-        ]
-
-        with st.container(border=True):
-            st.markdown(
-                tr(
-                    "### Fotograma analizado",
-                    "### Image analysée"
-                )
-            )
-
-            st.image(
-                cv2.cvtColor(
-                    active_item["annotated"],
-                    cv2.COLOR_BGR2RGB
-                ),
-                use_container_width=True
-            )
-
-            st.markdown(
-                """
-                <div class="legend-bar">
-                    <div class="legend-chip">
-                        <span class="dot-green"></span>Surco detectado
-                    </div>
-                    <div class="legend-chip">
-                        <span class="dot-red"></span>Tramo con poca vegetación
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-    else:
-        with st.container(border=True):
-            st.markdown(
-                tr(
-                    "### Fotograma analizado",
-                    "### Image analysée"
-                )
-            )
-
-            st.info(
-                tr(
-                    "Sube un video o imágenes y presiona Analizar para comenzar.",
-                    "Importez une vidéo ou des images puis lancez l’analyse."
-                )
-            )
-
-
-# ============================================================
-# RESULTADOS GENERALES
-# ============================================================
-
-if active_items:
-
-    st.markdown("---")
-
-    results_col, summary_col = st.columns(
-        [1.65, 1.0],
-        gap="medium"
-    )
-
-    with results_col:
-        st.subheader(
-            tr(
-                "Resultados por escena / parcela candidata",
-                "Résultats par scène / parcelle candidate"
+        estimated_total = int(
+            sum(
+                item["count"]
+                for item in video_items
             )
         )
 
-        if modo == "video":
-            table_rows = [
-                {
-                    tr("Escena", "Scène"): item["scene"],
-                    tr("Tiempo", "Temps"): formato_tiempo(item["time"]),
-                    tr("Surcos estimados", "Rangs estimés"): item["count"],
-                    tr("Verde %", "Vert %"): round(item["green_pct"], 1),
-                    tr("Rojo %", "Rouge %"): round(item["red_pct"], 1)
-                }
-                for item in active_items
-            ]
-        else:
-            table_rows = [
-                {
-                    tr("Imagen", "Image"): item["name"],
-                    tr("Surcos estimados", "Rangs estimés"): item["count"],
-                    tr("Verde %", "Vert %"): round(item["green_pct"], 1),
-                    tr("Rojo %", "Rouge %"): round(item["red_pct"], 1)
-                }
-                for item in active_items
-            ]
+        with right:
+            st.markdown("### Resultados")
 
-        st.dataframe(
-            pd.DataFrame(table_rows),
-            use_container_width=True,
-            hide_index=True
-        )
-
-    with summary_col:
-        with st.container(border=True):
-            st.subheader(
-                tr(
-                    "Resultados generales",
-                    "Résultats généraux"
-                )
+            st.metric(
+                "Duración",
+                duration_text
             )
 
-            m1, m2, m3 = st.columns(3)
+            st.metric(
+                "Escenas conservadas",
+                len(video_items)
+            )
 
-            with m1:
-                st.metric(
-                    tr("Duración", "Durée"),
-                    duration_text
-                )
-
-            with m2:
-                st.metric(
-                    tr(
-                        "Escenas útiles"
-                        if modo == "video"
-                        else "Imágenes",
-                        "Scènes utiles"
-                        if modo == "video"
-                        else "Images"
-                    ),
-                    len(active_items)
-                )
-
-            with m3:
-                st.metric(
-                    tr(
-                        "Surcos sumados",
-                        "Rangs cumulés"
-                    ),
-                    int(
-                        sum(
-                            item["count"]
-                            for item in active_items
-                        )
-                    )
-                )
+            st.metric(
+                "Suma estimada",
+                estimated_total
+            )
 
             st.caption(
-                tr(
-                    "La suma corresponde a las escenas conservadas. Si una misma parcela aparece varias veces, puede contarse de nuevo.",
-                    "La somme correspond aux scènes conservées. Si une même parcelle apparaît plusieurs fois, elle peut être comptée à nouveau."
-                )
+                "Al borrar una escena desaparece de la tabla, "
+                "de la suma, de la pantalla y del ZIP."
             )
 
-            d1, d2 = st.columns(2)
+            st.download_button(
+                "⬇️ Descargar resultados",
+                crear_zip_resultados(
+                    video_items
+                ),
+                file_name="resultado_surcos_video.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="descargar_video_v103"
+            )
 
-            with d1:
-                if modo == "video":
-                    excel_bytes = crear_excel_video(
-                        active_items
-                    )
-                else:
-                    excel_bytes = crear_excel_imagenes(
-                        active_items
-                    )
+            if st.button(
+                "🔄 Volver a analizar el video",
+                use_container_width=True,
+                key="reiniciar_video_v103"
+            ):
+                st.session_state.video_v103_items = None
+                st.session_state.video_v103_duration = None
+                st.rerun()
 
-                st.download_button(
-                    tr(
-                        "⬇ Descargar resultados (Excel)",
-                        "⬇ Télécharger les résultats (Excel)"
+
+        with left:
+            st.subheader(
+                "Conteo por escena / parcela candidata"
+            )
+
+            df = pd.DataFrame([
+                {
+                    "Escena": item["scene"],
+                    "Tiempo": formato_tiempo(
+                        item["time"]
                     ),
-                    excel_bytes,
-                    file_name=(
-                        "TerroCore_resultados_video.xlsx"
-                        if modo == "video"
-                        else "TerroCore_resultados_imagenes.xlsx"
+                    "Surcos estimados": item["count"],
+                    "Verde %": round(
+                        item["green_pct"],
+                        1
                     ),
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key="excel_v13"
+                    "Rojo %": round(
+                        item["red_pct"],
+                        1
+                    )
+                }
+                for item in video_items
+            ])
+
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            for item in list(
+                video_items
+            ):
+
+                col_title, col_delete = st.columns(
+                    [5, 1]
                 )
 
-            with d2:
-                if modo == "video":
-                    zip_bytes = crear_zip_resultados(
-                        active_items
-                    )
-                else:
-                    zip_bytes = crear_zip_resultados_imagenes(
-                        active_items
+                with col_title:
+                    st.markdown(
+                        f"### Escena {item['scene']} · "
+                        f"{formato_tiempo(item['time'])} · "
+                        f"{item['count']} surcos"
                     )
 
-                st.download_button(
-                    tr(
-                        "⬇ Descargar imágenes (ZIP)",
-                        "⬇ Télécharger les images (ZIP)"
-                    ),
-                    zip_bytes,
-                    file_name=(
-                        "TerroCore_imagenes_video.zip"
-                        if modo == "video"
-                        else "TerroCore_imagenes.zip"
-                    ),
-                    mime="application/zip",
-                    use_container_width=True,
-                    key="zip_v13"
-                )
+                with col_delete:
+                    delete_clicked = st.button(
+                        "🗑️ Borrar",
+                        key=(
+                            f"borrar_video_"
+                            f"{item['scene']}_v103"
+                        ),
+                        use_container_width=True
+                    )
 
+                if delete_clicked:
+                    st.session_state.video_v103_items = [
+                        x
+                        for x
+                        in st.session_state.video_v103_items
+                        if x["scene"] != item["scene"]
+                    ]
+                    st.rerun()
 
-    # ========================================================
-    # FOTOGRAMAS ANALIZADOS - SOLO IMÁGENES EN FILA
-    # ========================================================
-    st.subheader(
-        tr(
-            "Fotogramas analizados"
-            if modo == "video"
-            else "Imágenes analizadas",
-            "Images analysées"
-        )
-    )
-
-    # 5 imágenes por fila en computadora.
-    # En pantallas pequeñas Streamlit las acomoda automáticamente.
-    imagenes_por_fila = 5
-
-    for inicio in range(
-        0,
-        len(active_items),
-        imagenes_por_fila
-    ):
-        columnas = st.columns(
-            imagenes_por_fila,
-            gap="small"
-        )
-
-        for desplazamiento, columna in enumerate(
-            columnas
-        ):
-            indice = inicio + desplazamiento
-
-            if indice >= len(active_items):
-                continue
-
-            item = active_items[indice]
-
-            with columna:
                 st.image(
                     cv2.cvtColor(
                         item["annotated"],
@@ -3753,3 +2483,261 @@ if active_items:
                     ),
                     use_container_width=True
                 )
+
+    elif uploaded_video is None:
+
+        with left:
+            st.info(
+                "Sube el video del dron para comenzar."
+            )
+
+    else:
+
+        with left:
+            st.video(
+                uploaded_video
+            )
+
+            st.info(
+                "Presiona “Analizar video”."
+            )
+
+
+# ============================================================
+# MODO IMÁGENES
+# ============================================================
+
+else:
+
+    uploaded_images = None
+
+    with right:
+        st.markdown("### 2. Subir imágenes")
+
+        uploaded_images = st.file_uploader(
+            "Selecciona una o varias fotografías",
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+            key="uploader_imagenes_v103"
+        )
+
+        st.caption(
+            "Puedes seleccionar varias fotografías desde el teléfono."
+        )
+
+        analyze_images = st.button(
+            "🖼️ Analizar imágenes",
+            type="primary",
+            use_container_width=True,
+            disabled=not uploaded_images,
+            key="analizar_imagenes_v103"
+        )
+
+
+    if analyze_images and uploaded_images:
+
+        analyzed_images = []
+
+        progress = st.progress(
+            0,
+            text="Analizando fotografías..."
+        )
+
+        total_images = len(
+            uploaded_images
+        )
+
+        for index, uploaded_image in enumerate(
+            uploaded_images,
+            1
+        ):
+
+            try:
+                pil = Image.open(
+                    uploaded_image
+                ).convert("RGB")
+
+                result = analizar(
+                    pil
+                )
+
+                annotated = cv2.cvtColor(
+                    result["image"],
+                    cv2.COLOR_RGB2BGR
+                )
+
+                analyzed_images.append({
+                    "id": (
+                        f"{index}_"
+                        f"{uploaded_image.name}"
+                    ),
+                    "name": uploaded_image.name,
+                    "count": int(
+                        result["count"]
+                    ),
+                    "green_pct": float(
+                        result["green_pct"]
+                    ),
+                    "red_pct": float(
+                        result["red_pct"]
+                    ),
+                    "angle": float(
+                        result["angle"]
+                    ),
+                    "annotated": annotated
+                })
+
+            except Exception as exc:
+                st.warning(
+                    f"No se pudo analizar {uploaded_image.name}: {exc}"
+                )
+
+            progress.progress(
+                int(
+                    100 *
+                    index /
+                    max(
+                        total_images,
+                        1
+                    )
+                ),
+                text=(
+                    f"Analizando imagen "
+                    f"{index} de {total_images}..."
+                )
+            )
+
+        st.session_state.imagenes_v103_items = analyzed_images
+
+
+    image_items = st.session_state.imagenes_v103_items
+
+    if image_items:
+
+        estimated_total = int(
+            sum(
+                item["count"]
+                for item in image_items
+            )
+        )
+
+        with right:
+            st.markdown("### Resultados")
+
+            st.metric(
+                "Imágenes conservadas",
+                len(image_items)
+            )
+
+            st.metric(
+                "Suma estimada",
+                estimated_total
+            )
+
+            st.caption(
+                "Puedes borrar cualquier fotografía del resultado. "
+                "Al borrarla deja de entrar en la suma y en el ZIP."
+            )
+
+            st.download_button(
+                "⬇️ Descargar imágenes conservadas",
+                crear_zip_resultados_imagenes(
+                    image_items
+                ),
+                file_name="resultado_surcos_imagenes.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="descargar_imagenes_v103"
+            )
+
+            if st.button(
+                "🔄 Limpiar análisis de imágenes",
+                use_container_width=True,
+                key="limpiar_imagenes_v103"
+            ):
+                st.session_state.imagenes_v103_items = None
+                st.rerun()
+
+
+        with left:
+            st.subheader(
+                "Conteo por imagen"
+            )
+
+            df_images = pd.DataFrame([
+                {
+                    "Imagen": item["name"],
+                    "Surcos estimados": item["count"],
+                    "Verde %": round(
+                        item["green_pct"],
+                        1
+                    ),
+                    "Rojo %": round(
+                        item["red_pct"],
+                        1
+                    )
+                }
+                for item in image_items
+            ])
+
+            st.dataframe(
+                df_images,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            for item in list(
+                image_items
+            ):
+
+                col_title, col_delete = st.columns(
+                    [5, 1]
+                )
+
+                with col_title:
+                    st.markdown(
+                        f"### {item['name']} · "
+                        f"{item['count']} surcos"
+                    )
+
+                with col_delete:
+                    delete_clicked = st.button(
+                        "🗑️ Borrar",
+                        key=(
+                            f"borrar_imagen_"
+                            f"{item['id']}_v103"
+                        ),
+                        use_container_width=True
+                    )
+
+                if delete_clicked:
+                    st.session_state.imagenes_v103_items = [
+                        x
+                        for x
+                        in st.session_state.imagenes_v103_items
+                        if x["id"] != item["id"]
+                    ]
+                    st.rerun()
+
+                st.image(
+                    cv2.cvtColor(
+                        item["annotated"],
+                        cv2.COLOR_BGR2RGB
+                    ),
+                    use_container_width=True
+                )
+
+    elif not uploaded_images:
+
+        with left:
+            st.info(
+                "Sube una o varias fotografías del viñedo."
+            )
+
+    else:
+
+        with left:
+            st.info(
+                "Presiona “Analizar imágenes”."
+            )
