@@ -41,11 +41,24 @@ def tr(es, fr):
 st.markdown(
     """
     <style>
+    :root {
+        --wine: #722F37;
+        --wine-dark: #4F1E26;
+        --wine-mid: #5E2630;
+        --wine-light: #8D4A53;
+        --cream: #FFF7F3;
+        --soft: #F2DDE0;
+        --green: #22D34F;
+        --red: #FF3B3B;
+    }
+
     html, body,
     [data-testid="stAppViewContainer"],
     [data-testid="stMain"],
     .stApp {
-        background-color: #722F37 !important;
+        background:
+            radial-gradient(circle at 50% -10%, rgba(255,255,255,0.06), transparent 35%),
+            linear-gradient(180deg, #722F37 0%, #662832 100%) !important;
         color: #FFFFFF !important;
     }
 
@@ -54,41 +67,78 @@ st.markdown(
     }
 
     .block-container {
-        max-width: 1600px;
-        padding-top: 1rem;
+        max-width: 1550px;
+        padding-top: 0.4rem;
         padding-bottom: 2rem;
     }
 
-    /* TEXTO GENERAL */
     h1, h2, h3, h4, h5, h6,
-    .stMarkdown, .stCaption,
+    p, label, .stMarkdown, .stCaption,
     [data-testid="stMetricLabel"],
     [data-testid="stMetricValue"] {
         color: #FFFFFF !important;
     }
 
-    .terro-sub {
-        color: #F9E8EB !important;
-        font-size: 1rem;
-        margin-bottom: 1rem;
+    h1 {
+        font-size: 2.8rem !important;
+        line-height: 1.05 !important;
+        margin-bottom: 0.2rem !important;
+        letter-spacing: -0.03em;
     }
 
-    /* =======================================================
-       BOTONES - ALTO CONTRASTE
-       ======================================================= */
+    h2, h3 {
+        letter-spacing: -0.015em;
+    }
+
+    .terro-brand {
+        display:flex;
+        align-items:center;
+        gap:14px;
+        margin-top:0.25rem;
+    }
+
+    .terro-grape {
+        font-size:3rem;
+        line-height:1;
+        filter: drop-shadow(0 3px 8px rgba(0,0,0,.18));
+    }
+
+    .terro-kicker {
+        font-family: Georgia, serif;
+        color:#F5DADD !important;
+        font-size:1.25rem;
+        margin-top:-2px;
+    }
+
+    .terro-sub {
+        color: #FFF3F1 !important;
+        font-size: 1rem;
+        margin-top: 0.7rem;
+        margin-bottom: 0.9rem;
+        opacity: .96;
+    }
+
+    /* CONTENEDORES */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        border-color: rgba(255,255,255,0.22) !important;
+        background: rgba(73, 20, 29, 0.14) !important;
+        border-radius: 12px !important;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+    }
+
+    /* BOTONES */
     .stButton > button,
     .stDownloadButton > button {
-        background-color: #FFFFFF !important;
+        background: linear-gradient(180deg, #FFFDFC, #F6E9E7) !important;
         color: #722F37 !important;
-        border: 2px solid #F3D6DA !important;
-        border-radius: 12px !important;
+        border: 1px solid #F2D5D8 !important;
+        border-radius: 10px !important;
         font-weight: 800 !important;
-        min-height: 44px !important;
-        box-shadow: 0 3px 10px rgba(0,0,0,0.22) !important;
+        min-height: 42px !important;
+        box-shadow: 0 3px 10px rgba(0,0,0,0.18) !important;
         opacity: 1 !important;
     }
 
-    /* Forzar el color de TODO lo que esté dentro del botón */
     .stButton > button *,
     .stDownloadButton > button * {
         color: #722F37 !important;
@@ -99,44 +149,35 @@ st.markdown(
 
     .stButton > button:hover,
     .stDownloadButton > button:hover {
-        background-color: #F8E9EC !important;
-        color: #4D1820 !important;
+        background: #FFFFFF !important;
+        color: #4F1E26 !important;
         border-color: #FFFFFF !important;
         transform: translateY(-1px);
-        box-shadow: 0 5px 14px rgba(0,0,0,0.28) !important;
+        box-shadow: 0 5px 14px rgba(0,0,0,0.23) !important;
     }
 
-    .stButton > button:hover *,
-    .stDownloadButton > button:hover * {
-        color: #4D1820 !important;
-        fill: #4D1820 !important;
-    }
-
-    /* BOTÓN DESHABILITADO: seguir legible */
     .stButton > button:disabled,
     .stDownloadButton > button:disabled {
-        background-color: #D9C2C6 !important;
-        color: #5B3036 !important;
-        border: 2px solid #C7A8AD !important;
-        opacity: 0.85 !important;
-        cursor: not-allowed !important;
+        background: #D7C0C4 !important;
+        color: #69454B !important;
+        border-color: #CDB1B6 !important;
+        opacity: .78 !important;
         box-shadow: none !important;
     }
 
     .stButton > button:disabled *,
     .stDownloadButton > button:disabled * {
-        color: #5B3036 !important;
-        fill: #5B3036 !important;
-        opacity: 1 !important;
+        color:#69454B !important;
+        fill:#69454B !important;
+        opacity:1 !important;
     }
 
-    /* =======================================================
-       SUBIDA DE ARCHIVOS
-       ======================================================= */
+    /* FILE UPLOADER */
     [data-testid="stFileUploaderDropzone"] {
-        background-color: #5C252D !important;
-        border: 2px dashed #F3D6DA !important;
-        border-radius: 12px !important;
+        background: rgba(79,30,38,.34) !important;
+        border: 1.5px dashed rgba(255,255,255,.75) !important;
+        border-radius: 10px !important;
+        min-height: 96px !important;
     }
 
     [data-testid="stFileUploaderDropzone"] * {
@@ -144,73 +185,182 @@ st.markdown(
     }
 
     [data-testid="stFileUploader"] button {
-        background-color: #FFFFFF !important;
+        background: #FFFDFC !important;
         color: #722F37 !important;
-        border: 1px solid #F3D6DA !important;
-        border-radius: 9px !important;
+        border: 1px solid #F2D5D8 !important;
+        border-radius: 8px !important;
         font-weight: 800 !important;
     }
 
     [data-testid="stFileUploader"] button * {
-        color: #722F37 !important;
-        fill: #722F37 !important;
+        color:#722F37 !important;
+        fill:#722F37 !important;
     }
 
-    /* =======================================================
-       RADIO / SELECTORES
-       ======================================================= */
+    /* RADIO */
     div[role="radiogroup"] label,
     div[role="radiogroup"] label *,
-    div[data-baseweb="select"] *,
     [data-testid="stRadio"] * {
         color: #FFFFFF !important;
+        font-weight: 700;
     }
 
-    /* Caja de mensajes */
+    /* TABLAS */
+    [data-testid="stDataFrame"] {
+        border: 1px solid rgba(255,255,255,.18);
+        border-radius: 10px !important;
+        overflow: hidden !important;
+        box-shadow: 0 4px 14px rgba(0,0,0,.11);
+    }
+
+    /* MÉTRICAS */
+    [data-testid="stMetric"] {
+        background: rgba(96, 31, 42, .45);
+        border: 1px solid rgba(255,255,255,.15);
+        border-radius: 11px;
+        padding: .8rem .9rem;
+    }
+
+    [data-testid="stMetricValue"] {
+        font-size: 1.8rem !important;
+    }
+
+    /* ALERTAS */
     [data-testid="stAlert"] {
-        background-color: rgba(255,255,255,0.14) !important;
-        color: #FFFFFF !important;
-        border: 1px solid rgba(255,255,255,0.35) !important;
+        background: rgba(255,255,255,.13) !important;
+        border: 1px solid rgba(255,255,255,.24) !important;
         border-radius: 10px !important;
     }
 
     [data-testid="stAlert"] * {
-        color: #FFFFFF !important;
+        color:#FFFFFF !important;
     }
 
-    /* Dataframe / contenedores */
-    [data-testid="stDataFrame"] {
-        border-radius: 10px !important;
-        overflow: hidden !important;
+    /* SELECT */
+    div[data-baseweb="select"] > div {
+        background: rgba(79,30,38,.65) !important;
+        color:#FFFFFF !important;
+        border-color: rgba(255,255,255,.2) !important;
+    }
+
+    div[data-baseweb="select"] * {
+        color:#FFFFFF !important;
+    }
+
+    .legend-bar {
+        display:flex;
+        gap:0;
+        align-items:center;
+        margin-top:-6px;
+        margin-bottom:8px;
+        width:max-content;
+        border-radius:0 0 8px 8px;
+        overflow:hidden;
+        box-shadow: 0 3px 12px rgba(0,0,0,.16);
+    }
+
+    .legend-chip {
+        background:#301419;
+        color:white;
+        padding:7px 14px;
+        font-size:.86rem;
+        border-right:1px solid rgba(255,255,255,.12);
+    }
+
+    .dot-green, .dot-red {
+        width:13px;
+        height:13px;
+        border-radius:50%;
+        display:inline-block;
+        margin-right:7px;
+        vertical-align:-1px;
+    }
+
+    .dot-green { background:#22D34F; }
+    .dot-red { background:#FF3B3B; }
+
+    .scene-card-title {
+        color:white;
+        font-weight:700;
+        font-size:.95rem;
+        margin-top:.2rem;
+    }
+
+    .scene-card-sub {
+        color:#F5E5E7;
+        font-size:.82rem;
+        margin-top:-.25rem;
+        margin-bottom:.35rem;
     }
 
     hr {
-        border-color: rgba(255,255,255,0.25) !important;
+        border-color: rgba(255,255,255,0.18) !important;
+    }
+
+    @media (max-width: 900px) {
+        h1 { font-size: 2.15rem !important; }
+        .block-container { padding-left: .8rem; padding-right: .8rem; }
     }
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# Botón superior para cambiar idioma.
-_lang_space, _lang_col = st.columns([8, 1.35])
+# ============================================================
+# CABECERA + SELECTOR ES / FR
+# ============================================================
 
-with _lang_col:
-    if st.button(
-        "🇫🇷 Français"
-        if st.session_state.idioma_terrocore == "ES"
-        else "🇪🇸 Español",
-        key="boton_idioma_terrocore",
-        use_container_width=True
-    ):
-        st.session_state.idioma_terrocore = (
-            "FR"
-            if st.session_state.idioma_terrocore == "ES"
-            else "ES"
-        )
-        st.rerun()
+brand_col, lang_col = st.columns(
+    [7.2, 2.8],
+    vertical_alignment="center"
+)
 
-st.title("🍇 TerroCore image AI")
+with brand_col:
+    st.markdown(
+        """
+        <div class="terro-brand">
+            <div class="terro-grape">🍇</div>
+            <div>
+                <div style="font-family:Georgia,serif;font-size:2.65rem;font-weight:700;color:white;line-height:1.0;">
+                    TerroCore image AI
+                </div>
+                <div class="terro-kicker">
+                    """ +
+                    (
+                        "Análisis inteligente del viñedo"
+                        if st.session_state.idioma_terrocore == "ES"
+                        else "Analyse intelligente du vignoble"
+                    ) +
+                    """
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+with lang_col:
+    l1, l2 = st.columns(2)
+
+    with l1:
+        if st.button(
+            "🇪🇸 Español",
+            key="lang_es_v13",
+            use_container_width=True,
+            disabled=st.session_state.idioma_terrocore == "ES"
+        ):
+            st.session_state.idioma_terrocore = "ES"
+            st.rerun()
+
+    with l2:
+        if st.button(
+            "🇫🇷 Français",
+            key="lang_fr_v13",
+            use_container_width=True,
+            disabled=st.session_state.idioma_terrocore == "FR"
+        ):
+            st.session_state.idioma_terrocore = "FR"
+            st.rerun()
 
 st.markdown(
     f'<div class="terro-sub">'
@@ -2236,7 +2386,7 @@ def analizar(
                         y2
                     ),
                     color,
-                    1,
+                    2,
                     cv2.LINE_AA
                 )
 
@@ -2937,677 +3087,731 @@ def crear_zip_resultados_imagenes(items):
     return mem.getvalue()
 
 
+
 # ============================================================
-# INTERFAZ - VIDEO E IMÁGENES / VIDÉO ET IMAGES
+# EXPORTACIÓN EXCEL
 # ============================================================
 
-# ----------------------------
-# Estado de VIDEO
-# ----------------------------
-if "video_v103_items" not in st.session_state:
-    st.session_state.video_v103_items = None
+def crear_excel_video(items):
+    buffer = io.BytesIO()
 
-if "video_v103_duration" not in st.session_state:
-    st.session_state.video_v103_duration = None
+    rows = []
+    for item in items:
+        rows.append({
+            "Escena": item["scene"],
+            "Tiempo": formato_tiempo(item["time"]),
+            "Surcos_estimados": item["count"],
+            "Verde_pct": round(item["green_pct"], 1),
+            "Rojo_pct": round(item["red_pct"], 1),
+            "Angulo": round(item["angle"], 1)
+        })
 
-if "video_v103_signature" not in st.session_state:
-    st.session_state.video_v103_signature = None
+    df = pd.DataFrame(rows)
 
-# ----------------------------
-# Estado de IMÁGENES
-# ----------------------------
-if "imagenes_v103_items" not in st.session_state:
-    st.session_state.imagenes_v103_items = None
+    with pd.ExcelWriter(
+        buffer,
+        engine="openpyxl"
+    ) as writer:
+        df.to_excel(
+            writer,
+            index=False,
+            sheet_name="Resultados"
+        )
+
+        ws = writer.book["Resultados"]
+        ws.freeze_panes = "A2"
+
+        for col in ws.columns:
+            width = max(
+                len(str(cell.value))
+                if cell.value is not None
+                else 0
+                for cell in col
+            ) + 2
+
+            ws.column_dimensions[
+                col[0].column_letter
+            ].width = min(
+                max(width, 12),
+                24
+            )
+
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
-left, right = st.columns(
-    [4.6, 1.4],
+def crear_excel_imagenes(items):
+    buffer = io.BytesIO()
+
+    rows = []
+    for item in items:
+        rows.append({
+            "Imagen": item["name"],
+            "Surcos_estimados": item["count"],
+            "Verde_pct": round(item["green_pct"], 1),
+            "Rojo_pct": round(item["red_pct"], 1),
+            "Angulo": round(item["angle"], 1)
+        })
+
+    df = pd.DataFrame(rows)
+
+    with pd.ExcelWriter(
+        buffer,
+        engine="openpyxl"
+    ) as writer:
+        df.to_excel(
+            writer,
+            index=False,
+            sheet_name="Resultados"
+        )
+
+        ws = writer.book["Resultados"]
+        ws.freeze_panes = "A2"
+
+        for col in ws.columns:
+            width = max(
+                len(str(cell.value))
+                if cell.value is not None
+                else 0
+                for cell in col
+            ) + 2
+
+            ws.column_dimensions[
+                col[0].column_letter
+            ].width = min(
+                max(width, 12),
+                28
+            )
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# ============================================================
+# INTERFAZ PRO V13
+# ============================================================
+
+if "video_v13_items" not in st.session_state:
+    st.session_state.video_v13_items = None
+
+if "video_v13_duration" not in st.session_state:
+    st.session_state.video_v13_duration = None
+
+if "video_v13_signature" not in st.session_state:
+    st.session_state.video_v13_signature = None
+
+if "imagenes_v13_items" not in st.session_state:
+    st.session_state.imagenes_v13_items = None
+
+if "escena_activa_v13" not in st.session_state:
+    st.session_state.escena_activa_v13 = 0
+
+
+main_col, side_col = st.columns(
+    [2.15, 1.0],
     gap="medium"
 )
 
-with right:
-    st.markdown(
-        tr(
-            "### 1. Tipo de archivo",
-            "### 1. Type de fichier"
-        )
-    )
-
-    modo = st.radio(
-        tr(
-            "Selecciona qué quieres analizar:",
-            "Sélectionnez ce que vous souhaitez analyser :"
-        ),
-        options=["video", "imagenes"],
-        format_func=lambda value: (
-            tr("🎥 Video", "🎥 Vidéo")
-            if value == "video"
-            else tr("🖼️ Imágenes", "🖼️ Images")
-        ),
-        label_visibility="collapsed",
-        key="modo_terrocore"
-    )
-
-
 # ============================================================
-# MODO VIDEO
+# PANEL DERECHO - CONTROLES
 # ============================================================
 
-if modo == "video":
+with side_col:
 
-    uploaded_video = None
-
-    with right:
+    with st.container(border=True):
         st.markdown(
             tr(
-                "### 2. Subir video",
-                "### 2. Importer une vidéo"
+                "### 1. Tipo de archivo",
+                "### 1. Type de fichier"
             )
         )
 
-        uploaded_video = st.file_uploader(
+        modo = st.radio(
             tr(
-                "Selecciona el video",
-                "Sélectionnez la vidéo"
+                "Selecciona qué quieres analizar:",
+                "Sélectionnez ce que vous souhaitez analyser :"
             ),
-            type=["mp4", "mov", "avi", "m4v"],
+            options=["video", "imagenes"],
+            format_func=lambda value: (
+                tr("🎥 Video", "🎥 Vidéo")
+                if value == "video"
+                else tr("🖼️ Imágenes", "🖼️ Images")
+            ),
+            horizontal=True,
             label_visibility="collapsed",
-            key="uploader_video_v103"
+            key="modo_v13"
         )
 
-        st.caption(
-            tr(
-                "Busca fotogramas útiles, cuenta los surcos y después puedes borrar las escenas que no quieras.",
-                "L’application recherche les images utiles, compte les rangs, puis vous permet de supprimer les scènes que vous ne souhaitez pas conserver."
-            )
-        )
-
-        if uploaded_video is not None:
-            current_signature = (
-                f"{uploaded_video.name}:"
-                f"{getattr(uploaded_video, 'size', 0)}"
+    if modo == "video":
+        with st.container(border=True):
+            st.markdown(
+                tr(
+                    "### 2. Subir archivo de video",
+                    "### 2. Importer un fichier vidéo"
+                )
             )
 
-            if (
-                st.session_state.video_v103_signature is not None
-                and
-                st.session_state.video_v103_signature != current_signature
-            ):
-                st.session_state.video_v103_items = None
-                st.session_state.video_v103_duration = None
-
-        analyze_video = st.button(
-            tr(
-                "🎥 Analizar video",
-                "🎥 Analyser la vidéo"
-            ),
-            type="primary",
-            use_container_width=True,
-            disabled=uploaded_video is None,
-            key="analizar_video_v103"
-        )
-
-
-    if analyze_video and uploaded_video is not None:
-
-        suffix = Path(
-            uploaded_video.name
-        ).suffix or ".mp4"
-
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=suffix
-        ) as tmp:
-            tmp.write(
-                uploaded_video.getbuffer()
-            )
-            temp_path = Path(
-                tmp.name
+            uploaded_video = st.file_uploader(
+                tr(
+                    "Haz clic para subir un video o arrástralo aquí",
+                    "Cliquez pour importer une vidéo ou déposez-la ici"
+                ),
+                type=["mp4", "mov", "avi", "m4v"],
+                key="uploader_video_v13",
+                help=tr(
+                    "Formatos: MP4, MOV, AVI, M4V",
+                    "Formats : MP4, MOV, AVI, M4V"
+                )
             )
 
-        try:
+            st.caption(
+                tr(
+                    "Formatos: MP4, MOV, AVI, M4V · máximo configurado: 500 MB",
+                    "Formats : MP4, MOV, AVI, M4V · maximum configuré : 500 Mo"
+                )
+            )
+
+            if uploaded_video is not None:
+                current_signature = (
+                    f"{uploaded_video.name}:"
+                    f"{getattr(uploaded_video, 'size', 0)}"
+                )
+
+                if (
+                    st.session_state.video_v13_signature is not None
+                    and
+                    st.session_state.video_v13_signature
+                    != current_signature
+                ):
+                    st.session_state.video_v13_items = None
+                    st.session_state.video_v13_duration = None
+
+            analizar_video = st.button(
+                tr(
+                    "▶ Analizar video",
+                    "▶ Analyser la vidéo"
+                ),
+                type="primary",
+                use_container_width=True,
+                disabled=uploaded_video is None,
+                key="analizar_video_v13"
+            )
+
+        if analizar_video and uploaded_video is not None:
+            suffix = Path(
+                uploaded_video.name
+            ).suffix or ".mp4"
+
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=suffix
+            ) as tmp:
+                tmp.write(
+                    uploaded_video.getbuffer()
+                )
+                temp_path = Path(
+                    tmp.name
+                )
+
+            try:
+                progress = st.progress(
+                    0,
+                    text=tr(
+                        "Buscando fotogramas útiles...",
+                        "Recherche des images utiles..."
+                    )
+                )
+
+                info = extraer_candidatos(
+                    temp_path
+                )
+
+                progress.progress(
+                    35,
+                    text=tr(
+                        f"Se seleccionaron {len(info['frames'])} fotogramas. Contando surcos...",
+                        f"{len(info['frames'])} images ont été sélectionnées. Comptage des rangs..."
+                    )
+                )
+
+                items = analizar_frames_video(
+                    info
+                )
+
+                progress.progress(
+                    100,
+                    text=tr(
+                        "Análisis terminado.",
+                        "Analyse terminée."
+                    )
+                )
+
+                st.session_state.video_v13_items = items
+                st.session_state.video_v13_duration = float(
+                    info["duration"]
+                )
+                st.session_state.video_v13_signature = (
+                    f"{uploaded_video.name}:"
+                    f"{getattr(uploaded_video, 'size', 0)}"
+                )
+                st.session_state.escena_activa_v13 = 0
+
+            except Exception as exc:
+                st.error(
+                    tr(
+                        "No se pudo completar el análisis del video.",
+                        "L’analyse de la vidéo n’a pas pu être terminée."
+                    )
+                )
+                st.caption(str(exc))
+                st.session_state.video_v13_items = None
+
+            finally:
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+
+    else:
+        with st.container(border=True):
+            st.markdown(
+                tr(
+                    "### 2. Subir imágenes",
+                    "### 2. Importer des images"
+                )
+            )
+
+            uploaded_images = st.file_uploader(
+                tr(
+                    "Selecciona una o varias fotografías",
+                    "Sélectionnez une ou plusieurs photographies"
+                ),
+                type=["jpg", "jpeg", "png"],
+                accept_multiple_files=True,
+                key="uploader_images_v13"
+            )
+
+            st.caption(
+                tr(
+                    "Puedes seleccionar varias imágenes desde el teléfono.",
+                    "Vous pouvez sélectionner plusieurs images depuis votre téléphone."
+                )
+            )
+
+            analizar_imagenes = st.button(
+                tr(
+                    "🖼 Analizar imágenes",
+                    "🖼 Analyser les images"
+                ),
+                type="primary",
+                use_container_width=True,
+                disabled=not uploaded_images,
+                key="analizar_images_v13"
+            )
+
+        if analizar_imagenes and uploaded_images:
+            analyzed_images = []
+
             progress = st.progress(
                 0,
                 text=tr(
-                    "Buscando los mejores fotogramas...",
-                    "Recherche des meilleures images..."
+                    "Analizando fotografías...",
+                    "Analyse des photographies..."
                 )
             )
 
-            info = extraer_candidatos(
-                temp_path
+            total_images = len(
+                uploaded_images
             )
 
-            progress.progress(
-                35,
-                text=tr(
-                    f"Se seleccionaron {len(info['frames'])} fotogramas. Contando surcos...",
-                    f"{len(info['frames'])} images ont été sélectionnées. Comptage des rangs..."
+            for index, uploaded_image in enumerate(
+                uploaded_images,
+                1
+            ):
+                try:
+                    pil = Image.open(
+                        uploaded_image
+                    ).convert("RGB")
+
+                    result = analizar(
+                        pil
+                    )
+
+                    annotated = cv2.cvtColor(
+                        result["image"],
+                        cv2.COLOR_RGB2BGR
+                    )
+
+                    analyzed_images.append({
+                        "id": f"{index}_{uploaded_image.name}",
+                        "name": uploaded_image.name,
+                        "count": int(result["count"]),
+                        "green_pct": float(result["green_pct"]),
+                        "red_pct": float(result["red_pct"]),
+                        "angle": float(result["angle"]),
+                        "annotated": annotated
+                    })
+
+                except Exception as exc:
+                    st.warning(
+                        tr(
+                            f"No se pudo analizar {uploaded_image.name}: {exc}",
+                            f"Impossible d’analyser {uploaded_image.name} : {exc}"
+                        )
+                    )
+
+                progress.progress(
+                    int(
+                        100 *
+                        index /
+                        max(
+                            total_images,
+                            1
+                        )
+                    ),
+                    text=tr(
+                        f"Analizando imagen {index} de {total_images}...",
+                        f"Analyse de l’image {index} sur {total_images}..."
+                    )
                 )
-            )
 
-            items = analizar_frames_video(
-                info
-            )
-
-            progress.progress(
-                100,
-                text=tr(
-                    "Análisis terminado.",
-                    "Analyse terminée."
-                )
-            )
-
-            st.session_state.video_v103_items = items
-            st.session_state.video_v103_duration = float(
-                info["duration"]
-            )
-            st.session_state.video_v103_signature = (
-                f"{uploaded_video.name}:"
-                f"{getattr(uploaded_video, 'size', 0)}"
-            )
-
-        except Exception as exc:
-            st.error(
-                tr(
-                    "No se pudo completar el análisis del video.",
-                    "L’analyse de la vidéo n’a pas pu être terminée."
-                )
-            )
-            st.caption(str(exc))
-            st.session_state.video_v103_items = None
-
-        finally:
-            try:
-                os.remove(
-                    temp_path
-                )
-            except Exception:
-                pass
+            st.session_state.imagenes_v13_items = analyzed_images
+            st.session_state.escena_activa_v13 = 0
 
 
-    video_items = st.session_state.video_v103_items
+# ============================================================
+# RECUPERAR RESULTADOS ACTIVOS
+# ============================================================
 
-    if video_items:
+if modo == "video":
+    active_items = st.session_state.video_v13_items or []
+    duration_text = formato_tiempo(
+        st.session_state.video_v13_duration or 0
+    )
+else:
+    active_items = st.session_state.imagenes_v13_items or []
+    duration_text = "—"
 
-        duration_text = formato_tiempo(
-            st.session_state.video_v103_duration or 0
+
+# ============================================================
+# PANEL PRINCIPAL - FOTOGRAMA GRANDE
+# ============================================================
+
+with main_col:
+    if active_items:
+        active_index = min(
+            st.session_state.escena_activa_v13,
+            len(active_items) - 1
         )
 
-        estimated_total = int(
-            sum(
-                item["count"]
-                for item in video_items
-            )
-        )
+        active_item = active_items[
+            active_index
+        ]
 
-        with right:
+        with st.container(border=True):
             st.markdown(
                 tr(
-                    "### Resultados",
-                    "### Résultats"
+                    "### Fotograma analizado",
+                    "### Image analysée"
                 )
             )
 
-            st.metric(
-                tr("Duración", "Durée"),
-                duration_text
-            )
-
-            st.metric(
-                tr(
-                    "Escenas conservadas",
-                    "Scènes conservées"
+            st.image(
+                cv2.cvtColor(
+                    active_item["annotated"],
+                    cv2.COLOR_BGR2RGB
                 ),
-                len(video_items)
+                use_container_width=True
             )
 
-            st.metric(
-                tr(
-                    "Suma estimada",
-                    "Somme estimée"
-                ),
-                estimated_total
+            st.markdown(
+                """
+                <div class="legend-bar">
+                    <div class="legend-chip">
+                        <span class="dot-green"></span>Surco detectado
+                    </div>
+                    <div class="legend-chip">
+                        <span class="dot-red"></span>Tramo con poca vegetación
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
             )
-
-            st.caption(
+    else:
+        with st.container(border=True):
+            st.markdown(
                 tr(
-                    "Al borrar una escena desaparece de la tabla, de la suma, de la pantalla y del ZIP.",
-                    "Lorsqu’une scène est supprimée, elle disparaît du tableau, du total, de l’écran et du fichier ZIP."
+                    "### Fotograma analizado",
+                    "### Image analysée"
                 )
             )
 
-            st.download_button(
+            st.info(
                 tr(
-                    "⬇️ Descargar resultados",
-                    "⬇️ Télécharger les résultats"
-                ),
-                crear_zip_resultados(
-                    video_items
-                ),
-                file_name="resultado_surcos_video.zip",
-                mime="application/zip",
-                use_container_width=True,
-                key="descargar_video_v103"
-            )
-
-            if st.button(
-                tr(
-                    "🔄 Volver a analizar el video",
-                    "🔄 Réanalyser la vidéo"
-                ),
-                use_container_width=True,
-                key="reiniciar_video_v103"
-            ):
-                st.session_state.video_v103_items = None
-                st.session_state.video_v103_duration = None
-                st.rerun()
-
-
-        with left:
-            st.subheader(
-                tr(
-                    "Conteo por escena / parcela candidata",
-                    "Comptage par scène / parcelle candidate"
+                    "Sube un video o imágenes y presiona Analizar para comenzar.",
+                    "Importez une vidéo ou des images puis lancez l’analyse."
                 )
             )
 
-            df = pd.DataFrame([
+
+# ============================================================
+# RESULTADOS GENERALES
+# ============================================================
+
+if active_items:
+
+    st.markdown("---")
+
+    results_col, summary_col = st.columns(
+        [1.65, 1.0],
+        gap="medium"
+    )
+
+    with results_col:
+        st.subheader(
+            tr(
+                "Resultados por escena / parcela candidata",
+                "Résultats par scène / parcelle candidate"
+            )
+        )
+
+        if modo == "video":
+            table_rows = [
                 {
                     tr("Escena", "Scène"): item["scene"],
-                    tr("Tiempo", "Temps"): formato_tiempo(
-                        item["time"]
-                    ),
-                    tr(
-                        "Surcos estimados",
-                        "Rangs estimés"
-                    ): item["count"],
-                    tr("Verde %", "Vert %"): round(
-                        item["green_pct"],
-                        1
-                    ),
-                    tr("Rojo %", "Rouge %"): round(
-                        item["red_pct"],
-                        1
-                    )
+                    tr("Tiempo", "Temps"): formato_tiempo(item["time"]),
+                    tr("Surcos estimados", "Rangs estimés"): item["count"],
+                    tr("Verde %", "Vert %"): round(item["green_pct"], 1),
+                    tr("Rojo %", "Rouge %"): round(item["red_pct"], 1)
                 }
-                for item in video_items
-            ])
+                for item in active_items
+            ]
+        else:
+            table_rows = [
+                {
+                    tr("Imagen", "Image"): item["name"],
+                    tr("Surcos estimados", "Rangs estimés"): item["count"],
+                    tr("Verde %", "Vert %"): round(item["green_pct"], 1),
+                    tr("Rojo %", "Rouge %"): round(item["red_pct"], 1)
+                }
+                for item in active_items
+            ]
 
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True
+        st.dataframe(
+            pd.DataFrame(table_rows),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    with summary_col:
+        with st.container(border=True):
+            st.subheader(
+                tr(
+                    "Resultados generales",
+                    "Résultats généraux"
+                )
             )
 
-            for item in list(
-                video_items
-            ):
+            m1, m2, m3 = st.columns(3)
 
-                col_title, col_delete = st.columns(
-                    [5, 1]
+            with m1:
+                st.metric(
+                    tr("Duración", "Durée"),
+                    duration_text
                 )
 
-                with col_title:
-                    st.markdown(
-                        tr(
-                            f"### Escena {item['scene']} · "
-                            f"{formato_tiempo(item['time'])} · "
-                            f"{item['count']} surcos",
-                            f"### Scène {item['scene']} · "
-                            f"{formato_tiempo(item['time'])} · "
-                            f"{item['count']} rangs"
+            with m2:
+                st.metric(
+                    tr(
+                        "Escenas útiles"
+                        if modo == "video"
+                        else "Imágenes",
+                        "Scènes utiles"
+                        if modo == "video"
+                        else "Images"
+                    ),
+                    len(active_items)
+                )
+
+            with m3:
+                st.metric(
+                    tr(
+                        "Surcos sumados",
+                        "Rangs cumulés"
+                    ),
+                    int(
+                        sum(
+                            item["count"]
+                            for item in active_items
                         )
                     )
-
-                with col_delete:
-                    delete_clicked = st.button(
-                        tr(
-                            "🗑️ Borrar",
-                            "🗑️ Supprimer"
-                        ),
-                        key=(
-                            f"borrar_video_"
-                            f"{item['scene']}_v103"
-                        ),
-                        use_container_width=True
-                    )
-
-                if delete_clicked:
-                    st.session_state.video_v103_items = [
-                        x
-                        for x
-                        in st.session_state.video_v103_items
-                        if x["scene"] != item["scene"]
-                    ]
-                    st.rerun()
-
-                st.image(
-                    cv2.cvtColor(
-                        item["annotated"],
-                        cv2.COLOR_BGR2RGB
-                    ),
-                    use_container_width=True
                 )
-
-    elif uploaded_video is None:
-
-        with left:
-            st.info(
-                tr(
-                    "Sube el video del dron para comenzar.",
-                    "Importez la vidéo du drone pour commencer."
-                )
-            )
-
-    else:
-
-        with left:
-            st.video(
-                uploaded_video
-            )
-
-            st.info(
-                tr(
-                    "Presiona “Analizar video”.",
-                    "Appuyez sur « Analyser la vidéo »."
-                )
-            )
-
-
-# ============================================================
-# MODO IMÁGENES
-# ============================================================
-
-else:
-
-    uploaded_images = None
-
-    with right:
-        st.markdown(
-            tr(
-                "### 2. Subir imágenes",
-                "### 2. Importer des images"
-            )
-        )
-
-        uploaded_images = st.file_uploader(
-            tr(
-                "Selecciona una o varias fotografías",
-                "Sélectionnez une ou plusieurs photographies"
-            ),
-            type=["jpg", "jpeg", "png"],
-            accept_multiple_files=True,
-            label_visibility="collapsed",
-            key="uploader_imagenes_v103"
-        )
-
-        st.caption(
-            tr(
-                "Puedes seleccionar varias fotografías desde el teléfono.",
-                "Vous pouvez sélectionner plusieurs photographies depuis votre téléphone."
-            )
-        )
-
-        analyze_images = st.button(
-            tr(
-                "🖼️ Analizar imágenes",
-                "🖼️ Analyser les images"
-            ),
-            type="primary",
-            use_container_width=True,
-            disabled=not uploaded_images,
-            key="analizar_imagenes_v103"
-        )
-
-
-    if analyze_images and uploaded_images:
-
-        analyzed_images = []
-
-        progress = st.progress(
-            0,
-            text=tr(
-                "Analizando fotografías...",
-                "Analyse des photographies..."
-            )
-        )
-
-        total_images = len(
-            uploaded_images
-        )
-
-        for index, uploaded_image in enumerate(
-            uploaded_images,
-            1
-        ):
-
-            try:
-                pil = Image.open(
-                    uploaded_image
-                ).convert("RGB")
-
-                result = analizar(
-                    pil
-                )
-
-                annotated = cv2.cvtColor(
-                    result["image"],
-                    cv2.COLOR_RGB2BGR
-                )
-
-                analyzed_images.append({
-                    "id": (
-                        f"{index}_"
-                        f"{uploaded_image.name}"
-                    ),
-                    "name": uploaded_image.name,
-                    "count": int(
-                        result["count"]
-                    ),
-                    "green_pct": float(
-                        result["green_pct"]
-                    ),
-                    "red_pct": float(
-                        result["red_pct"]
-                    ),
-                    "angle": float(
-                        result["angle"]
-                    ),
-                    "annotated": annotated
-                })
-
-            except Exception as exc:
-                st.warning(
-                    tr(
-                        f"No se pudo analizar {uploaded_image.name}: {exc}",
-                        f"Impossible d’analyser {uploaded_image.name} : {exc}"
-                    )
-                )
-
-            progress.progress(
-                int(
-                    100 *
-                    index /
-                    max(
-                        total_images,
-                        1
-                    )
-                ),
-                text=tr(
-                    f"Analizando imagen {index} de {total_images}...",
-                    f"Analyse de l’image {index} sur {total_images}..."
-                )
-            )
-
-        st.session_state.imagenes_v103_items = analyzed_images
-
-
-    image_items = st.session_state.imagenes_v103_items
-
-    if image_items:
-
-        estimated_total = int(
-            sum(
-                item["count"]
-                for item in image_items
-            )
-        )
-
-        with right:
-            st.markdown(
-                tr(
-                    "### Resultados",
-                    "### Résultats"
-                )
-            )
-
-            st.metric(
-                tr(
-                    "Imágenes conservadas",
-                    "Images conservées"
-                ),
-                len(image_items)
-            )
-
-            st.metric(
-                tr(
-                    "Suma estimada",
-                    "Somme estimée"
-                ),
-                estimated_total
-            )
 
             st.caption(
                 tr(
-                    "Puedes borrar cualquier fotografía del resultado. Al borrarla deja de entrar en la suma y en el ZIP.",
-                    "Vous pouvez supprimer n’importe quelle photographie du résultat. Une fois supprimée, elle n’est plus incluse dans le total ni dans le fichier ZIP."
+                    "La suma corresponde a las escenas conservadas. Si una misma parcela aparece varias veces, puede contarse de nuevo.",
+                    "La somme correspond aux scènes conservées. Si une même parcelle apparaît plusieurs fois, elle peut être comptée à nouveau."
                 )
             )
 
-            st.download_button(
-                tr(
-                    "⬇️ Descargar imágenes conservadas",
-                    "⬇️ Télécharger les images conservées"
-                ),
-                crear_zip_resultados_imagenes(
-                    image_items
-                ),
-                file_name="resultado_surcos_imagenes.zip",
-                mime="application/zip",
-                use_container_width=True,
-                key="descargar_imagenes_v103"
-            )
+            d1, d2 = st.columns(2)
 
-            if st.button(
-                tr(
-                    "🔄 Limpiar análisis de imágenes",
-                    "🔄 Effacer l’analyse des images"
-                ),
-                use_container_width=True,
-                key="limpiar_imagenes_v103"
-            ):
-                st.session_state.imagenes_v103_items = None
-                st.rerun()
+            with d1:
+                if modo == "video":
+                    excel_bytes = crear_excel_video(
+                        active_items
+                    )
+                else:
+                    excel_bytes = crear_excel_imagenes(
+                        active_items
+                    )
 
-
-        with left:
-            st.subheader(
-                tr(
-                    "Conteo por imagen",
-                    "Comptage par image"
-                )
-            )
-
-            df_images = pd.DataFrame([
-                {
-                    tr("Imagen", "Image"): item["name"],
+                st.download_button(
                     tr(
-                        "Surcos estimados",
-                        "Rangs estimés"
-                    ): item["count"],
-                    tr("Verde %", "Vert %"): round(
-                        item["green_pct"],
-                        1
+                        "⬇ Descargar resultados (Excel)",
+                        "⬇ Télécharger les résultats (Excel)"
                     ),
-                    tr("Rojo %", "Rouge %"): round(
-                        item["red_pct"],
-                        1
-                    )
-                }
-                for item in image_items
-            ])
-
-            st.dataframe(
-                df_images,
-                use_container_width=True,
-                hide_index=True
-            )
-
-            for item in list(
-                image_items
-            ):
-
-                col_title, col_delete = st.columns(
-                    [5, 1]
+                    excel_bytes,
+                    file_name=(
+                        "TerroCore_resultados_video.xlsx"
+                        if modo == "video"
+                        else "TerroCore_resultados_imagenes.xlsx"
+                    ),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="excel_v13"
                 )
 
-                with col_title:
-                    st.markdown(
-                        tr(
-                            f"### {item['name']} · "
-                            f"{item['count']} surcos",
-                            f"### {item['name']} · "
-                            f"{item['count']} rangs"
-                        )
+            with d2:
+                if modo == "video":
+                    zip_bytes = crear_zip_resultados(
+                        active_items
+                    )
+                else:
+                    zip_bytes = crear_zip_resultados_imagenes(
+                        active_items
                     )
 
-                with col_delete:
-                    delete_clicked = st.button(
-                        tr(
-                            "🗑️ Borrar",
-                            "🗑️ Supprimer"
-                        ),
-                        key=(
-                            f"borrar_imagen_"
-                            f"{item['id']}_v103"
+                st.download_button(
+                    tr(
+                        "⬇ Descargar imágenes (ZIP)",
+                        "⬇ Télécharger les images (ZIP)"
+                    ),
+                    zip_bytes,
+                    file_name=(
+                        "TerroCore_imagenes_video.zip"
+                        if modo == "video"
+                        else "TerroCore_imagenes.zip"
+                    ),
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="zip_v13"
+                )
+
+
+    # ========================================================
+    # TARJETAS DE FOTOGRAMAS
+    # ========================================================
+    st.subheader(
+        tr(
+            "Fotogramas analizados"
+            if modo == "video"
+            else "Imágenes analizadas",
+            "Images analysées"
+        )
+    )
+
+    # 5 tarjetas por fila en escritorio.
+    per_row = 5
+
+    for start in range(
+        0,
+        len(active_items),
+        per_row
+    ):
+        cols = st.columns(
+            per_row,
+            gap="small"
+        )
+
+        for offset, col in enumerate(
+            cols
+        ):
+            idx = start + offset
+
+            if idx >= len(active_items):
+                continue
+
+            item = active_items[
+                idx
+            ]
+
+            with col:
+                with st.container(border=True):
+                    st.image(
+                        cv2.cvtColor(
+                            item["annotated"],
+                            cv2.COLOR_BGR2RGB
                         ),
                         use_container_width=True
                     )
 
-                if delete_clicked:
-                    st.session_state.imagenes_v103_items = [
-                        x
-                        for x
-                        in st.session_state.imagenes_v103_items
-                        if x["id"] != item["id"]
-                    ]
-                    st.rerun()
+                    if modo == "video":
+                        title_text = tr(
+                            f"Escena {item['scene']} · {formato_tiempo(item['time'])}",
+                            f"Scène {item['scene']} · {formato_tiempo(item['time'])}"
+                        )
+                    else:
+                        title_text = item["name"]
 
-                st.image(
-                    cv2.cvtColor(
-                        item["annotated"],
-                        cv2.COLOR_BGR2RGB
-                    ),
-                    use_container_width=True
-                )
+                    st.markdown(
+                        f'<div class="scene-card-title">{title_text}</div>',
+                        unsafe_allow_html=True
+                    )
 
-    elif not uploaded_images:
+                    st.markdown(
+                        f'<div class="scene-card-sub">'
+                        f'{item["count"]} '
+                        f'{tr("surcos", "rangs")}'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
 
-        with left:
-            st.info(
-                tr(
-                    "Sube una o varias fotografías del viñedo.",
-                    "Importez une ou plusieurs photographies du vignoble."
-                )
-            )
+                    view_col, delete_col = st.columns(
+                        [1, 1]
+                    )
 
-    else:
+                    with view_col:
+                        if st.button(
+                            tr(
+                                "👁 Ver",
+                                "👁 Voir"
+                            ),
+                            key=f"ver_v13_{modo}_{idx}",
+                            use_container_width=True
+                        ):
+                            st.session_state.escena_activa_v13 = idx
+                            st.rerun()
 
-        with left:
-            st.info(
-                tr(
-                    "Presiona “Analizar imágenes”.",
-                    "Appuyez sur « Analyser les images »."
-                )
-            )
+                    with delete_col:
+                        if st.button(
+                            tr(
+                                "🗑 Borrar",
+                                "🗑 Supprimer"
+                            ),
+                            key=f"delete_v13_{modo}_{idx}",
+                            use_container_width=True
+                        ):
+                            if modo == "video":
+                                del st.session_state.video_v13_items[idx]
+                            else:
+                                del st.session_state.imagenes_v13_items[idx]
+
+                            st.session_state.escena_activa_v13 = max(
+                                0,
+                                min(
+                                    st.session_state.escena_activa_v13,
+                                    len(active_items) - 2
+                                )
+                            )
+                            st.rerun()
