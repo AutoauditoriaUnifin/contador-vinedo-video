@@ -22,7 +22,7 @@ from scipy.interpolate import UnivariateSpline
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-LOGO_PATH = BASE_DIR / "terrocore_header.png"
+LOGO_PATH = BASE_DIR / "terrocore(1) (1).png"
 
 
 def cargar_logo_base64():
