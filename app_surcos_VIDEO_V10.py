@@ -3494,65 +3494,9 @@ else:
 
 
 # ============================================================
-# PANEL PRINCIPAL - FOTOGRAMA GRANDE
+# EL FOTOGRAMA GRANDE INICIAL FUE ELIMINADO
+# Ahora los resultados aparecen primero.
 # ============================================================
-
-with main_col:
-    if active_items:
-        active_index = min(
-            st.session_state.escena_activa_v13,
-            len(active_items) - 1
-        )
-
-        active_item = active_items[
-            active_index
-        ]
-
-        with st.container(border=True):
-            st.markdown(
-                tr(
-                    "### Fotograma analizado",
-                    "### Image analysée"
-                )
-            )
-
-            st.image(
-                cv2.cvtColor(
-                    active_item["annotated"],
-                    cv2.COLOR_BGR2RGB
-                ),
-                use_container_width=True
-            )
-
-            st.markdown(
-                """
-                <div class="legend-bar">
-                    <div class="legend-chip">
-                        <span class="dot-green"></span>Surco detectado
-                    </div>
-                    <div class="legend-chip">
-                        <span class="dot-red"></span>Tramo con poca vegetación
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-    else:
-        with st.container(border=True):
-            st.markdown(
-                tr(
-                    "### Fotograma analizado",
-                    "### Image analysée"
-                )
-            )
-
-            st.info(
-                tr(
-                    "Sube un video o imágenes y presiona Analizar para comenzar.",
-                    "Importez une vidéo ou des images puis lancez l’analyse."
-                )
-            )
-
 
 # ============================================================
 # RESULTADOS GENERALES
