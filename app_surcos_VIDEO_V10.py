@@ -22,7 +22,7 @@ from scipy.interpolate import UnivariateSpline
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-LOGO_PATH = BASE_DIR / "terrocore.png"
+LOGO_PATH = BASE_DIR / "terrocore_header.png"
 
 
 def cargar_logo_base64():
@@ -369,7 +369,7 @@ st.markdown(
 )
 
 # ============================================================
-# CABECERA
+# CABECERA - SIN HTML PARA EVITAR CUADRO NEGRO
 # ============================================================
 
 titulo_idioma = (
@@ -378,87 +378,32 @@ titulo_idioma = (
     else "Analyse intelligente du vignoble"
 )
 
-if LOGO_TERROCORE_BASE64:
-    st.markdown(
-        f"""
-        <div style="
-            display:flex;
-            align-items:center;
-            gap:18px;
-            margin-bottom:8px;
-        ">
-            <img
-                src="data:image/png;base64,{LOGO_TERROCORE_BASE64}"
-                style="
-                    width:150px;
-                    height:auto;
-                    object-fit:contain;
-                    display:block;
-                "
-            >
-            <div>
-                <div style="
-                    font-family:Georgia,serif;
-                    font-size:2.65rem;
-                    font-weight:700;
-                    color:white;
-                    line-height:1.0;
-                ">
-                    TerroCore image AI
-                </div>
+header_logo_col, header_text_col = st.columns(
+    [1.35, 4.65],
+    vertical_alignment="center"
+)
 
-                <div style="
-                    font-family:Georgia,serif;
-                    color:#F5DADD;
-                    font-size:1.25rem;
-                    margin-top:4px;
-                ">
-                    {titulo_idioma}
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
+with header_logo_col:
+    if LOGO_PATH.exists():
+        st.image(
+            str(LOGO_PATH),
+            use_container_width=True
+        )
+
+with header_text_col:
+    st.markdown(
+        "## TerroCore image AI"
     )
-else:
-    st.markdown(
-        f"""
-        <div style="
-            display:flex;
-            align-items:center;
-            gap:14px;
-            margin-bottom:8px;
-        ">
-            <div>
-                <div style="
-                    font-family:Georgia,serif;
-                    font-size:2.65rem;
-                    font-weight:700;
-                    color:white;
-                    line-height:1.0;
-                ">
-                    TerroCore image AI
-                </div>
 
-                <div style="
-                    font-family:Georgia,serif;
-                    color:#F5DADD;
-                    font-size:1.25rem;
-                    margin-top:4px;
-                ">
-                    {titulo_idioma}
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
+    st.markdown(
+        f"**{titulo_idioma}**"
     )
 
 st.markdown(
-    f'<div class="terro-sub">'
-    f'{tr("Analiza video e imágenes del viñedo.", "Analyse les vidéos et les images du vignoble.")}'
-    f'</div>',
-    unsafe_allow_html=True
+    tr(
+        "Analiza video e imágenes del viñedo.",
+        "Analyse les vidéos et les images du vignoble."
+    )
 )
 
 # ============================================================
