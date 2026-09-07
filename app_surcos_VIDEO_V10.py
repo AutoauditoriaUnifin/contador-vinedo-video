@@ -2674,6 +2674,551 @@ def analizar(
     }
 
 
+
+# ============================================================
+# VIDEO: ANÁLISIS MÁS LENTO Y MÁS ESTRICTO
+# ============================================================
+
+def preprocesar_frame_video_lento(bgr):
+    """
+    Mejora el contraste local y conserva detalle fino.
+    Se usa SOLO en video para que las hileras se vean más claras.
+    """
+    frame = bgr.copy()
+    h, w = frame.shape[:2]
+
+    lado_largo = max(h, w)
+    if lado_largo < 1400:
+        escala = 1400.0 / max(lado_largo, 1)
+        frame = cv2.resize(
+            frame,
+            None,
+            fx=escala,
+            fy=escala,
+            interpolation=cv2.INTER_CUBIC
+        )
+
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    frame = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+
+    suave = cv2.GaussianBlur(frame, (0, 0), 0.8)
+    frame = cv2.addWeighted(frame, 1.18, suave, -0.18, 0)
+
+    return frame
+
+
+def suavizar_trayectoria_surco_video(points, spacing):
+    """
+    Endereza un poco más el surco que la versión de imágenes,
+    pero sin cambiarlo a otra hilera.
+    """
+    pts = np.asarray(points, dtype=np.float32)
+    n = len(pts)
+
+    if n < 9:
+        return pts
+
+    try:
+        eje = pts[-1] - pts[0]
+        eje_norm = float(np.linalg.norm(eje))
+        if eje_norm < 1e-6:
+            return pts
+
+        u = eje / eje_norm
+        v = np.array([-u[1], u[0]], dtype=np.float32)
+        base = pts[0].copy()
+
+        rel = pts - base
+        s = rel @ u
+        d = rel @ v
+
+        window = min(25, n if n % 2 == 1 else n - 1)
+        if window < 7:
+            return pts
+
+        d_smooth = savgol_filter(
+            d,
+            window_length=window,
+            polyorder=2,
+            mode='interp'
+        )
+
+        base_line = np.linspace(float(d[0]), float(d[-1]), n)
+
+        # Más recto que antes, pero no totalmente rígido.
+        d_mix = (
+            0.72 * d_smooth +
+            0.20 * d +
+            0.08 * base_line
+        )
+
+        reconstructed = (
+            base[None, :] +
+            s[:, None] * u[None, :] +
+            d_mix[:, None] * v[None, :]
+        ).astype(np.float32)
+
+        delta = reconstructed - pts
+        distance = np.linalg.norm(delta, axis=1)
+        maximum_move = max(1.0, float(spacing) * 0.08)
+
+        too_far = distance > maximum_move
+        if np.any(too_far):
+            scale = maximum_move / (distance[too_far] + 1e-6)
+            delta[too_far] *= scale[:, None]
+            reconstructed = pts + delta
+
+        reconstructed[0] = pts[0]
+        reconstructed[-1] = pts[-1]
+        return reconstructed.astype(np.float32)
+
+    except Exception:
+        return pts
+
+
+def trazar_direccion_video_lento(
+    seed,
+    initial_direction,
+    component,
+    response,
+    theta,
+    coherence,
+    green,
+    spacing,
+    occupancy
+):
+    """
+    Versión más estricta para video:
+    - pasos más cortos,
+    - menos salto lateral,
+    - más tolerancia para continuar en zonas secas,
+    - líneas más rectas.
+    """
+    h, w = response.shape
+
+    mask_full = (component["mask"] > 0).astype(np.uint8)
+    support = cv2.erode(mask_full, np.ones((7, 7), np.uint8), iterations=1)
+
+    point = np.asarray(seed, dtype=np.float64)
+    direction = np.asarray(initial_direction, dtype=np.float64)
+    direction /= (np.linalg.norm(direction) + 1e-9)
+
+    initial_direction = direction.copy()
+    initial_perpendicular = np.array(
+        [-initial_direction[1], initial_direction[0]],
+        dtype=np.float64
+    )
+    seed_point = point.copy()
+
+    points = [point.copy()]
+    green_scores = [0.0]
+
+    weak_steps = 0
+    step_length = 2.4
+    search_radius = max(1, int(spacing * 0.08))
+    max_lateral_drift = max(2.0, float(spacing) * 0.18)
+
+    maximum_steps = max(180, int(2.8 * max(h, w) / step_length))
+
+    for _ in range(maximum_steps):
+        xi = int(round(point[0]))
+        yi = int(round(point[1]))
+
+        if not (1 <= xi < w - 1 and 1 <= yi < h - 1):
+            break
+
+        local_theta = float(theta[yi, xi])
+        local_vector = np.array(
+            [np.cos(local_theta), np.sin(local_theta)],
+            dtype=np.float64
+        )
+
+        if np.dot(local_vector, direction) < 0:
+            local_vector *= -1.0
+
+        local_coherence = float(coherence[yi, xi])
+        dot_value = float(np.clip(np.dot(local_vector, direction), -1.0, 1.0))
+        angle_change = float(np.arccos(dot_value))
+
+        if local_coherence > 0.42 and angle_change < np.deg2rad(10.0):
+            direction = 0.965 * direction + 0.035 * local_vector
+            direction /= (np.linalg.norm(direction) + 1e-9)
+
+        predicted = point + direction * step_length
+        perpendicular = np.array([-direction[1], direction[0]], dtype=np.float64)
+
+        best_point = None
+        best_score = -1e9
+        best_response = 0.0
+
+        offsets = np.linspace(-search_radius, search_radius, search_radius * 2 + 1)
+        for offset in offsets:
+            candidate = predicted + perpendicular * offset
+            cx = int(round(candidate[0]))
+            cy = int(round(candidate[1]))
+
+            if not (0 <= cx < w and 0 <= cy < h):
+                continue
+
+            if mask_full[cy, cx] == 0:
+                continue
+
+            visual = float(response[cy, cx])
+            coherent = float(coherence[cy, cx])
+            local_green = float(green[cy, cx])
+            candidate_theta = float(theta[cy, cx])
+            angle_penalty = diferencia_angular_rad(
+                candidate_theta,
+                float(np.arctan2(direction[1], direction[0]) % np.pi)
+            )
+
+            lateral_from_seed = abs(
+                float(np.dot(candidate - seed_point, initial_perpendicular))
+            )
+
+            side1 = candidate + perpendicular * max(1.2, spacing * 0.18)
+            side2 = candidate - perpendicular * max(1.2, spacing * 0.18)
+            side_values = []
+            for side in (side1, side2):
+                sx = int(round(side[0]))
+                sy = int(round(side[1]))
+                if 0 <= sx < w and 0 <= sy < h:
+                    side_values.append(float(response[sy, sx]))
+            lateral_competition = max(side_values) if side_values else 0.0
+
+            score = (
+                1.55 * visual +
+                0.30 * coherent +
+                0.06 * local_green -
+                0.070 * abs(float(offset)) -
+                0.95 * angle_penalty -
+                0.14 * max(0.0, lateral_from_seed - max_lateral_drift) -
+                0.90 * max(0.0, lateral_competition - visual)
+            )
+
+            if occupancy[cy, cx] > 0:
+                score -= 1.20
+
+            if support[cy, cx] == 0:
+                score -= 0.35
+
+            if lateral_from_seed > max_lateral_drift + spacing * 0.08:
+                score -= 2.20
+
+            if score > best_score:
+                best_score = score
+                best_point = candidate
+                best_response = visual
+
+        if best_point is None:
+            break
+
+        lateral_jump = float(abs(np.dot(best_point - predicted, perpendicular)))
+
+        # Permitir cruzar pequeños huecos secos siguiendo la dirección.
+        if best_response < 0.042:
+            weak_steps += 1
+            best_point = predicted
+            bx = int(round(best_point[0]))
+            by = int(round(best_point[1]))
+            if not (0 <= bx < w and 0 <= by < h and mask_full[by, bx] > 0):
+                break
+        else:
+            weak_steps = max(0, weak_steps - 1)
+
+        if lateral_jump > max(1.5, float(spacing) * 0.12):
+            break
+
+        if weak_steps > 14:
+            break
+
+        movement = best_point - point
+        movement_norm = float(np.linalg.norm(movement))
+        if movement_norm > 1e-6:
+            movement /= movement_norm
+            if np.dot(movement, direction) > 0.93:
+                direction = 0.975 * direction + 0.025 * movement
+                direction /= (np.linalg.norm(direction) + 1e-9)
+
+        point = best_point
+        points.append(point.copy())
+
+        px = int(round(point[0]))
+        py = int(round(point[1]))
+        y0 = max(0, py - 5)
+        y1 = min(h, py + 6)
+        x0 = max(0, px - 5)
+        x1 = min(w, px + 6)
+        patch = green[y0:y1, x0:x1]
+        green_scores.append(float(np.mean(patch > 0)) if patch.size else 0.0)
+
+    return (
+        np.asarray(points, dtype=np.float32),
+        np.asarray(green_scores, dtype=np.float32)
+    )
+
+
+def trazar_surco_local_video_lento(
+    seed,
+    component,
+    response,
+    theta,
+    coherence,
+    green,
+    spacing,
+    occupancy
+):
+    h, w = response.shape
+
+    sx = int(np.clip(round(seed[0]), 0, w - 1))
+    sy = int(np.clip(round(seed[1]), 0, h - 1))
+
+    local_theta = float(theta[sy, sx])
+    if (
+        float(coherence[sy, sx]) < 0.26 or
+        diferencia_angular_rad(local_theta, component["angle"]) > np.deg2rad(28.0)
+    ):
+        local_theta = float(component["angle"])
+
+    direction = np.array(
+        [np.cos(local_theta), np.sin(local_theta)],
+        dtype=np.float64
+    )
+
+    forward, forward_green = trazar_direccion_video_lento(
+        seed,
+        direction,
+        component,
+        response,
+        theta,
+        coherence,
+        green,
+        spacing,
+        occupancy
+    )
+
+    backward, backward_green = trazar_direccion_video_lento(
+        seed,
+        -direction,
+        component,
+        response,
+        theta,
+        coherence,
+        green,
+        spacing,
+        occupancy
+    )
+
+    if len(backward) > 1:
+        points = np.vstack([backward[:0:-1], forward])
+        green_scores = np.concatenate([backward_green[:0:-1], forward_green])
+    else:
+        points = forward
+        green_scores = forward_green
+
+    points = suavizar_trayectoria_surco_video(points, spacing)
+    return points, green_scores
+
+
+def estados_color_video(green_scores):
+    values = np.asarray(green_scores, dtype=np.float32)
+    positive = values[values > 0.003]
+
+    if len(positive) >= 5:
+        threshold = float(np.clip(np.percentile(positive, 48) * 0.95, 0.035, 0.14))
+    else:
+        threshold = 0.055
+
+    state = values >= threshold
+
+    if len(state) >= 5:
+        original = state.copy()
+        for i in range(1, len(state) - 1):
+            if original[i - 1] == original[i + 1] and original[i] != original[i - 1]:
+                state[i] = original[i - 1]
+
+    return state
+
+
+def analizar_video_frame_lento(pil_img):
+    """
+    Analizador específico para VIDEO.
+    No toca el flujo de imágenes.
+    """
+    original = cv2.cvtColor(np.asarray(pil_img.convert("RGB")), cv2.COLOR_RGB2BGR)
+    original = preprocesar_frame_video_lento(original)
+    h, w = original.shape[:2]
+
+    (
+        green,
+        theta,
+        coherence,
+        response,
+        components,
+        ny,
+        nx
+    ) = detectar_componentes_vinedo(
+        original,
+        tile=max(22, int(min(h, w) / 22))
+    )
+
+    if not components:
+        raise RuntimeError(
+            tr(
+                "No se encontró una zona con patrón claro de surcos en el video.",
+                "Aucune zone présentant un motif clair de rangs n’a été détectée dans la vidéo."
+            )
+        )
+
+    # En video, usar la parcela dominante para evitar líneas fuera de la zona principal.
+    components = components[:1]
+
+    total_component_tiles = sum(component["tiles"] for component in components)
+    tile_coverage = total_component_tiles / max(ny * nx, 1)
+    if tile_coverage < 0.10:
+        raise RuntimeError(
+            tr(
+                "El fotograma no contiene suficiente superficie útil de viñedo.",
+                "L’image ne contient pas une surface utile de vignoble suffisante."
+            )
+        )
+
+    final = original.copy()
+    occupancy = np.zeros((h, w), dtype=np.uint8)
+    all_tracks = []
+    total_green = 0
+    total_red = 0
+    accepted_components = 0
+    component_angles = []
+
+    for component in components:
+        seeds, spacing = semillas_componente(component, response)
+        if spacing is None or len(seeds) < 4:
+            continue
+
+        component_zone = (component["mask"] > 0)
+        component_green = float(np.mean(green[component_zone] > 0)) if np.any(component_zone) else 0.0
+        if component_green < 0.025:
+            continue
+
+        accepted_components += 1
+        component_angles.append(np.rad2deg(component["angle"]))
+
+        for seed in seeds:
+            points, green_scores = trazar_surco_local_video_lento(
+                seed,
+                component,
+                response,
+                theta,
+                coherence,
+                green,
+                spacing,
+                occupancy
+            )
+
+            if len(points) < 10:
+                continue
+
+            occupied_hits = 0
+            sample_step = max(1, len(points) // 14)
+            for px_test, py_test in np.rint(points[::sample_step]).astype(np.int32):
+                if 0 <= px_test < w and 0 <= py_test < h and occupancy[py_test, px_test] > 0:
+                    occupied_hits += 1
+            if occupied_hits >= 3:
+                continue
+
+            line_length = float(np.sum(np.linalg.norm(np.diff(points, axis=0), axis=1)))
+            if line_length < max(32.0, spacing * 3.0):
+                continue
+
+            green_support = float(np.mean(np.asarray(green_scores) >= 0.015))
+            if green_support < 0.08:
+                continue
+
+            # Rechazar trazos demasiado ondulados o con salto lateral excesivo.
+            axis = points[-1] - points[0]
+            axis_norm = float(np.linalg.norm(axis))
+            if axis_norm < 1e-6:
+                continue
+            u = axis / axis_norm
+            v = np.array([-u[1], u[0]], dtype=np.float32)
+            lateral = np.abs((points - points[0]) @ v)
+            if float(np.percentile(lateral, 95)) > max(3.0, float(spacing) * 0.20):
+                continue
+
+            states = estados_color_video(green_scores)
+            track_index = len(all_tracks) + 1
+
+            for j in range(len(points) - 1):
+                p1 = points[j]
+                p2 = points[j + 1]
+                if not (np.all(np.isfinite(p1)) and np.all(np.isfinite(p2))):
+                    continue
+
+                x1 = int(np.clip(round(p1[0]), 0, w - 1))
+                y1 = int(np.clip(round(p1[1]), 0, h - 1))
+                x2 = int(np.clip(round(p2[0]), 0, w - 1))
+                y2 = int(np.clip(round(p2[1]), 0, h - 1))
+
+                idx1 = min(j, len(states) - 1)
+                idx2 = min(j + 1, len(states) - 1)
+                segment_green_score = float(0.5 * (float(green_scores[idx1]) + float(green_scores[idx2])))
+                green_segment = bool(states[idx1] and states[idx2] and segment_green_score >= 0.050)
+
+                if green_segment:
+                    color = (0, 240, 0)
+                    total_green += 1
+                else:
+                    color = (0, 0, 255)
+                    total_red += 1
+
+                cv2.line(final, (x1, y1), (x2, y2), color, 1, cv2.LINE_AA)
+
+            middle = points[len(points) // 2]
+            mx = int(np.clip(round(middle[0]), 0, w - 1))
+            my = int(np.clip(round(middle[1]), 0, h - 1))
+
+            cv2.putText(final, str(track_index), (mx + 4, my - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.30, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(final, str(track_index), (mx + 4, my - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.30, (10, 10, 10), 1, cv2.LINE_AA)
+
+            track_pixels = np.rint(points).astype(np.int32)
+            occupancy_line = np.zeros((h, w), dtype=np.uint8)
+            cv2.polylines(
+                occupancy_line,
+                [track_pixels],
+                False,
+                255,
+                max(3, int(spacing * 0.34)),
+                cv2.LINE_AA
+            )
+            occupancy = np.maximum(occupancy, occupancy_line)
+            all_tracks.append(points)
+
+    if accepted_components == 0 or len(all_tracks) < 4:
+        raise RuntimeError(
+            tr(
+                "Se encontró viñedo, pero el patrón de surcos del video no fue suficientemente claro.",
+                "Le vignoble a été détecté, mais le motif des rangs dans la vidéo n’était pas suffisamment clair."
+            )
+        )
+
+    total = total_green + total_red
+    green_pct = 100.0 * total_green / total if total else 0.0
+    red_pct = 100.0 - green_pct if total else 0.0
+    mean_angle = float(np.mean(component_angles)) if component_angles else 0.0
+
+    return {
+        "image": cv2.cvtColor(final, cv2.COLOR_BGR2RGB),
+        "count": int(len(all_tracks)),
+        "green_pct": float(green_pct),
+        "red_pct": float(red_pct),
+        "angle": mean_angle
+    }
+
+
 # ============================================================
 # VIDEO: CALIDAD Y SIMILITUD
 # ============================================================
@@ -2816,14 +3361,13 @@ def extraer_candidatos(video_path):
         else 0.0
     )
 
-    # Muestreo automático:
-    # videos largos = cada 4 s; cortos = cada 2 s.
+    # Muestreo automático más fino para mejorar la detección en video.
     if duration > 180:
-        sample_seconds = 4.0
-    elif duration > 60:
         sample_seconds = 3.0
-    else:
+    elif duration > 60:
         sample_seconds = 2.0
+    else:
+        sample_seconds = 1.5
 
     candidates = []
 
@@ -2933,7 +3477,7 @@ def extraer_candidatos(video_path):
             filtered.append(item)
 
     # No procesar demasiadas imágenes en una sola corrida.
-    max_frames = 20
+    max_frames = 28
 
     if len(filtered) > max_frames:
         indexes = np.linspace(
@@ -2976,7 +3520,7 @@ def analizar_frames_video(info):
         )
 
         try:
-            result = analizar(
+            result = analizar_video_frame_lento(
                 pil
             )
 
