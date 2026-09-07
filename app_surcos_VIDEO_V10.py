@@ -3200,127 +3200,601 @@ def video_v33_semillas_surcos(mask, y0, y1):
                 seeds[i] = max(minimum, regular[i] - max_deviation)
     return (np.rint(seeds).astype(np.int32), float(spacing), int(x0), int(x1))
 
+
 def video_v33_crear_respuesta(bgr, green_mask):
     """
-    Combina vegetación con textura vertical.
-    Esto permite seguir también hileras secas.
+    Respuesta específica para VIDEO.
+
+    Prioriza el centro real de la vegetación y una franja oscura
+    longitudinal. Evita depender demasiado de los bordes Sobel,
+    porque los bordes pueden hacer que la línea se vaya de un lado
+    al otro del mismo surco.
     """
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    sx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    sx = np.abs(sx)
-    p99 = np.percentile(sx, 99)
-    if p99 > 0:
-        sx = np.clip(sx / p99, 0, 1)
+    gray = cv2.cvtColor(
+        bgr,
+        cv2.COLOR_BGR2GRAY
+    ).astype(np.float32) / 255.0
+
+    gm = (
+        green_mask > 0
+    ).astype(np.float32)
+
+    # Centro de vegetación.
+    green_center = cv2.GaussianBlur(
+        gm,
+        (0, 0),
+        sigmaX=2.4,
+        sigmaY=1.2
+    )
+
+    # Zonas longitudinales oscuras:
+    # útil para mantener la trayectoria aun cuando falte verde.
+    background = cv2.GaussianBlur(
+        gray,
+        (0, 0),
+        sigmaX=6.0,
+        sigmaY=2.0
+    )
+
+    darkness = np.maximum(
+        background - gray,
+        0.0
+    )
+
+    p99 = float(
+        np.percentile(
+            darkness,
+            99
+        )
+    )
+
+    if p99 > 1e-6:
+        darkness = np.clip(
+            darkness / p99,
+            0.0,
+            1.0
+        )
     else:
-        sx[:] = 0
-    sx = cv2.GaussianBlur(sx, (0, 0), sigmaX=2.0, sigmaY=1.0)
-    gm = (green_mask > 0).astype(np.float32)
-    gm = cv2.GaussianBlur(gm, (0, 0), sigmaX=2.0, sigmaY=1.3)
-    response = 0.7 * gm + 0.3 * sx
+        darkness[:] = 0.0
+
+    darkness = cv2.GaussianBlur(
+        darkness.astype(np.float32),
+        (0, 0),
+        sigmaX=2.3,
+        sigmaY=1.0
+    )
+
+    response = (
+        0.82 * green_center
+        +
+        0.18 * darkness
+    )
+
+    response = cv2.GaussianBlur(
+        response.astype(np.float32),
+        (0, 0),
+        sigmaX=0.7,
+        sigmaY=0.45
+    )
+
     return response
 
-def video_v33_seguir_surco(response, green_mask, seed, left, right, y0, y1):
+
+def video_v33_seguir_surco(
+    response,
+    green_mask,
+    seed,
+    left,
+    right,
+    y0,
+    y1
+):
     """
-    Sigue el centro del surco sin brincar a la hilera vecina.
-    La línea puede inclinarse y curvarse suavemente dentro de su carril.
+    V3.4 - trayectoria suave siguiendo el centro del surco.
+
+    La hilera conserva su carril independiente, por lo que no puede
+    brincar al surco vecino. Dentro de ese carril se busca la mejor
+    trayectoria completa mediante programación dinámica.
+
+    Resultado:
+    - puede inclinarse;
+    - puede seguir curvas suaves;
+    - evita zigzag;
+    - atraviesa huecos secos manteniendo la misma trayectoria.
     """
-    height = max(1, y1 - y0)
-    step = max(3, int(height / 190))
-    ys = np.arange(y0, y1, step, dtype=np.int32)
+    height = max(
+        1,
+        y1 - y0
+    )
 
-    lane_width = max(5.0, float(right - left))
-    safety = max(0.8, lane_width * 0.08)
-    hard_left = float(left + safety)
-    hard_right = float(right - safety)
+    step = max(
+        3,
+        int(
+            height / 210
+        )
+    )
 
-    if hard_right - hard_left < 2.0:
-        hard_left = float(left + 0.5)
-        hard_right = float(right - 0.5)
+    ys = np.arange(
+        y0,
+        y1,
+        step,
+        dtype=np.int32
+    )
 
-    seed = float(np.clip(seed, hard_left, hard_right))
+    lane_width = max(
+        5.0,
+        float(
+            right - left
+        )
+    )
 
-    xs = []
-    greens = []
-    prev_x = seed
-    velocity = 0.0
+    safety = max(
+        0.7,
+        lane_width * 0.055
+    )
 
-    search_radius = max(2, int(lane_width * 0.30))
-    max_step_shift = max(0.75, lane_width * 0.075)
-    max_total_deviation = lane_width * 0.40
+    hard_left = int(
+        np.ceil(
+            left + safety
+        )
+    )
 
-    for y in ys:
-        ya = max(y0, y - step // 2 - 1)
-        yb = min(y1, y + step // 2 + 2)
+    hard_right = int(
+        np.floor(
+            right - safety
+        )
+    )
 
-        predicted = prev_x + velocity
-        predicted = float(np.clip(predicted, seed - max_total_deviation, seed + max_total_deviation))
-        predicted = float(np.clip(predicted, hard_left, hard_right))
+    if hard_right - hard_left < 3:
+        hard_left = int(
+            np.floor(
+                left + 0.5
+            )
+        )
+        hard_right = int(
+            np.ceil(
+                right - 0.5
+            )
+        )
 
-        a = max(int(np.floor(hard_left)), int(round(predicted)) - search_radius)
-        b = min(int(np.ceil(hard_right)), int(round(predicted)) + search_radius)
+    xs_candidates = np.arange(
+        hard_left,
+        hard_right + 1,
+        dtype=np.int32
+    )
 
-        if b <= a:
-            x_new = predicted
-        else:
-            candidates = np.arange(a, b + 1, dtype=np.int32)
-            visual = np.zeros(len(candidates), dtype=np.float32)
+    if (
+        len(ys) < 2
+        or
+        len(xs_candidates) < 2
+    ):
+        points = np.column_stack([
+            np.full(
+                len(ys),
+                float(seed),
+                dtype=np.float32
+            ),
+            ys.astype(
+                np.float32
+            )
+        ])
 
-            for j, x in enumerate(candidates):
-                xa = max(int(np.floor(hard_left)), x - 3)
-                xb = min(int(np.ceil(hard_right)) + 1, x + 4)
-                patch = response[ya:yb, xa:xb]
-                visual[j] = float(patch.mean()) if patch.size else 0.0
+        return (
+            points,
+            np.zeros(
+                len(ys),
+                dtype=np.float32
+            )
+        )
 
-            local_peak = float(np.max(visual))
-            local_median = float(np.median(visual))
+    n_y = len(ys)
+    n_x = len(xs_candidates)
 
-            dist_pred = np.abs(candidates - predicted) / max(search_radius, 1)
-            dist_seed = np.abs(candidates - seed) / max(max_total_deviation, 1.0)
+    # --------------------------------------------------------
+    # Evidencia visual en cada altura/candidato.
+    # --------------------------------------------------------
+    visual = np.zeros(
+        (n_y, n_x),
+        dtype=np.float32
+    )
 
-            score = visual - 0.18 * dist_pred - 0.055 * dist_seed
-            best_index = int(np.argmax(score))
-            candidate_best = float(candidates[best_index])
+    green_evidence = np.zeros(
+        (n_y, n_x),
+        dtype=np.float32
+    )
 
-            strong_evidence = (
-                local_peak >= 0.034
-                and
-                local_peak - local_median >= 0.0045
+    for iy, y in enumerate(ys):
+
+        ya = max(
+            y0,
+            int(y) - step // 2 - 1
+        )
+
+        yb = min(
+            y1,
+            int(y) + step // 2 + 2
+        )
+
+        for ix, x in enumerate(
+            xs_candidates
+        ):
+            xa = max(
+                hard_left,
+                int(x) - 3
             )
 
-            if strong_evidence:
-                target = candidate_best
-            else:
-                # Si hay un tramo seco, mantener la dirección del mismo surco.
-                target = predicted
-                velocity *= 0.62
+            xb = min(
+                hard_right + 1,
+                int(x) + 4
+            )
 
-            dx = float(np.clip(target - prev_x, -max_step_shift, max_step_shift))
-            x_new = prev_x + dx
-            velocity = 0.82 * velocity + 0.18 * dx
+            patch_response = response[
+                ya:yb,
+                xa:xb
+            ]
 
-        x_new = float(np.clip(x_new, seed - max_total_deviation, seed + max_total_deviation))
-        x_new = float(np.clip(x_new, hard_left, hard_right))
+            patch_green = green_mask[
+                ya:yb,
+                xa:xb
+            ]
 
-        xi = int(round(x_new))
-        xa = max(int(np.floor(hard_left)), xi - 4)
-        xb = min(int(np.ceil(hard_right)) + 1, xi + 5)
-        patch_green = green_mask[ya:yb, xa:xb]
-        green_score = float(np.mean(patch_green > 0)) if patch_green.size else 0.0
+            if patch_response.size:
+                visual[iy, ix] = float(
+                    np.mean(
+                        patch_response
+                    )
+                )
 
-        xs.append(x_new)
-        greens.append(green_score)
-        prev_x = x_new
+            if patch_green.size:
+                green_evidence[iy, ix] = float(
+                    np.mean(
+                        patch_green > 0
+                    )
+                )
 
-    xs = np.asarray(xs, dtype=np.float32)
-    greens = np.asarray(greens, dtype=np.float32)
+    # Normalizar ligeramente por fila.
+    row_median = np.median(
+        visual,
+        axis=1,
+        keepdims=True
+    )
 
+    row_peak = np.max(
+        visual,
+        axis=1,
+        keepdims=True
+    )
+
+    scale = np.maximum(
+        row_peak - row_median,
+        0.025
+    )
+
+    local_visual = (
+        visual - row_median
+    ) / scale
+
+    local_visual = np.clip(
+        local_visual,
+        -1.0,
+        2.0
+    )
+
+    # --------------------------------------------------------
+    # Programación dinámica:
+    # favorecer evidencia visual y movimientos pequeños.
+    # --------------------------------------------------------
+    dp = np.full(
+        (n_y, n_x),
+        -1e9,
+        dtype=np.float32
+    )
+
+    parent = np.full(
+        (n_y, n_x),
+        -1,
+        dtype=np.int16
+    )
+
+    seed = float(
+        np.clip(
+            seed,
+            hard_left,
+            hard_right
+        )
+    )
+
+    seed_dist = np.abs(
+        xs_candidates.astype(
+            np.float32
+        ) - seed
+    ) / max(
+        lane_width,
+        1.0
+    )
+
+    dp[0] = (
+        1.65 * local_visual[0]
+        +
+        0.18 * green_evidence[0]
+        -
+        0.32 * seed_dist
+    )
+
+    max_shift = max(
+        2,
+        int(
+            round(
+                lane_width * 0.16
+            )
+        )
+    )
+
+    for iy in range(
+        1,
+        n_y
+    ):
+
+        # En una franja con poca señal, se aumenta el castigo
+        # al movimiento para atravesar el hueco en la misma dirección.
+        row_strength = float(
+            np.max(
+                visual[iy]
+            )
+            -
+            np.median(
+                visual[iy]
+            )
+        )
+
+        weak_row = (
+            row_strength < 0.030
+        )
+
+        motion_weight = (
+            0.38
+            if weak_row
+            else 0.22
+        )
+
+        for ix, x in enumerate(
+            xs_candidates
+        ):
+
+            j0 = max(
+                0,
+                ix - max_shift
+            )
+
+            j1 = min(
+                n_x,
+                ix + max_shift + 1
+            )
+
+            previous_indices = np.arange(
+                j0,
+                j1,
+                dtype=np.int32
+            )
+
+            shifts = np.abs(
+                xs_candidates[
+                    previous_indices
+                ].astype(np.float32)
+                -
+                float(x)
+            )
+
+            transition = (
+                dp[
+                    iy - 1,
+                    previous_indices
+                ]
+                -
+                motion_weight
+                *
+                (
+                    shifts /
+                    max(
+                        lane_width,
+                        1.0
+                    )
+                )
+                ** 1.6
+                *
+                8.0
+            )
+
+            best_local = int(
+                np.argmax(
+                    transition
+                )
+            )
+
+            best_parent = int(
+                previous_indices[
+                    best_local
+                ]
+            )
+
+            dp[iy, ix] = (
+                transition[
+                    best_local
+                ]
+                +
+                1.65
+                *
+                local_visual[
+                    iy,
+                    ix
+                ]
+                +
+                0.18
+                *
+                green_evidence[
+                    iy,
+                    ix
+                ]
+            )
+
+            parent[
+                iy,
+                ix
+            ] = best_parent
+
+    # --------------------------------------------------------
+    # Recuperar la mejor ruta.
+    # --------------------------------------------------------
+    path_index = np.zeros(
+        n_y,
+        dtype=np.int32
+    )
+
+    path_index[-1] = int(
+        np.argmax(
+            dp[-1]
+        )
+    )
+
+    for iy in range(
+        n_y - 1,
+        0,
+        -1
+    ):
+        p = int(
+            parent[
+                iy,
+                path_index[iy]
+            ]
+        )
+
+        if p < 0:
+            p = int(
+                path_index[iy]
+            )
+
+        path_index[
+            iy - 1
+        ] = p
+
+    xs = xs_candidates[
+        path_index
+    ].astype(
+        np.float32
+    )
+
+    # --------------------------------------------------------
+    # Suavizado para que la línea se vea como la referencia:
+    # curva limpia, no serrucho.
+    # --------------------------------------------------------
     if len(xs) >= 9:
-        smooth = gaussian_filter1d(xs, sigma=0.75, mode='nearest')
-        xs = 0.78 * smooth + 0.22 * xs
-        xs = np.clip(xs, seed - max_total_deviation, seed + max_total_deviation)
-        xs = np.clip(xs, hard_left, hard_right)
 
-    return np.column_stack([xs, ys]).astype(np.float32), greens
+        sigma = max(
+            1.8,
+            min(
+                3.2,
+                len(xs) / 62.0
+            )
+        )
+
+        xs_smooth = gaussian_filter1d(
+            xs,
+            sigma=sigma,
+            mode="nearest"
+        )
+
+        # Segunda pasada suave.
+        xs_smooth = gaussian_filter1d(
+            xs_smooth,
+            sigma=1.0,
+            mode="nearest"
+        )
+
+        # Nunca salir del propio carril.
+        xs = np.clip(
+            xs_smooth,
+            hard_left,
+            hard_right
+        )
+
+    # --------------------------------------------------------
+    # Medir vegetación sobre la trayectoria final.
+    # --------------------------------------------------------
+    greens = []
+
+    for y, x in zip(
+        ys,
+        xs
+    ):
+
+        ya = max(
+            y0,
+            int(y) - step // 2 - 1
+        )
+
+        yb = min(
+            y1,
+            int(y) + step // 2 + 2
+        )
+
+        xi = int(
+            round(
+                float(x)
+            )
+        )
+
+        radius = max(
+            3,
+            int(
+                round(
+                    lane_width * 0.20
+                )
+            )
+        )
+
+        xa = max(
+            hard_left,
+            xi - radius
+        )
+
+        xb = min(
+            hard_right + 1,
+            xi + radius + 1
+        )
+
+        patch_green = green_mask[
+            ya:yb,
+            xa:xb
+        ]
+
+        green_score = (
+            float(
+                np.mean(
+                    patch_green > 0
+                )
+            )
+            if patch_green.size
+            else 0.0
+        )
+
+        greens.append(
+            green_score
+        )
+
+    return (
+        np.column_stack([
+            xs,
+            ys.astype(
+                np.float32
+            )
+        ]).astype(
+            np.float32
+        ),
+        np.asarray(
+            greens,
+            dtype=np.float32
+        )
+    )
 
 def video_v33_estado_verde(green_scores):
     positive = green_scores[green_scores > 0]
@@ -3335,47 +3809,198 @@ def video_v33_estado_verde(green_scores):
             state[i] = np.sum(original[i - 2:i + 3]) >= 3
     return state
 
-def video_v33_validar_escena_vinedo(rot_mask, y0, y1, x0, x1, seeds, spacing, weight_fraction, spread, line_count):
-    """Evita líneas sobre techo, patio, jardín o escenas sin viñedo claro."""
-    if line_count < 8:
-        return False
-    if spread < 0.14:
-        return False
-    if weight_fraction < 0.10:
-        return False
-    if y1 <= y0 or x1 <= x0 or len(seeds) < 5:
+
+def video_v33_validar_escena_vinedo(
+    rot_mask,
+    y0,
+    y1,
+    x0,
+    x1,
+    seeds,
+    spacing,
+    weight_fraction,
+    spread,
+    line_count
+):
+    """
+    Rechazo conservador de escenas que no parezcan viñedo.
+
+    Si hay duda, NO se dibuja:
+    mejor omitir un fotograma que llenar un techo o patio de líneas.
+    """
+    if line_count < 10:
         return False
 
-    zone = (rot_mask[y0:y1, x0:x1] > 0).astype(np.float32)
+    if spread < 0.15:
+        return False
+
+    if weight_fraction < 0.12:
+        return False
+
+    if (
+        y1 <= y0
+        or
+        x1 <= x0
+        or
+        len(seeds) < 6
+    ):
+        return False
+
+    zone = (
+        rot_mask[
+            y0:y1,
+            x0:x1
+        ] > 0
+    ).astype(
+        np.float32
+    )
+
     if zone.size == 0:
         return False
 
-    green_ratio = float(np.mean(zone))
-    if green_ratio < 0.025:
+    green_ratio = float(
+        np.mean(
+            zone
+        )
+    )
+
+    # Un techo/patio normalmente cae muy por debajo.
+    if green_ratio < 0.035:
         return False
 
+    # --------------------------------------------------------
+    # Repetición transversal:
+    # comprobar que sí hay varias hileras periódicas.
+    # --------------------------------------------------------
+    profile = np.mean(
+        zone,
+        axis=0
+    ).astype(
+        np.float32
+    )
+
+    profile = gaussian_filter1d(
+        profile,
+        sigma=1.0
+    )
+
+    if float(
+        np.std(
+            profile
+        )
+    ) < 0.025:
+        return False
+
+    peaks, _ = find_peaks(
+        profile,
+        distance=max(
+            4,
+            int(
+                spacing * 0.55
+            )
+        ),
+        prominence=max(
+            0.008,
+            float(
+                np.max(
+                    profile
+                )
+            )
+            *
+            0.035
+        )
+    )
+
+    if len(peaks) < max(
+        5,
+        int(
+            len(seeds) * 0.30
+        )
+    ):
+        return False
+
+    # --------------------------------------------------------
+    # Continuidad longitudinal de cada posible hilera.
+    # --------------------------------------------------------
     continuity = []
+
     for seed in seeds:
-        lx = int(round(float(seed) - x0))
-        if not (0 <= lx < zone.shape[1]):
+
+        lx = int(
+            round(
+                float(seed) - x0
+            )
+        )
+
+        if not (
+            0 <= lx < zone.shape[1]
+        ):
             continue
-        radius = max(2, int(round(spacing * 0.16)))
-        a = max(0, lx - radius)
-        b = min(zone.shape[1], lx + radius + 1)
-        lane = zone[:, a:b]
+
+        radius = max(
+            2,
+            int(
+                round(
+                    spacing * 0.18
+                )
+            )
+        )
+
+        a = max(
+            0,
+            lx - radius
+        )
+
+        b = min(
+            zone.shape[1],
+            lx + radius + 1
+        )
+
+        lane = zone[
+            :,
+            a:b
+        ]
+
         if lane.size == 0:
             continue
-        pieces = np.array_split(lane, 8, axis=0)
-        present = [float(np.mean(piece)) > 0.015 for piece in pieces if piece.size]
-        if present:
-            continuity.append(float(np.mean(present)))
 
-    if len(continuity) < 5:
+        pieces = np.array_split(
+            lane,
+            10,
+            axis=0
+        )
+
+        present = [
+            float(
+                np.mean(
+                    piece
+                )
+            ) > 0.015
+            for piece in pieces
+            if piece.size
+        ]
+
+        if present:
+            continuity.append(
+                float(
+                    np.mean(
+                        present
+                    )
+                )
+            )
+
+    if len(continuity) < 6:
         return False
 
-    # Un viñedo real tiene varias hileras con continuidad longitudinal.
-    good_rows = float(np.mean(np.asarray(continuity) >= 0.375))
-    if good_rows < 0.28:
+    good_rows = float(
+        np.mean(
+            np.asarray(
+                continuity
+            ) >= 0.40
+        )
+    )
+
+    if good_rows < 0.38:
         return False
 
     return True
@@ -3434,9 +4059,69 @@ def video_v33_analizar(pil_img):
         pts_rot = tr['points']
         green = tr['green']
         state = video_v33_estado_verde(green)
+
+        # Si un tramo sin vegetación es demasiado largo, normalmente
+        # corresponde a un camino/patio y no a un pequeño hueco seco.
+        # Los huecos cortos sí se conservan en rojo.
+        draw_segment = np.ones(
+            max(0, len(state) - 1),
+            dtype=bool
+        )
+
+        false_state = ~np.asarray(
+            state,
+            dtype=bool
+        )
+
+        long_gap = max(
+            7,
+            int(
+                round(
+                    len(false_state) * 0.075
+                )
+            )
+        )
+
+        i_gap = 0
+
+        while i_gap < len(false_state):
+            if not false_state[i_gap]:
+                i_gap += 1
+                continue
+
+            j_gap = i_gap + 1
+
+            while (
+                j_gap < len(false_state)
+                and
+                false_state[j_gap]
+            ):
+                j_gap += 1
+
+            gap_len = j_gap - i_gap
+
+            if gap_len >= long_gap:
+                a_gap = max(
+                    0,
+                    i_gap - 1
+                )
+
+                b_gap = min(
+                    len(draw_segment),
+                    j_gap
+                )
+
+                draw_segment[
+                    a_gap:b_gap
+                ] = False
+
+            i_gap = j_gap
+
         pts = video_v33_aplicar_matriz(pts_rot, Minv)
         first_drawn = None
         for j in range(len(pts) - 1):
+            if j < len(draw_segment) and not draw_segment[j]:
+                continue
             p1 = pts[j]
             p2 = pts[j + 1]
             if not (np.all(np.isfinite(p1)) and np.all(np.isfinite(p2))):
