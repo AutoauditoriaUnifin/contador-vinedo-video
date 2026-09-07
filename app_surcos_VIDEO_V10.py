@@ -341,7 +341,7 @@ st.markdown(
 
 st.markdown(
     f'<div class="terro-sub">'
-    f'{tr("Analiza video e imágenes del viñedo, sigue la forma local de los surcos y reduce los saltos de una hilera a otra.", "Analyse les vidéos et les images du vignoble, suit la forme locale des rangs et réduit les sauts d’un rang à l’autre.")}'
+    f'{tr("Analiza video e imágenes del viñedo.", "Analyse les vidéos et les images du vignoble.")}'
     f'</div>',
     unsafe_allow_html=True
 )
