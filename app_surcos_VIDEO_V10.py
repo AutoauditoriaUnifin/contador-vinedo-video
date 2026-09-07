@@ -372,44 +372,88 @@ st.markdown(
 # CABECERA
 # ============================================================
 
+titulo_idioma = (
+    "Análisis inteligente del viñedo"
+    if st.session_state.idioma_terrocore == "ES"
+    else "Analyse intelligente du vignoble"
+)
+
 if LOGO_TERROCORE_BASE64:
-    logo_html = (
-        f'<div class="terro-logo-box">'
-        f'<img src="data:image/png;base64,{LOGO_TERROCORE_BASE64}" '
-        f'alt="TerroCore">'
-        f'</div>'
-    )
-else:
-    logo_html = '<div class="terro-grape">🍇</div>'
+    st.markdown(
+        f"""
+        <div style="
+            display:flex;
+            align-items:center;
+            gap:18px;
+            margin-bottom:8px;
+        ">
+            <img
+                src="data:image/png;base64,{LOGO_TERROCORE_BASE64}"
+                style="
+                    width:150px;
+                    height:auto;
+                    object-fit:contain;
+                    display:block;
+                "
+            >
+            <div>
+                <div style="
+                    font-family:Georgia,serif;
+                    font-size:2.65rem;
+                    font-weight:700;
+                    color:white;
+                    line-height:1.0;
+                ">
+                    TerroCore image AI
+                </div>
 
-
-st.markdown(
-    f"""
-    <div class="terro-brand">
-        {logo_html}
-        <div>
-            <div style="
-                font-family:Georgia,serif;
-                font-size:2.65rem;
-                font-weight:700;
-                color:white;
-                line-height:1.0;
-            ">
-                TerroCore image AI
-            </div>
-
-            <div class="terro-kicker">
-                {
-                    "Análisis inteligente del viñedo"
-                    if st.session_state.idioma_terrocore == "ES"
-                    else "Analyse intelligente du vignoble"
-                }
+                <div style="
+                    font-family:Georgia,serif;
+                    color:#F5DADD;
+                    font-size:1.25rem;
+                    margin-top:4px;
+                ">
+                    {titulo_idioma}
+                </div>
             </div>
         </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+        """,
+        unsafe_allow_html=True
+    )
+else:
+    st.markdown(
+        f"""
+        <div style="
+            display:flex;
+            align-items:center;
+            gap:14px;
+            margin-bottom:8px;
+        ">
+            <div style="font-size:3rem;">🍇</div>
+            <div>
+                <div style="
+                    font-family:Georgia,serif;
+                    font-size:2.65rem;
+                    font-weight:700;
+                    color:white;
+                    line-height:1.0;
+                ">
+                    TerroCore image AI
+                </div>
+
+                <div style="
+                    font-family:Georgia,serif;
+                    color:#F5DADD;
+                    font-size:1.25rem;
+                    margin-top:4px;
+                ">
+                    {titulo_idioma}
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 st.markdown(
     f'<div class="terro-sub">'
