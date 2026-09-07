@@ -22,7 +22,7 @@ from scipy.interpolate import UnivariateSpline
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-LOGO_PATH = BASE_DIR / "logo_terrocore.png"
+LOGO_PATH = BASE_DIR / "terrocore.png"
 
 
 def cargar_logo_base64():
@@ -46,7 +46,7 @@ LOGO_TERROCORE_BASE64 = cargar_logo_base64()
 
 st.set_page_config(
     page_title="TerroCore image AI",
-    page_icon="🍇",
+    page_icon="🍷",
     layout="wide"
 )
 
@@ -142,7 +142,7 @@ st.markdown(
 
     .terro-logo-box img {
         display:block;
-        width:150px;
+        width:210px;
         max-width:100%;
         height:auto;
         object-fit:contain;
@@ -360,7 +360,7 @@ st.markdown(
         }
 
         .terro-logo-box img {
-            width:105px;
+            width:145px;
         }
     }
     </style>
@@ -429,7 +429,6 @@ else:
             gap:14px;
             margin-bottom:8px;
         ">
-            <div style="font-size:3rem;">🍇</div>
             <div>
                 <div style="
                     font-family:Georgia,serif;
