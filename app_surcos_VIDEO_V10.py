@@ -29,7 +29,7 @@ st.markdown("""
     padding-bottom: 2rem;
 }
 .card {
-    border:1px solid #303846;
+    border:1px solid #722F37;
     border-radius:10px;
     padding:14px;
     margin-top:10px;
