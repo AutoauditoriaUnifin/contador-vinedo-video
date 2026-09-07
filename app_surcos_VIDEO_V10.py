@@ -59,54 +59,129 @@ st.markdown(
         padding-bottom: 2rem;
     }
 
+    /* TEXTO GENERAL */
     h1, h2, h3, h4, h5, h6,
-    p, label, .stMarkdown, .stCaption,
+    .stMarkdown, .stCaption,
     [data-testid="stMetricLabel"],
     [data-testid="stMetricValue"] {
         color: #FFFFFF !important;
     }
 
     .terro-sub {
-        color: #F7E7E9 !important;
+        color: #F9E8EB !important;
         font-size: 1rem;
         margin-bottom: 1rem;
     }
 
+    /* =======================================================
+       BOTONES - ALTO CONTRASTE
+       ======================================================= */
     .stButton > button,
     .stDownloadButton > button {
-        background-color: #F8F1F2 !important;
+        background-color: #FFFFFF !important;
         color: #722F37 !important;
-        border: 1px solid #FFFFFF !important;
-        border-radius: 10px !important;
-        font-weight: 700 !important;
+        border: 2px solid #F3D6DA !important;
+        border-radius: 12px !important;
+        font-weight: 800 !important;
+        min-height: 44px !important;
+        box-shadow: 0 3px 10px rgba(0,0,0,0.22) !important;
+        opacity: 1 !important;
+    }
+
+    /* Forzar el color de TODO lo que esté dentro del botón */
+    .stButton > button *,
+    .stDownloadButton > button * {
+        color: #722F37 !important;
+        fill: #722F37 !important;
+        font-weight: 800 !important;
+        opacity: 1 !important;
     }
 
     .stButton > button:hover,
     .stDownloadButton > button:hover {
-        background-color: #FFFFFF !important;
-        color: #722F37 !important;
+        background-color: #F8E9EC !important;
+        color: #4D1820 !important;
         border-color: #FFFFFF !important;
+        transform: translateY(-1px);
+        box-shadow: 0 5px 14px rgba(0,0,0,0.28) !important;
     }
 
+    .stButton > button:hover *,
+    .stDownloadButton > button:hover * {
+        color: #4D1820 !important;
+        fill: #4D1820 !important;
+    }
+
+    /* BOTÓN DESHABILITADO: seguir legible */
+    .stButton > button:disabled,
+    .stDownloadButton > button:disabled {
+        background-color: #D9C2C6 !important;
+        color: #5B3036 !important;
+        border: 2px solid #C7A8AD !important;
+        opacity: 0.85 !important;
+        cursor: not-allowed !important;
+        box-shadow: none !important;
+    }
+
+    .stButton > button:disabled *,
+    .stDownloadButton > button:disabled * {
+        color: #5B3036 !important;
+        fill: #5B3036 !important;
+        opacity: 1 !important;
+    }
+
+    /* =======================================================
+       SUBIDA DE ARCHIVOS
+       ======================================================= */
     [data-testid="stFileUploaderDropzone"] {
-        background-color: #5F2730 !important;
-        border: 1px dashed #F3DADD !important;
-        border-radius: 10px !important;
+        background-color: #5C252D !important;
+        border: 2px dashed #F3D6DA !important;
+        border-radius: 12px !important;
     }
 
     [data-testid="stFileUploaderDropzone"] * {
         color: #FFFFFF !important;
     }
 
-    [data-testid="stAlert"] {
-        background-color: rgba(255,255,255,0.12) !important;
-        color: #FFFFFF !important;
-        border: 1px solid rgba(255,255,255,0.28) !important;
+    [data-testid="stFileUploader"] button {
+        background-color: #FFFFFF !important;
+        color: #722F37 !important;
+        border: 1px solid #F3D6DA !important;
+        border-radius: 9px !important;
+        font-weight: 800 !important;
     }
 
-    div[data-baseweb="select"] > div,
-    div[role="radiogroup"] {
+    [data-testid="stFileUploader"] button * {
+        color: #722F37 !important;
+        fill: #722F37 !important;
+    }
+
+    /* =======================================================
+       RADIO / SELECTORES
+       ======================================================= */
+    div[role="radiogroup"] label,
+    div[role="radiogroup"] label *,
+    div[data-baseweb="select"] *,
+    [data-testid="stRadio"] * {
         color: #FFFFFF !important;
+    }
+
+    /* Caja de mensajes */
+    [data-testid="stAlert"] {
+        background-color: rgba(255,255,255,0.14) !important;
+        color: #FFFFFF !important;
+        border: 1px solid rgba(255,255,255,0.35) !important;
+        border-radius: 10px !important;
+    }
+
+    [data-testid="stAlert"] * {
+        color: #FFFFFF !important;
+    }
+
+    /* Dataframe / contenedores */
+    [data-testid="stDataFrame"] {
+        border-radius: 10px !important;
+        overflow: hidden !important;
     }
 
     hr {
