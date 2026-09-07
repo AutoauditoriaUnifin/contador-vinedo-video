@@ -3710,7 +3710,7 @@ if active_items:
 
 
     # ========================================================
-    # TARJETAS DE FOTOGRAMAS
+    # FOTOGRAMAS ANALIZADOS - SOLO IMÁGENES EN FILA
     # ========================================================
     st.subheader(
         tr(
@@ -3721,97 +3721,35 @@ if active_items:
         )
     )
 
-    # 5 tarjetas por fila en escritorio.
-    per_row = 5
+    # 5 imágenes por fila en computadora.
+    # En pantallas pequeñas Streamlit las acomoda automáticamente.
+    imagenes_por_fila = 5
 
-    for start in range(
+    for inicio in range(
         0,
         len(active_items),
-        per_row
+        imagenes_por_fila
     ):
-        cols = st.columns(
-            per_row,
+        columnas = st.columns(
+            imagenes_por_fila,
             gap="small"
         )
 
-        for offset, col in enumerate(
-            cols
+        for desplazamiento, columna in enumerate(
+            columnas
         ):
-            idx = start + offset
+            indice = inicio + desplazamiento
 
-            if idx >= len(active_items):
+            if indice >= len(active_items):
                 continue
 
-            item = active_items[
-                idx
-            ]
+            item = active_items[indice]
 
-            with col:
-                with st.container(border=True):
-                    st.image(
-                        cv2.cvtColor(
-                            item["annotated"],
-                            cv2.COLOR_BGR2RGB
-                        ),
-                        use_container_width=True
-                    )
-
-                    if modo == "video":
-                        title_text = tr(
-                            f"Escena {item['scene']} · {formato_tiempo(item['time'])}",
-                            f"Scène {item['scene']} · {formato_tiempo(item['time'])}"
-                        )
-                    else:
-                        title_text = item["name"]
-
-                    st.markdown(
-                        f'<div class="scene-card-title">{title_text}</div>',
-                        unsafe_allow_html=True
-                    )
-
-                    st.markdown(
-                        f'<div class="scene-card-sub">'
-                        f'{item["count"]} '
-                        f'{tr("surcos", "rangs")}'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
-
-                    view_col, delete_col = st.columns(
-                        [1, 1]
-                    )
-
-                    with view_col:
-                        if st.button(
-                            tr(
-                                "👁 Ver",
-                                "👁 Voir"
-                            ),
-                            key=f"ver_v13_{modo}_{idx}",
-                            use_container_width=True
-                        ):
-                            st.session_state.escena_activa_v13 = idx
-                            st.rerun()
-
-                    with delete_col:
-                        if st.button(
-                            tr(
-                                "🗑 Borrar",
-                                "🗑 Supprimer"
-                            ),
-                            key=f"delete_v13_{modo}_{idx}",
-                            use_container_width=True
-                        ):
-                            if modo == "video":
-                                del st.session_state.video_v13_items[idx]
-                            else:
-                                del st.session_state.imagenes_v13_items[idx]
-
-                            st.session_state.escena_activa_v13 = max(
-                                0,
-                                min(
-                                    st.session_state.escena_activa_v13,
-                                    len(active_items) - 2
-                                )
-                            )
-                            st.rerun()
+            with columna:
+                st.image(
+                    cv2.cvtColor(
+                        item["annotated"],
+                        cv2.COLOR_BGR2RGB
+                    ),
+                    use_container_width=True
+                )
