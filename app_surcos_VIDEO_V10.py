@@ -2761,151 +2761,439 @@ def video_v33_mascara_verde(bgr):
 
 def video_v33_angulo_surcos(mask):
     """
-    V3.3 UNIVERSAL PARA VIDEO.
+    Detecta la orientación de los surcos en cualquier ángulo 0..180°.
 
-    Detecta surcos verticales, horizontales y diagonales.
-    Además evita escoger una dirección producida por un camino,
-    un seto o un edificio cuando las verdaderas hileras están
-    distribuidas por una zona más amplia.
+    Primero intenta Hough. Si Hough no tiene evidencia suficiente,
+    usa un barrido angular más lento basado en periodicidad transversal.
+    Este fallback es especialmente útil cuando las hileras aparecen
+    casi horizontales y Hough no logra formar segmentos largos.
 
     Devuelve:
-      angulo, peso_dominante, dispersion, numero_lineas
+        angulo, peso_dominante, dispersion, numero_lineas
     """
     h, w = mask.shape
 
+    # --------------------------------------------------------
+    # 1. Intento Hough
+    # --------------------------------------------------------
     x0, x1 = int(w * 0.05), int(w * 0.95)
     y0, y1 = int(h * 0.05), int(h * 0.95)
     roi = mask[y0:y1, x0:x1]
 
-    roi = cv2.morphologyEx(
+    roi_h = cv2.morphologyEx(
         roi,
         cv2.MORPH_CLOSE,
         np.ones((3, 3), np.uint8),
         iterations=1
     )
 
-    edges = cv2.Canny(roi, 20, 80)
-    min_len = max(28, int(min(h, w) * 0.05))
-    max_gap = max(10, int(min(h, w) * 0.018))
+    edges = cv2.Canny(roi_h, 18, 75)
+
+    min_len = max(
+        24,
+        int(min(h, w) * 0.04)
+    )
+
+    max_gap = max(
+        12,
+        int(min(h, w) * 0.025)
+    )
 
     lines = cv2.HoughLinesP(
         edges,
         1,
         np.pi / 360.0,
-        threshold=28,
+        threshold=22,
         minLineLength=min_len,
         maxLineGap=max_gap
     )
 
-    if lines is None:
-        return 90.0, 0.0, 0.0, 0
+    hough_result = None
 
-    angles = []
-    weights = []
-    mid_x = []
-    mid_y = []
+    if lines is not None:
+        angles = []
+        weights = []
+        mid_x = []
+        mid_y = []
 
-    for x1l, y1l, x2l, y2l in np.asarray(lines).reshape(-1, 4):
-        dx = float(x2l - x1l)
-        dy = float(y2l - y1l)
-        length = float(np.hypot(dx, dy))
+        for x1l, y1l, x2l, y2l in np.asarray(lines).reshape(-1, 4):
+            dx = float(x2l - x1l)
+            dy = float(y2l - y1l)
+            length = float(np.hypot(dx, dy))
 
-        if length < min_len:
-            continue
+            if length < min_len:
+                continue
 
-        angle = float(np.degrees(np.arctan2(dy, dx)) % 180.0)
-        angles.append(angle)
-        weights.append(length)
-        mid_x.append((x1l + x2l) / 2.0 + x0)
-        mid_y.append((y1l + y2l) / 2.0 + y0)
+            angle = float(
+                np.degrees(
+                    np.arctan2(dy, dx)
+                ) % 180.0
+            )
 
-    if len(angles) < 4:
-        return 90.0, 0.0, 0.0, len(angles)
+            angles.append(angle)
+            weights.append(length)
+            mid_x.append((x1l + x2l) / 2.0 + x0)
+            mid_y.append((y1l + y2l) / 2.0 + y0)
 
-    angles = np.asarray(angles, dtype=np.float64)
-    weights = np.asarray(weights, dtype=np.float64)
-    mid_x = np.asarray(mid_x, dtype=np.float64)
-    mid_y = np.asarray(mid_y, dtype=np.float64)
+        if len(angles) >= 4:
+            angles = np.asarray(angles, dtype=np.float64)
+            weights = np.asarray(weights, dtype=np.float64)
+            mid_x = np.asarray(mid_x, dtype=np.float64)
+            mid_y = np.asarray(mid_y, dtype=np.float64)
 
-    hist, _ = np.histogram(
-        angles,
-        bins=np.arange(0.0, 181.0, 1.0),
-        weights=weights
+            hist, _ = np.histogram(
+                angles,
+                bins=np.arange(0.0, 181.0, 1.0),
+                weights=weights
+            )
+
+            extended = np.concatenate([
+                hist[-7:],
+                hist,
+                hist[:7]
+            ]).astype(np.float64)
+
+            extended = gaussian_filter1d(
+                extended,
+                sigma=2.0
+            )
+
+            smooth_hist = extended[7:-7]
+
+            peaks, _ = find_peaks(
+                smooth_hist,
+                distance=8
+            )
+
+            if len(peaks) == 0:
+                peaks = np.asarray([
+                    int(np.argmax(smooth_hist))
+                ])
+
+            order = peaks[
+                np.argsort(
+                    smooth_hist[peaks]
+                )[::-1]
+            ]
+
+            total_weight = float(
+                np.sum(weights)
+            ) + 1e-9
+
+            image_diag = float(
+                np.hypot(w, h)
+            ) + 1e-9
+
+            best = None
+
+            for peak in order[:8]:
+                circular_distance = np.abs(
+                    (
+                        (
+                            angles - float(peak) + 90.0
+                        ) % 180.0
+                    ) - 90.0
+                )
+
+                selected = circular_distance <= 7.0
+
+                if int(np.sum(selected)) < 2:
+                    continue
+
+                z = np.sum(
+                    weights[selected]
+                    * np.exp(
+                        1j
+                        * np.deg2rad(
+                            2.0 * angles[selected]
+                        )
+                    )
+                )
+
+                if abs(z) < 1e-9:
+                    dominant = float(
+                        np.median(
+                            angles[selected]
+                        )
+                    )
+                else:
+                    dominant = float(
+                        (
+                            np.rad2deg(
+                                np.angle(z)
+                            ) / 2.0
+                        ) % 180.0
+                    )
+
+                theta = np.deg2rad(dominant)
+
+                perpendicular_projection = (
+                    mid_x[selected]
+                    * (-np.sin(theta))
+                    + mid_y[selected]
+                    * np.cos(theta)
+                )
+
+                if len(perpendicular_projection) >= 3:
+                    spread = float(
+                        np.percentile(
+                            perpendicular_projection,
+                            95
+                        )
+                        - np.percentile(
+                            perpendicular_projection,
+                            5
+                        )
+                    ) / image_diag
+                else:
+                    spread = 0.0
+
+                cluster_weight = float(
+                    np.sum(
+                        weights[selected]
+                    )
+                )
+
+                weight_fraction = (
+                    cluster_weight /
+                    total_weight
+                )
+
+                line_count = int(
+                    np.sum(selected)
+                )
+
+                score = (
+                    cluster_weight
+                    * (0.12 + spread)
+                    * min(
+                        1.0,
+                        line_count / 18.0
+                    )
+                )
+
+                candidate = (
+                    score,
+                    dominant,
+                    weight_fraction,
+                    spread,
+                    line_count
+                )
+
+                if best is None or candidate[0] > best[0]:
+                    best = candidate
+
+            if best is not None:
+                _, dom, wf, sp, lc = best
+                hough_result = (
+                    float(dom),
+                    float(wf),
+                    float(sp),
+                    int(lc)
+                )
+
+    # --------------------------------------------------------
+    # 2. Fallback por periodicidad angular
+    # --------------------------------------------------------
+    def projection_score(angle_deg):
+        working = mask
+        hh, ww = working.shape
+
+        scale = min(
+            1.0,
+            620.0 / max(hh, ww)
+        )
+
+        if scale < 1.0:
+            working = cv2.resize(
+                working,
+                None,
+                fx=scale,
+                fy=scale,
+                interpolation=cv2.INTER_NEAREST
+            )
+
+        rh, rw = working.shape
+
+        M = cv2.getRotationMatrix2D(
+            (rw / 2.0, rh / 2.0),
+            90.0 - float(angle_deg),
+            1.0
+        )
+
+        rotated = cv2.warpAffine(
+            working,
+            M,
+            (rw, rh),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT
+        )
+
+        crop = rotated[
+            int(rh * 0.08):int(rh * 0.92),
+            int(rw * 0.08):int(rw * 0.92)
+        ]
+
+        if crop.size == 0:
+            return 0.0
+
+        z = (
+            crop > 0
+        ).astype(np.float32)
+
+        profile = np.mean(
+            z,
+            axis=0
+        )
+
+        trend = gaussian_filter1d(
+            profile,
+            sigma=max(
+                4.0,
+                len(profile) / 40.0
+            )
+        )
+
+        q = gaussian_filter1d(
+            profile - trend,
+            sigma=1.0
+        )
+
+        std = float(
+            np.std(q)
+        )
+
+        if std < 1e-6:
+            return 0.0
+
+        ac = np.correlate(
+            q,
+            q,
+            mode="full"
+        )[
+            len(q) - 1:
+        ]
+
+        a = max(
+            4,
+            int(len(q) * 0.010)
+        )
+
+        b = min(
+            max(
+                a + 2,
+                int(len(q) * 0.070)
+            ),
+            len(ac) - 1
+        )
+
+        if b <= a:
+            return 0.0
+
+        periodicity = float(
+            np.max(
+                ac[a:b + 1]
+            ) /
+            (
+                ac[0] + 1e-9
+            )
+        )
+
+        return float(
+            std *
+            (0.50 + periodicity)
+        )
+
+    # Solo pagar el costo del barrido si Hough es débil.
+    hough_weak = (
+        hough_result is None
+        or hough_result[2] < 0.10
+        or hough_result[3] < 8
     )
 
-    extended = np.concatenate([hist[-7:], hist, hist[:7]]).astype(np.float64)
-    extended = gaussian_filter1d(extended, sigma=2.0)
-    smooth_hist = extended[7:-7]
+    if hough_weak:
+        coarse = []
 
-    peaks, _ = find_peaks(smooth_hist, distance=8)
-    if len(peaks) == 0:
-        peaks = np.asarray([int(np.argmax(smooth_hist))])
+        for angle in range(
+            0,
+            180,
+            3
+        ):
+            coarse.append((
+                projection_score(angle),
+                float(angle)
+            ))
 
-    order = peaks[np.argsort(smooth_hist[peaks])[::-1]]
-    total_weight = float(np.sum(weights)) + 1e-9
-    image_diag = float(np.hypot(w, h)) + 1e-9
-
-    best = None
-
-    for peak in order[:8]:
-        circular_distance = np.abs(((angles - float(peak) + 90.0) % 180.0) - 90.0)
-        selected = circular_distance <= 6.0
-
-        if int(np.sum(selected)) < 2:
-            continue
-
-        z = np.sum(
-            weights[selected]
-            * np.exp(1j * np.deg2rad(2.0 * angles[selected]))
+        coarse.sort(
+            reverse=True,
+            key=lambda item: item[0]
         )
 
-        if abs(z) < 1e-9:
-            dominant = float(np.median(angles[selected]))
-        else:
-            dominant = float((np.rad2deg(np.angle(z)) / 2.0) % 180.0)
+        best_score, best_angle = coarse[0]
 
-        theta = np.deg2rad(dominant)
-        perpendicular_projection = (
-            mid_x[selected] * (-np.sin(theta))
-            + mid_y[selected] * np.cos(theta)
+        refined = []
+
+        for delta in np.arange(
+            -3.0,
+            3.01,
+            0.5
+        ):
+            angle = (
+                best_angle + delta
+            ) % 180.0
+
+            refined.append((
+                projection_score(angle),
+                float(angle)
+            ))
+
+        refined.sort(
+            reverse=True,
+            key=lambda item: item[0]
         )
 
-        if len(perpendicular_projection) >= 3:
-            spread = float(
-                np.percentile(perpendicular_projection, 95)
-                - np.percentile(perpendicular_projection, 5)
-            ) / image_diag
-        else:
-            spread = 0.0
+        best_score, best_angle = refined[0]
 
-        cluster_weight = float(np.sum(weights[selected]))
-        weight_fraction = cluster_weight / total_weight
-        line_count = int(np.sum(selected))
+        # Umbral conservador: una escena sin patrón repetitivo
+        # (techo/patio/personas) no obtiene orientación válida.
+        if best_score >= 0.075:
+            pseudo_weight = float(
+                np.clip(
+                    best_score * 2.0,
+                    0.16,
+                    0.70
+                )
+            )
 
-        # Las hileras reales suelen aparecer repetidas y distribuidas
-        # sobre una zona amplia. Un seto/camino suele estar concentrado.
-        score = (
-            cluster_weight
-            * (0.12 + spread)
-            * min(1.0, line_count / 18.0)
-        )
+            pseudo_spread = float(
+                np.clip(
+                    0.18 + best_score * 0.35,
+                    0.18,
+                    0.34
+                )
+            )
 
-        candidate = (
-            score,
-            dominant,
-            weight_fraction,
-            spread,
-            line_count
-        )
+            pseudo_lines = int(
+                np.clip(
+                    round(
+                        best_score * 70.0
+                    ),
+                    10,
+                    28
+                )
+            )
 
-        if best is None or candidate[0] > best[0]:
-            best = candidate
+            return (
+                float(best_angle),
+                pseudo_weight,
+                pseudo_spread,
+                pseudo_lines
+            )
 
-    if best is None:
-        return 90.0, 0.0, 0.0, 0
+    if hough_result is not None:
+        return hough_result
 
-    _, dominant, weight_fraction, spread, line_count = best
-    return float(dominant), float(weight_fraction), float(spread), int(line_count)
+    return 90.0, 0.0, 0.0, 0
 
 def video_v33_rotar(img, angle):
     h, w = img.shape[:2]
