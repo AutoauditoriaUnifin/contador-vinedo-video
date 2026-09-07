@@ -16,7 +16,7 @@ from scipy.signal import find_peaks
 from scipy.interpolate import UnivariateSpline
 
 st.set_page_config(
-    page_title="Contador de surcos",
+    page_title="Contador de surcos desde video",
     page_icon="🎥",
     layout="wide"
 )
@@ -41,7 +41,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎥 Contador automático de surcos")
+st.title("🎥 Contador automático de surcos desde video – V10.2")
 st.markdown(
     '<div class="sub">'
     'Extrae automáticamente los fotogramas más útiles, evita escenas consecutivas muy parecidas '
@@ -2136,20 +2136,17 @@ def crear_zip_resultados(items):
 
 
 # ============================================================
-# INTERFAZ V10.1
+# INTERFAZ V10.2 - BORRADO REAL DE ESCENAS
 # ============================================================
 
-if "video_v101_items" not in st.session_state:
-    st.session_state.video_v101_items = None
+if "video_v102_items" not in st.session_state:
+    st.session_state.video_v102_items = None
 
-if "video_v101_duration" not in st.session_state:
-    st.session_state.video_v101_duration = None
+if "video_v102_duration" not in st.session_state:
+    st.session_state.video_v102_duration = None
 
-if "video_v101_signature" not in st.session_state:
-    st.session_state.video_v101_signature = None
-
-if "video_v101_quitar" not in st.session_state:
-    st.session_state.video_v101_quitar = []
+if "video_v102_signature" not in st.session_state:
+    st.session_state.video_v102_signature = None
 
 
 left, right = st.columns(
@@ -2172,19 +2169,19 @@ with right:
         "Primero busca fotogramas claros y después cuenta los surcos."
     )
 
+    # Si se carga un video diferente, limpiar el análisis anterior.
     if uploaded is not None:
         current_signature = (
             f"{uploaded.name}:{getattr(uploaded, 'size', 0)}"
         )
 
         if (
-            st.session_state.video_v101_signature is not None
+            st.session_state.video_v102_signature is not None
             and
-            st.session_state.video_v101_signature != current_signature
+            st.session_state.video_v102_signature != current_signature
         ):
-            st.session_state.video_v101_items = None
-            st.session_state.video_v101_duration = None
-            st.session_state.video_v101_quitar = []
+            st.session_state.video_v102_items = None
+            st.session_state.video_v102_duration = None
 
     analyze_button = st.button(
         "🎥 Analizar video",
@@ -2194,7 +2191,12 @@ with right:
     )
 
 
+# ============================================================
+# ANALIZAR VIDEO
+# ============================================================
+
 if analyze_button and uploaded is not None:
+
     suffix = Path(uploaded.name).suffix or ".mp4"
 
     with tempfile.NamedTemporaryFile(
@@ -2227,21 +2229,20 @@ if analyze_button and uploaded is not None:
             text="Análisis terminado."
         )
 
-        st.session_state.video_v101_items = items
-        st.session_state.video_v101_duration = float(
+        st.session_state.video_v102_items = items
+        st.session_state.video_v102_duration = float(
             info["duration"]
         )
-        st.session_state.video_v101_signature = (
+        st.session_state.video_v102_signature = (
             f"{uploaded.name}:{getattr(uploaded, 'size', 0)}"
         )
-        st.session_state.video_v101_quitar = []
 
     except Exception as exc:
         st.error(
             "No se pudo completar el análisis del video."
         )
         st.exception(exc)
-        st.session_state.video_v101_items = None
+        st.session_state.video_v102_items = None
 
     finally:
         try:
@@ -2250,70 +2251,36 @@ if analyze_button and uploaded is not None:
             pass
 
 
-items = st.session_state.video_v101_items
+# ============================================================
+# RESULTADOS
+# ============================================================
+
+items = st.session_state.video_v102_items
 
 if items:
+
     duration_text = formato_tiempo(
-        st.session_state.video_v101_duration or 0
+        st.session_state.video_v102_duration or 0
     )
 
-    option_to_scene = {}
-
-    for item in items:
-        label = (
-            f"Escena {item['scene']} · "
-            f"{formato_tiempo(item['time'])} · "
-            f"{item['count']} surcos"
+    estimated_total = int(
+        sum(
+            item["count"]
+            for item in items
         )
-        option_to_scene[label] = item["scene"]
-
-    options = list(option_to_scene.keys())
-
-    st.session_state.video_v101_quitar = [
-        value
-        for value in st.session_state.video_v101_quitar
-        if value in options
-    ]
+    )
 
     with right:
-        st.markdown("### 2. Quitar fotos")
-
-        quitar_labels = st.multiselect(
-            "Selecciona las escenas que NO quieres conservar:",
-            options=options,
-            key="video_v101_quitar",
-            placeholder="Ej. Escena 3, Escena 7..."
-        )
-
-        excluded_scenes = {
-            option_to_scene[label]
-            for label in quitar_labels
-        }
-
-        filtered_items = [
-            item
-            for item in items
-            if item["scene"] not in excluded_scenes
-        ]
-
-        st.caption(
-            f"Conservadas: {len(filtered_items)} de {len(items)} escenas."
-        )
-
         st.markdown("### Resultados")
 
-        st.metric("Duración", duration_text)
+        st.metric(
+            "Duración",
+            duration_text
+        )
 
         st.metric(
             "Escenas conservadas",
-            len(filtered_items)
-        )
-
-        estimated_total = int(
-            sum(
-                item["count"]
-                for item in filtered_items
-            )
+            len(items)
         )
 
         st.metric(
@@ -2321,93 +2288,109 @@ if items:
             estimated_total
         )
 
-        if excluded_scenes:
-            st.info(
-                f"Quitaste {len(excluded_scenes)} "
-                f"{'escena' if len(excluded_scenes) == 1 else 'escenas'}."
-            )
-
         st.caption(
-            "La suma se recalcula usando solamente las escenas que conservas. "
-            "Sin GPS no se puede garantizar que una parcela que reaparece "
-            "mucho después no sea contada nuevamente."
+            "Cuando borras una escena, desaparece de la tabla, "
+            "de la suma y del ZIP final."
         )
 
-        if filtered_items:
-            zip_bytes = crear_zip_resultados(
-                filtered_items
-            )
+        zip_bytes = crear_zip_resultados(
+            items
+        )
 
-            st.download_button(
-                "⬇️ Descargar solo las fotos conservadas",
-                zip_bytes,
-                file_name="resultado_surcos_video_v10_filtrado.zip",
-                mime="application/zip",
-                use_container_width=True
-            )
-        else:
-            st.warning(
-                "Quitaste todas las escenas. "
-                "Restaura al menos una para descargar resultados."
-            )
+        st.download_button(
+            "⬇️ Descargar resultados conservados",
+            zip_bytes,
+            file_name="resultado_surcos_video_v10_2.zip",
+            mime="application/zip",
+            use_container_width=True
+        )
+
+        if st.button(
+            "🔄 Volver a analizar el video",
+            use_container_width=True
+        ):
+            st.session_state.video_v102_items = None
+            st.session_state.video_v102_duration = None
+            st.rerun()
+
 
     with left:
         st.subheader(
             "Conteo por escena / parcela candidata"
         )
 
-        if filtered_items:
-            df = pd.DataFrame([
-                {
-                    "Escena": item["scene"],
-                    "Tiempo": formato_tiempo(item["time"]),
-                    "Surcos estimados": item["count"],
-                    "Verde %": round(item["green_pct"], 1),
-                    "Rojo %": round(item["red_pct"], 1)
-                }
-                for item in filtered_items
-            ])
+        df = pd.DataFrame([
+            {
+                "Escena": item["scene"],
+                "Tiempo": formato_tiempo(item["time"]),
+                "Surcos estimados": item["count"],
+                "Verde %": round(item["green_pct"], 1),
+                "Rojo %": round(item["red_pct"], 1)
+            }
+            for item in items
+        ])
 
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        # ----------------------------------------------------
+        # CADA ESCENA TIENE SU BOTÓN DE BORRAR
+        # ----------------------------------------------------
+        for item in list(items):
+
+            col_title, col_delete = st.columns(
+                [5, 1]
             )
 
-            st.caption(
-                "Las escenas seleccionadas en “Quitar fotos” "
-                "ya no aparecen en esta tabla."
-            )
-
-            for item in filtered_items:
+            with col_title:
                 st.markdown(
                     f"### Escena {item['scene']} · "
                     f"{formato_tiempo(item['time'])} · "
                     f"{item['count']} surcos"
                 )
 
-                st.image(
-                    cv2.cvtColor(
-                        item["annotated"],
-                        cv2.COLOR_BGR2RGB
-                    ),
+            with col_delete:
+                delete_clicked = st.button(
+                    "🗑️ Borrar",
+                    key=f"borrar_escena_{item['scene']}",
                     use_container_width=True
                 )
-        else:
-            st.warning(
-                "No hay escenas para mostrar."
+
+            if delete_clicked:
+                st.session_state.video_v102_items = [
+                    x
+                    for x in st.session_state.video_v102_items
+                    if x["scene"] != item["scene"]
+                ]
+
+                st.rerun()
+
+            st.image(
+                cv2.cvtColor(
+                    item["annotated"],
+                    cv2.COLOR_BGR2RGB
+                ),
+                use_container_width=True
             )
 
+
 elif uploaded is None:
+
     with left:
         st.info(
             "Sube el video del dron para comenzar."
         )
 
+
 else:
+
     with left:
         st.video(uploaded)
+
         st.info(
-            "Presiona “Analizar video” para extraer las mejores escenas "
-            "y después podrás quitar las fotos que no quieras."
+            "Presiona “Analizar video”. "
+            "Después podrás borrar una por una las escenas que no quieras."
         )
