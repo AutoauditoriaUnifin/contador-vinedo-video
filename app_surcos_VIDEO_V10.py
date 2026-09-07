@@ -16,37 +16,131 @@ from scipy.signal import find_peaks
 from scipy.interpolate import UnivariateSpline
 
 st.set_page_config(
-    page_title="Contador de surcos",
+    page_title="TerroCore image AI",
     page_icon="🍇",
     layout="wide"
 )
 
-st.markdown("""
-<style>
-.block-container {
-    max-width: 1600px;
-    padding-top: 1rem;
-    padding-bottom: 2rem;
-}
-.card {
-    border:1px solid #722F37;
-    border-radius:10px;
-    padding:14px;
-    margin-top:10px;
-}
-.sub {
-    color:#722F37;
-    margin-bottom:1rem;
-}
-</style>
-""", unsafe_allow_html=True)
+# ============================================================
+# IDIOMA ES / FR
+# ============================================================
+
+if "idioma_terrocore" not in st.session_state:
+    st.session_state.idioma_terrocore = "ES"
+
+
+def tr(es, fr):
+    """Texto visible según el idioma seleccionado."""
+    return es if st.session_state.idioma_terrocore == "ES" else fr
+
+
+# ============================================================
+# DISEÑO - COLOR VINO #722F37
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+    html, body,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    .stApp {
+        background-color: #722F37 !important;
+        color: #FFFFFF !important;
+    }
+
+    [data-testid="stHeader"] {
+        background: rgba(0,0,0,0) !important;
+    }
+
+    .block-container {
+        max-width: 1600px;
+        padding-top: 1rem;
+        padding-bottom: 2rem;
+    }
+
+    h1, h2, h3, h4, h5, h6,
+    p, label, .stMarkdown, .stCaption,
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricValue"] {
+        color: #FFFFFF !important;
+    }
+
+    .terro-sub {
+        color: #F7E7E9 !important;
+        font-size: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .stButton > button,
+    .stDownloadButton > button {
+        background-color: #F8F1F2 !important;
+        color: #722F37 !important;
+        border: 1px solid #FFFFFF !important;
+        border-radius: 10px !important;
+        font-weight: 700 !important;
+    }
+
+    .stButton > button:hover,
+    .stDownloadButton > button:hover {
+        background-color: #FFFFFF !important;
+        color: #722F37 !important;
+        border-color: #FFFFFF !important;
+    }
+
+    [data-testid="stFileUploaderDropzone"] {
+        background-color: #5F2730 !important;
+        border: 1px dashed #F3DADD !important;
+        border-radius: 10px !important;
+    }
+
+    [data-testid="stFileUploaderDropzone"] * {
+        color: #FFFFFF !important;
+    }
+
+    [data-testid="stAlert"] {
+        background-color: rgba(255,255,255,0.12) !important;
+        color: #FFFFFF !important;
+        border: 1px solid rgba(255,255,255,0.28) !important;
+    }
+
+    div[data-baseweb="select"] > div,
+    div[role="radiogroup"] {
+        color: #FFFFFF !important;
+    }
+
+    hr {
+        border-color: rgba(255,255,255,0.25) !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# Botón superior para cambiar idioma.
+_lang_space, _lang_col = st.columns([8, 1.35])
+
+with _lang_col:
+    if st.button(
+        "🇫🇷 Français"
+        if st.session_state.idioma_terrocore == "ES"
+        else "🇪🇸 Español",
+        key="boton_idioma_terrocore",
+        use_container_width=True
+    ):
+        st.session_state.idioma_terrocore = (
+            "FR"
+            if st.session_state.idioma_terrocore == "ES"
+            else "ES"
+        )
+        st.rerun()
 
 st.title("🍇 TerroCore image AI")
+
 st.markdown(
-    '<div class="sub">'
-    'Extrae automáticamente los fotogramas más útiles, evita escenas consecutivas muy parecidas '
-    'y estima los surcos visibles por escena/parcela candidata.'
-    '</div>',
+    f'<div class="terro-sub">'
+    f'{tr("Analiza video e imágenes del viñedo, sigue la forma local de los surcos y reduce los saltos de una hilera a otra.", "Analyse les vidéos et les images du vignoble, suit la forme locale des rangs et réduit les sauts d’un rang à l’autre.")}'
+    f'</div>',
     unsafe_allow_html=True
 )
 
@@ -1271,23 +1365,21 @@ def trazar_direccion(
     """
     Sigue una sola dirección desde la semilla.
 
-    En cada paso:
-    1. consulta el ángulo LOCAL,
-    2. avanza unos píxeles,
-    3. busca el centro del surco cerca de la predicción,
-    4. nunca abandona la región del viñedo,
-    5. evita pegarse a una línea ya dibujada.
+    Mejora importante:
+    - penaliza saltos laterales grandes;
+    - conserva una banda alrededor del centro del surco;
+    - no deja que la línea cruce fácilmente a la hilera vecina.
     """
     h, w = response.shape
 
-    support = cv2.dilate(
+    support = cv2.erode(
         (
             component[
                 "mask"
             ] > 0
         ).astype(np.uint8),
         np.ones(
-            (17, 17),
+            (5, 5),
             np.uint8
         ),
         iterations=1
@@ -1310,6 +1402,16 @@ def trazar_direccion(
         1e-9
     )
 
+    initial_direction = direction.copy()
+    initial_perpendicular = np.array(
+        [
+            -initial_direction[1],
+            initial_direction[0]
+        ],
+        dtype=np.float64
+    )
+    seed_point = point.copy()
+
     points = [
         point.copy()
     ]
@@ -1319,15 +1421,17 @@ def trazar_direccion(
     ]
 
     weak_steps = 0
-
-    step_length = 4.0
-
+    step_length = 3.5
     search_radius = max(
         2,
         int(
             spacing *
-            0.22
+            0.16
         )
+    )
+    max_lateral_drift = max(
+        3.0,
+        float(spacing) * 0.42
     )
 
     maximum_steps = max(
@@ -1351,7 +1455,6 @@ def trazar_direccion(
                 point[0]
             )
         )
-
         yi = int(
             round(
                 point[1]
@@ -1365,9 +1468,6 @@ def trazar_direccion(
         ):
             break
 
-        # ----------------------------------------------------
-        # Dirección local del surco.
-        # ----------------------------------------------------
         local_theta = float(
             theta[
                 yi,
@@ -1387,8 +1487,6 @@ def trazar_direccion(
             dtype=np.float64
         )
 
-        # La dirección de 0..180 no tiene signo.
-        # Elegir el signo que continúa hacia adelante.
         if (
             np.dot(
                 local_vector,
@@ -1404,7 +1502,6 @@ def trazar_direccion(
             ]
         )
 
-        # No dejar que una textura lateral gire la línea de golpe.
         dot_value = float(
             np.clip(
                 np.dot(
@@ -1415,7 +1512,6 @@ def trazar_direccion(
                 1.0
             )
         )
-
         angle_change = float(
             np.arccos(
                 dot_value
@@ -1423,26 +1519,24 @@ def trazar_direccion(
         )
 
         if (
-            local_coherence > 0.28
+            local_coherence > 0.30
             and
             angle_change <
             np.deg2rad(
-                40.0
+                28.0
             )
         ):
             direction = (
-                0.78 *
+                0.84 *
                 direction
                 +
-                0.22 *
+                0.16 *
                 local_vector
             )
-
             direction /= (
                 np.linalg.norm(
                     direction
-                )
-                +
+                ) +
                 1e-9
             )
 
@@ -1463,21 +1557,14 @@ def trazar_direccion(
         best_point = None
         best_score = -1e9
         best_response = 0.0
-        best_green = 0.0
 
-        # ----------------------------------------------------
-        # Buscar el centro real cerca de la predicción.
-        # ----------------------------------------------------
         for offset in np.linspace(
             -search_radius,
             search_radius,
             (
-                search_radius *
-                2 +
-                1
+                search_radius * 2 + 1
             )
         ):
-
             candidate = (
                 predicted +
                 perpendicular *
@@ -1489,7 +1576,6 @@ def trazar_direccion(
                     candidate[0]
                 )
             )
-
             cy = int(
                 round(
                     candidate[1]
@@ -1497,210 +1583,122 @@ def trazar_direccion(
             )
 
             if not (
-                0 <= cx < w
-                and
+                0 <= cx < w and
                 0 <= cy < h
             ):
                 continue
-
-            if support[
-                cy,
-                cx
-            ] == 0:
+            if support[cy, cx] == 0:
                 continue
 
-            visual = float(
-                response[
-                    cy,
-                    cx
-                ]
+            visual = float(response[cy, cx])
+            coherent = float(coherence[cy, cx])
+            local_green = float(green[cy, cx])
+
+            candidate_theta = float(theta[cy, cx])
+            angle_penalty = diferencia_angular_rad(
+                candidate_theta,
+                float(np.arctan2(direction[1], direction[0]) % np.pi)
             )
 
-            coherent = float(
-                coherence[
-                    cy,
-                    cx
-                ]
-            )
-
-            local_green = float(
-                green[
-                    cy,
-                    cx
-                ]
-            )
-
-            score = (
-                visual
-                +
-                0.10 *
-                coherent
-                -
-                0.018 *
-                abs(
-                    float(offset)
+            lateral_from_seed = abs(
+                float(
+                    np.dot(
+                        candidate - seed_point,
+                        initial_perpendicular
+                    )
                 )
             )
 
-            # Evitar que una línea se pegue a otro surco ya trazado.
-            if occupancy[
-                cy,
-                cx
-            ] > 0:
-                score -= 0.35
+            # Castigar zonas ya ocupadas y saltos a la hilera vecina.
+            score = (
+                1.15 * visual
+                + 0.16 * coherent
+                + 0.05 * local_green
+                - 0.030 * abs(float(offset))
+                - 0.30 * angle_penalty
+                - 0.085 * max(0.0, lateral_from_seed - max_lateral_drift)
+            )
+
+            if occupancy[cy, cx] > 0:
+                score -= 0.50
+
+            # Si el punto se aleja demasiado del eje original,
+            # descartar casi por completo.
+            if lateral_from_seed > max_lateral_drift + spacing * 0.22:
+                score -= 0.90
+
+            # Verificación de cresta local: el centro del surco debe ser
+            # mejor que sus laterales cercanos, si no puede ser otra hilera.
+            side1 = candidate + perpendicular * max(1.5, spacing * 0.22)
+            side2 = candidate - perpendicular * max(1.5, spacing * 0.22)
+            s_ok = True
+            side_penalty = 0.0
+            for side in (side1, side2):
+                sx = int(round(side[0]))
+                sy = int(round(side[1]))
+                if 0 <= sx < w and 0 <= sy < h:
+                    sv = float(response[sy, sx])
+                    if sv > visual + 0.03:
+                        side_penalty += 0.24
+                else:
+                    s_ok = False
+            score -= side_penalty
 
             if score > best_score:
                 best_score = score
                 best_point = candidate
                 best_response = visual
-                best_green = local_green
 
         if best_point is None:
             break
 
-        # ----------------------------------------------------
-        # Tramo seco:
-        # seguir la trayectoria prevista durante un hueco corto.
-        # No perseguir automáticamente otra hilera verde.
-        # ----------------------------------------------------
-        if best_response < 0.055:
+        if best_response < 0.050:
             weak_steps += 1
             best_point = predicted
-
-            bx = int(
-                round(
-                    best_point[0]
-                )
-            )
-
-            by = int(
-                round(
-                    best_point[1]
-                )
-            )
-
+            bx = int(round(best_point[0]))
+            by = int(round(best_point[1]))
             if not (
-                0 <= bx < w
-                and
-                0 <= by < h
-                and
-                support[
-                    by,
-                    bx
-                ] > 0
+                0 <= bx < w and
+                0 <= by < h and
+                support[by, bx] > 0
             ):
                 break
-
         else:
-            weak_steps = max(
-                0,
-                weak_steps - 1
-            )
+            weak_steps = max(0, weak_steps - 1)
 
-        # Camino/zona sin estructura demasiado larga = detener.
-        if weak_steps > 10:
+        if weak_steps > 8:
             break
 
-        movement = (
-            best_point -
-            point
-        )
-
-        movement_norm = float(
-            np.linalg.norm(
-                movement
-            )
-        )
-
+        movement = best_point - point
+        movement_norm = float(np.linalg.norm(movement))
         if movement_norm > 1e-6:
             movement /= movement_norm
-
-            # Suavizar cambios de trayectoria.
-            if (
-                np.dot(
-                    movement,
-                    direction
-                ) > 0.72
-            ):
+            if np.dot(movement, direction) > 0.82:
                 direction = (
-                    0.85 *
-                    direction
-                    +
-                    0.15 *
-                    movement
+                    0.88 * direction +
+                    0.12 * movement
                 )
-
                 direction /= (
-                    np.linalg.norm(
-                        direction
-                    )
-                    +
-                    1e-9
+                    np.linalg.norm(direction) + 1e-9
                 )
 
         point = best_point
+        points.append(point.copy())
 
-        points.append(
-            point.copy()
-        )
-
-        # Medir verde en una pequeña zona alrededor.
-        px = int(
-            round(
-                point[0]
-            )
-        )
-
-        py = int(
-            round(
-                point[1]
-            )
-        )
-
-        y0 = max(
-            0,
-            py - 4
-        )
-
-        y1 = min(
-            h,
-            py + 5
-        )
-
-        x0 = max(
-            0,
-            px - 4
-        )
-
-        x1 = min(
-            w,
-            px + 5
-        )
-
-        patch = green[
-            y0:y1,
-            x0:x1
-        ]
-
+        px = int(round(point[0]))
+        py = int(round(point[1]))
+        y0 = max(0, py - 4)
+        y1 = min(h, py + 5)
+        x0 = max(0, px - 4)
+        x1 = min(w, px + 5)
+        patch = green[y0:y1, x0:x1]
         green_scores.append(
-            float(
-                np.mean(
-                    patch > 0
-                )
-            )
-            if patch.size
-            else 0.0
+            float(np.mean(patch > 0)) if patch.size else 0.0
         )
 
     return (
-        np.asarray(
-            points,
-            dtype=np.float32
-        ),
-        np.asarray(
-            green_scores,
-            dtype=np.float32
-        )
+        np.asarray(points, dtype=np.float32),
+        np.asarray(green_scores, dtype=np.float32)
     )
 
 
@@ -1932,7 +1930,7 @@ def analizar(
 
     if not components:
         raise RuntimeError(
-            "No se encontró una zona con patrón claro de surcos."
+            tr("No se encontró una zona con patrón claro de surcos.", "Aucune zone présentant un motif clair de rangs n’a été détectée.")
         )
 
     # --------------------------------------------------------
@@ -1956,8 +1954,7 @@ def analizar(
 
     if tile_coverage < 0.16:
         raise RuntimeError(
-            "La imagen no contiene suficiente superficie de viñedo "
-            "para hacer un trazado confiable."
+            tr("La imagen no contiene suficiente superficie de viñedo para hacer un trazado confiable.", "L’image ne contient pas une surface de vignoble suffisante pour effectuer un tracé fiable.")
         )
 
     final = original.copy()
@@ -2015,6 +2012,14 @@ def analizar(
             )
 
             if len(points) < 8:
+                continue
+
+            # Descartar semillas que caen sobre un surco ya trazado.
+            occupied_hits = 0
+            for px_test, py_test in np.rint(points[::max(1, len(points)//12)]).astype(np.int32):
+                if 0 <= px_test < w and 0 <= py_test < h and occupancy[py_test, px_test] > 0:
+                    occupied_hits += 1
+            if occupied_hits >= 3:
                 continue
 
             # ------------------------------------------------
@@ -2274,8 +2279,7 @@ def analizar(
         len(all_tracks) < 4
     ):
         raise RuntimeError(
-            "Se encontró vegetación, pero no un patrón repetitivo "
-            "de surcos suficientemente claro."
+            tr("Se encontró vegetación, pero no un patrón repetitivo de surcos suficientemente claro.", "De la végétation a été détectée, mais le motif répétitif des rangs n’est pas suffisamment clair.")
         )
 
     total = (
@@ -2447,7 +2451,7 @@ def extraer_candidatos(video_path):
 
     if not cap.isOpened():
         raise RuntimeError(
-            "No se pudo abrir el video."
+            tr("No se pudo abrir el video.", "Impossible d’ouvrir la vidéo.")
         )
 
     fps = float(
@@ -2517,7 +2521,7 @@ def extraer_candidatos(video_path):
 
     if not candidates:
         raise RuntimeError(
-            "No se encontraron fotogramas suficientemente claros."
+            tr("No se encontraron fotogramas suficientemente claros.", "Aucune image suffisamment nette n’a été trouvée.")
         )
 
     # --------------------------------------------------------
@@ -2655,7 +2659,7 @@ def analizar_frames_video(info):
 
     if not analyzed:
         raise RuntimeError(
-            "Los fotogramas fueron extraídos, pero no se pudo detectar una parcela clara."
+            tr("Los fotogramas fueron extraídos, pero no se pudo detectar una parcela clara.", "Les images ont été extraites, mais aucune parcelle suffisamment claire n’a pu être détectée.")
         )
 
     # --------------------------------------------------------
@@ -2859,7 +2863,7 @@ def crear_zip_resultados_imagenes(items):
 
 
 # ============================================================
-# INTERFAZ V10.3 - VIDEO E IMÁGENES
+# INTERFAZ - VIDEO E IMÁGENES / VIDÉO ET IMAGES
 # ============================================================
 
 # ----------------------------
@@ -2887,15 +2891,26 @@ left, right = st.columns(
 )
 
 with right:
-    st.markdown("### 1. Tipo de archivo")
+    st.markdown(
+        tr(
+            "### 1. Tipo de archivo",
+            "### 1. Type de fichier"
+        )
+    )
 
     modo = st.radio(
-        "Selecciona qué quieres analizar:",
-        [
-            "🎥 Video",
-            "🖼️ Imágenes"
-        ],
-        label_visibility="collapsed"
+        tr(
+            "Selecciona qué quieres analizar:",
+            "Sélectionnez ce que vous souhaitez analyser :"
+        ),
+        options=["video", "imagenes"],
+        format_func=lambda value: (
+            tr("🎥 Video", "🎥 Vidéo")
+            if value == "video"
+            else tr("🖼️ Imágenes", "🖼️ Images")
+        ),
+        label_visibility="collapsed",
+        key="modo_terrocore"
     )
 
 
@@ -2903,23 +2918,33 @@ with right:
 # MODO VIDEO
 # ============================================================
 
-if modo == "🎥 Video":
+if modo == "video":
 
     uploaded_video = None
 
     with right:
-        st.markdown("### 2. Subir video")
+        st.markdown(
+            tr(
+                "### 2. Subir video",
+                "### 2. Importer une vidéo"
+            )
+        )
 
         uploaded_video = st.file_uploader(
-            "Selecciona el video",
+            tr(
+                "Selecciona el video",
+                "Sélectionnez la vidéo"
+            ),
             type=["mp4", "mov", "avi", "m4v"],
             label_visibility="collapsed",
             key="uploader_video_v103"
         )
 
         st.caption(
-            "Busca fotogramas útiles, cuenta los surcos "
-            "y después puedes borrar las escenas que no quieras."
+            tr(
+                "Busca fotogramas útiles, cuenta los surcos y después puedes borrar las escenas que no quieras.",
+                "L’application recherche les images utiles, compte les rangs, puis vous permet de supprimer les scènes que vous ne souhaitez pas conserver."
+            )
         )
 
         if uploaded_video is not None:
@@ -2937,7 +2962,10 @@ if modo == "🎥 Video":
                 st.session_state.video_v103_duration = None
 
         analyze_video = st.button(
-            "🎥 Analizar video",
+            tr(
+                "🎥 Analizar video",
+                "🎥 Analyser la vidéo"
+            ),
             type="primary",
             use_container_width=True,
             disabled=uploaded_video is None,
@@ -2965,7 +2993,10 @@ if modo == "🎥 Video":
         try:
             progress = st.progress(
                 0,
-                text="Buscando los mejores fotogramas..."
+                text=tr(
+                    "Buscando los mejores fotogramas...",
+                    "Recherche des meilleures images..."
+                )
             )
 
             info = extraer_candidatos(
@@ -2974,9 +3005,9 @@ if modo == "🎥 Video":
 
             progress.progress(
                 35,
-                text=(
-                    f"Se seleccionaron {len(info['frames'])} fotogramas. "
-                    "Contando surcos..."
+                text=tr(
+                    f"Se seleccionaron {len(info['frames'])} fotogramas. Contando surcos...",
+                    f"{len(info['frames'])} images ont été sélectionnées. Comptage des rangs..."
                 )
             )
 
@@ -2986,7 +3017,10 @@ if modo == "🎥 Video":
 
             progress.progress(
                 100,
-                text="Análisis terminado."
+                text=tr(
+                    "Análisis terminado.",
+                    "Analyse terminée."
+                )
             )
 
             st.session_state.video_v103_items = items
@@ -3000,9 +3034,12 @@ if modo == "🎥 Video":
 
         except Exception as exc:
             st.error(
-                "No se pudo completar el análisis del video."
+                tr(
+                    "No se pudo completar el análisis del video.",
+                    "L’analyse de la vidéo n’a pas pu être terminée."
+                )
             )
-            st.exception(exc)
+            st.caption(str(exc))
             st.session_state.video_v103_items = None
 
         finally:
@@ -3030,30 +3067,46 @@ if modo == "🎥 Video":
         )
 
         with right:
-            st.markdown("### Resultados")
+            st.markdown(
+                tr(
+                    "### Resultados",
+                    "### Résultats"
+                )
+            )
 
             st.metric(
-                "Duración",
+                tr("Duración", "Durée"),
                 duration_text
             )
 
             st.metric(
-                "Escenas conservadas",
+                tr(
+                    "Escenas conservadas",
+                    "Scènes conservées"
+                ),
                 len(video_items)
             )
 
             st.metric(
-                "Suma estimada",
+                tr(
+                    "Suma estimada",
+                    "Somme estimée"
+                ),
                 estimated_total
             )
 
             st.caption(
-                "Al borrar una escena desaparece de la tabla, "
-                "de la suma, de la pantalla y del ZIP."
+                tr(
+                    "Al borrar una escena desaparece de la tabla, de la suma, de la pantalla y del ZIP.",
+                    "Lorsqu’une scène est supprimée, elle disparaît du tableau, du total, de l’écran et du fichier ZIP."
+                )
             )
 
             st.download_button(
-                "⬇️ Descargar resultados",
+                tr(
+                    "⬇️ Descargar resultados",
+                    "⬇️ Télécharger les résultats"
+                ),
                 crear_zip_resultados(
                     video_items
                 ),
@@ -3064,7 +3117,10 @@ if modo == "🎥 Video":
             )
 
             if st.button(
-                "🔄 Volver a analizar el video",
+                tr(
+                    "🔄 Volver a analizar el video",
+                    "🔄 Réanalyser la vidéo"
+                ),
                 use_container_width=True,
                 key="reiniciar_video_v103"
             ):
@@ -3075,21 +3131,27 @@ if modo == "🎥 Video":
 
         with left:
             st.subheader(
-                "Conteo por escena / parcela candidata"
+                tr(
+                    "Conteo por escena / parcela candidata",
+                    "Comptage par scène / parcelle candidate"
+                )
             )
 
             df = pd.DataFrame([
                 {
-                    "Escena": item["scene"],
-                    "Tiempo": formato_tiempo(
+                    tr("Escena", "Scène"): item["scene"],
+                    tr("Tiempo", "Temps"): formato_tiempo(
                         item["time"]
                     ),
-                    "Surcos estimados": item["count"],
-                    "Verde %": round(
+                    tr(
+                        "Surcos estimados",
+                        "Rangs estimés"
+                    ): item["count"],
+                    tr("Verde %", "Vert %"): round(
                         item["green_pct"],
                         1
                     ),
-                    "Rojo %": round(
+                    tr("Rojo %", "Rouge %"): round(
                         item["red_pct"],
                         1
                     )
@@ -3113,14 +3175,22 @@ if modo == "🎥 Video":
 
                 with col_title:
                     st.markdown(
-                        f"### Escena {item['scene']} · "
-                        f"{formato_tiempo(item['time'])} · "
-                        f"{item['count']} surcos"
+                        tr(
+                            f"### Escena {item['scene']} · "
+                            f"{formato_tiempo(item['time'])} · "
+                            f"{item['count']} surcos",
+                            f"### Scène {item['scene']} · "
+                            f"{formato_tiempo(item['time'])} · "
+                            f"{item['count']} rangs"
+                        )
                     )
 
                 with col_delete:
                     delete_clicked = st.button(
-                        "🗑️ Borrar",
+                        tr(
+                            "🗑️ Borrar",
+                            "🗑️ Supprimer"
+                        ),
                         key=(
                             f"borrar_video_"
                             f"{item['scene']}_v103"
@@ -3149,7 +3219,10 @@ if modo == "🎥 Video":
 
         with left:
             st.info(
-                "Sube el video del dron para comenzar."
+                tr(
+                    "Sube el video del dron para comenzar.",
+                    "Importez la vidéo du drone pour commencer."
+                )
             )
 
     else:
@@ -3160,7 +3233,10 @@ if modo == "🎥 Video":
             )
 
             st.info(
-                "Presiona “Analizar video”."
+                tr(
+                    "Presiona “Analizar video”.",
+                    "Appuyez sur « Analyser la vidéo »."
+                )
             )
 
 
@@ -3173,10 +3249,18 @@ else:
     uploaded_images = None
 
     with right:
-        st.markdown("### 2. Subir imágenes")
+        st.markdown(
+            tr(
+                "### 2. Subir imágenes",
+                "### 2. Importer des images"
+            )
+        )
 
         uploaded_images = st.file_uploader(
-            "Selecciona una o varias fotografías",
+            tr(
+                "Selecciona una o varias fotografías",
+                "Sélectionnez une ou plusieurs photographies"
+            ),
             type=["jpg", "jpeg", "png"],
             accept_multiple_files=True,
             label_visibility="collapsed",
@@ -3184,11 +3268,17 @@ else:
         )
 
         st.caption(
-            "Puedes seleccionar varias fotografías desde el teléfono."
+            tr(
+                "Puedes seleccionar varias fotografías desde el teléfono.",
+                "Vous pouvez sélectionner plusieurs photographies depuis votre téléphone."
+            )
         )
 
         analyze_images = st.button(
-            "🖼️ Analizar imágenes",
+            tr(
+                "🖼️ Analizar imágenes",
+                "🖼️ Analyser les images"
+            ),
             type="primary",
             use_container_width=True,
             disabled=not uploaded_images,
@@ -3202,7 +3292,10 @@ else:
 
         progress = st.progress(
             0,
-            text="Analizando fotografías..."
+            text=tr(
+                "Analizando fotografías...",
+                "Analyse des photographies..."
+            )
         )
 
         total_images = len(
@@ -3251,7 +3344,10 @@ else:
 
             except Exception as exc:
                 st.warning(
-                    f"No se pudo analizar {uploaded_image.name}: {exc}"
+                    tr(
+                        f"No se pudo analizar {uploaded_image.name}: {exc}",
+                        f"Impossible d’analyser {uploaded_image.name} : {exc}"
+                    )
                 )
 
             progress.progress(
@@ -3263,9 +3359,9 @@ else:
                         1
                     )
                 ),
-                text=(
-                    f"Analizando imagen "
-                    f"{index} de {total_images}..."
+                text=tr(
+                    f"Analizando imagen {index} de {total_images}...",
+                    f"Analyse de l’image {index} sur {total_images}..."
                 )
             )
 
@@ -3284,25 +3380,41 @@ else:
         )
 
         with right:
-            st.markdown("### Resultados")
+            st.markdown(
+                tr(
+                    "### Resultados",
+                    "### Résultats"
+                )
+            )
 
             st.metric(
-                "Imágenes conservadas",
+                tr(
+                    "Imágenes conservadas",
+                    "Images conservées"
+                ),
                 len(image_items)
             )
 
             st.metric(
-                "Suma estimada",
+                tr(
+                    "Suma estimada",
+                    "Somme estimée"
+                ),
                 estimated_total
             )
 
             st.caption(
-                "Puedes borrar cualquier fotografía del resultado. "
-                "Al borrarla deja de entrar en la suma y en el ZIP."
+                tr(
+                    "Puedes borrar cualquier fotografía del resultado. Al borrarla deja de entrar en la suma y en el ZIP.",
+                    "Vous pouvez supprimer n’importe quelle photographie du résultat. Une fois supprimée, elle n’est plus incluse dans le total ni dans le fichier ZIP."
+                )
             )
 
             st.download_button(
-                "⬇️ Descargar imágenes conservadas",
+                tr(
+                    "⬇️ Descargar imágenes conservadas",
+                    "⬇️ Télécharger les images conservées"
+                ),
                 crear_zip_resultados_imagenes(
                     image_items
                 ),
@@ -3313,7 +3425,10 @@ else:
             )
 
             if st.button(
-                "🔄 Limpiar análisis de imágenes",
+                tr(
+                    "🔄 Limpiar análisis de imágenes",
+                    "🔄 Effacer l’analyse des images"
+                ),
                 use_container_width=True,
                 key="limpiar_imagenes_v103"
             ):
@@ -3323,18 +3438,24 @@ else:
 
         with left:
             st.subheader(
-                "Conteo por imagen"
+                tr(
+                    "Conteo por imagen",
+                    "Comptage par image"
+                )
             )
 
             df_images = pd.DataFrame([
                 {
-                    "Imagen": item["name"],
-                    "Surcos estimados": item["count"],
-                    "Verde %": round(
+                    tr("Imagen", "Image"): item["name"],
+                    tr(
+                        "Surcos estimados",
+                        "Rangs estimés"
+                    ): item["count"],
+                    tr("Verde %", "Vert %"): round(
                         item["green_pct"],
                         1
                     ),
-                    "Rojo %": round(
+                    tr("Rojo %", "Rouge %"): round(
                         item["red_pct"],
                         1
                     )
@@ -3358,13 +3479,20 @@ else:
 
                 with col_title:
                     st.markdown(
-                        f"### {item['name']} · "
-                        f"{item['count']} surcos"
+                        tr(
+                            f"### {item['name']} · "
+                            f"{item['count']} surcos",
+                            f"### {item['name']} · "
+                            f"{item['count']} rangs"
+                        )
                     )
 
                 with col_delete:
                     delete_clicked = st.button(
-                        "🗑️ Borrar",
+                        tr(
+                            "🗑️ Borrar",
+                            "🗑️ Supprimer"
+                        ),
                         key=(
                             f"borrar_imagen_"
                             f"{item['id']}_v103"
@@ -3393,12 +3521,18 @@ else:
 
         with left:
             st.info(
-                "Sube una o varias fotografías del viñedo."
+                tr(
+                    "Sube una o varias fotografías del viñedo.",
+                    "Importez une ou plusieurs photographies du vignoble."
+                )
             )
 
     else:
 
         with left:
             st.info(
-                "Presiona “Analizar imágenes”."
+                tr(
+                    "Presiona “Analizar imágenes”.",
+                    "Appuyez sur « Analyser les images »."
+                )
             )
