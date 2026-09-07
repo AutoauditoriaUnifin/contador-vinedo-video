@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 from scipy.ndimage import gaussian_filter1d
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, savgol_filter
 from scipy.interpolate import UnivariateSpline
 
 st.set_page_config(
@@ -1572,6 +1572,120 @@ def semillas_componente(
     )
 
 
+
+# ============================================================
+# SUAVIZAR TRAYECTORIA SIN CAMBIAR DE SURCO
+# ============================================================
+
+def suavizar_trayectoria_surco(
+    points,
+    spacing
+):
+    """
+    Quita pequeñas ondulaciones del trazado sin convertir
+    el surco en una línea completamente recta.
+
+    La trayectoria suavizada nunca puede alejarse demasiado
+    de los puntos originales, lo que ayuda a que no brinque
+    a la hilera vecina.
+    """
+    pts = np.asarray(
+        points,
+        dtype=np.float32
+    )
+
+    n = len(pts)
+
+    if n < 7:
+        return pts
+
+    # Ventana adaptativa.
+    window = min(
+        13,
+        n if n % 2 == 1 else n - 1
+    )
+
+    if window < 7:
+        return pts
+
+    try:
+        sx = savgol_filter(
+            pts[:, 0],
+            window_length=window,
+            polyorder=2,
+            mode="interp"
+        )
+
+        sy = savgol_filter(
+            pts[:, 1],
+            window_length=window,
+            polyorder=2,
+            mode="interp"
+        )
+
+        smooth = np.column_stack([
+            sx,
+            sy
+        ]).astype(
+            np.float32
+        )
+
+        # No permitir que el suavizado desplace la línea
+        # demasiado lejos de la detección real.
+        delta = (
+            smooth -
+            pts
+        )
+
+        distance = np.linalg.norm(
+            delta,
+            axis=1
+        )
+
+        maximum_move = max(
+            1.5,
+            float(spacing) * 0.16
+        )
+
+        too_far = (
+            distance >
+            maximum_move
+        )
+
+        if np.any(
+            too_far
+        ):
+            scale = (
+                maximum_move /
+                (
+                    distance[
+                        too_far
+                    ] +
+                    1e-6
+                )
+            )
+
+            delta[
+                too_far
+            ] *= scale[:, None]
+
+            smooth = (
+                pts +
+                delta
+            )
+
+        # Mantener exactamente los extremos originales.
+        smooth[0] = pts[0]
+        smooth[-1] = pts[-1]
+
+        return smooth.astype(
+            np.float32
+        )
+
+    except Exception:
+        return pts
+
+
 # ============================================================
 # TRAZADO LOCAL DE UN SURCO
 # ============================================================
@@ -1651,12 +1765,12 @@ def trazar_direccion(
         2,
         int(
             spacing *
-            0.16
+            0.14
         )
     )
     max_lateral_drift = max(
         3.0,
-        float(spacing) * 0.42
+        float(spacing) * 0.36
     )
 
     maximum_steps = max(
@@ -1748,14 +1862,14 @@ def trazar_direccion(
             and
             angle_change <
             np.deg2rad(
-                28.0
+                22.0
             )
         ):
             direction = (
-                0.84 *
+                0.88 *
                 direction
                 +
-                0.16 *
+                0.12 *
                 local_vector
             )
             direction /= (
@@ -1900,8 +2014,8 @@ def trazar_direccion(
             movement /= movement_norm
             if np.dot(movement, direction) > 0.82:
                 direction = (
-                    0.88 * direction +
-                    0.12 * movement
+                    0.91 * direction +
+                    0.09 * movement
                 )
                 direction /= (
                     np.linalg.norm(direction) + 1e-9
@@ -2050,6 +2164,13 @@ def trazar_surco_local(
     else:
         points = forward
         green_scores = forward_green
+
+    # Suavizar pequeñas ondulaciones manteniendo
+    # la trayectoria dentro del mismo surco.
+    points = suavizar_trayectoria_surco(
+        points,
+        spacing
+    )
 
     return (
         points,
@@ -2213,6 +2334,26 @@ def analizar(
         ):
             continue
 
+        # Rechazar componentes con muy poca vegetación real.
+        # Esto ayuda a evitar techos, caminos y otras texturas lineales.
+        component_zone = (
+            component["mask"] > 0
+        )
+
+        if np.any(component_zone):
+            component_green = float(
+                np.mean(
+                    green[
+                        component_zone
+                    ] > 0
+                )
+            )
+        else:
+            component_green = 0.0
+
+        if component_green < 0.035:
+            continue
+
         accepted_components += 1
 
         component_angles.append(
@@ -2267,6 +2408,19 @@ def analizar(
                 24.0,
                 spacing * 2.5
             ):
+                continue
+
+            # Evitar líneas falsas sobre construcciones:
+            # debe existir algo de vegetación a lo largo de la trayectoria.
+            green_support = float(
+                np.mean(
+                    np.asarray(
+                        green_scores
+                    ) >= 0.02
+                )
+            )
+
+            if green_support < 0.10:
                 continue
 
             states = estados_color(
@@ -2386,7 +2540,7 @@ def analizar(
                         y2
                     ),
                     color,
-                    2,
+                    1,
                     cv2.LINE_AA
                 )
 
@@ -3188,7 +3342,7 @@ def crear_excel_imagenes(items):
 
 
 # ============================================================
-# INTERFAZ PRO V13
+# INTERFAZ PRO V14 - LINEAS SUAVES + RESUMEN ARRIBA
 # ============================================================
 
 if "video_v13_items" not in st.session_state:
@@ -3494,73 +3648,34 @@ else:
 
 
 # ============================================================
-# EL FOTOGRAMA GRANDE INICIAL FUE ELIMINADO
-# Ahora los resultados aparecen primero.
+# RESUMEN ARRIBA - OCUPA EL ESPACIO IZQUIERDO VACÍO
 # ============================================================
 
-# ============================================================
-# RESULTADOS GENERALES
-# ============================================================
+with main_col:
 
-if active_items:
+    if active_items:
 
-    st.markdown("---")
+        with st.container(
+            border=True
+        ):
 
-    results_col, summary_col = st.columns(
-        [1.65, 1.0],
-        gap="medium"
-    )
-
-    with results_col:
-        st.subheader(
-            tr(
-                "Resultados por escena / parcela candidata",
-                "Résultats par scène / parcelle candidate"
-            )
-        )
-
-        if modo == "video":
-            table_rows = [
-                {
-                    tr("Escena", "Scène"): item["scene"],
-                    tr("Tiempo", "Temps"): formato_tiempo(item["time"]),
-                    tr("Surcos estimados", "Rangs estimés"): item["count"],
-                    tr("Verde %", "Vert %"): round(item["green_pct"], 1),
-                    tr("Rojo %", "Rouge %"): round(item["red_pct"], 1)
-                }
-                for item in active_items
-            ]
-        else:
-            table_rows = [
-                {
-                    tr("Imagen", "Image"): item["name"],
-                    tr("Surcos estimados", "Rangs estimés"): item["count"],
-                    tr("Verde %", "Vert %"): round(item["green_pct"], 1),
-                    tr("Rojo %", "Rouge %"): round(item["red_pct"], 1)
-                }
-                for item in active_items
-            ]
-
-        st.dataframe(
-            pd.DataFrame(table_rows),
-            use_container_width=True,
-            hide_index=True
-        )
-
-    with summary_col:
-        with st.container(border=True):
             st.subheader(
                 tr(
-                    "Resultados generales",
-                    "Résultats généraux"
+                    "Resumen del análisis",
+                    "Résumé de l’analyse"
                 )
             )
 
-            m1, m2, m3 = st.columns(3)
+            m1, m2, m3 = st.columns(
+                3
+            )
 
             with m1:
                 st.metric(
-                    tr("Duración", "Durée"),
+                    tr(
+                        "Duración",
+                        "Durée"
+                    ),
                     duration_text
                 )
 
@@ -3574,7 +3689,9 @@ if active_items:
                         if modo == "video"
                         else "Images"
                     ),
-                    len(active_items)
+                    len(
+                        active_items
+                    )
                 )
 
             with m3:
@@ -3586,27 +3703,31 @@ if active_items:
                     int(
                         sum(
                             item["count"]
-                            for item in active_items
+                            for item
+                            in active_items
                         )
                     )
                 )
 
             st.caption(
                 tr(
-                    "La suma corresponde a las escenas conservadas. Si una misma parcela aparece varias veces, puede contarse de nuevo.",
-                    "La somme correspond aux scènes conservées. Si une même parcelle apparaît plusieurs fois, elle peut être comptée à nouveau."
+                    "Resumen calculado con las escenas que conservas.",
+                    "Résumé calculé à partir des scènes conservées."
                 )
             )
 
-            d1, d2 = st.columns(2)
+            d1, d2 = st.columns(
+                2
+            )
 
             with d1:
+
                 if modo == "video":
-                    excel_bytes = crear_excel_video(
+                    excel_top = crear_excel_video(
                         active_items
                     )
                 else:
-                    excel_bytes = crear_excel_imagenes(
+                    excel_top = crear_excel_imagenes(
                         active_items
                     )
 
@@ -3615,7 +3736,7 @@ if active_items:
                         "⬇ Descargar resultados (Excel)",
                         "⬇ Télécharger les résultats (Excel)"
                     ),
-                    excel_bytes,
+                    excel_top,
                     file_name=(
                         "TerroCore_resultados_video.xlsx"
                         if modo == "video"
@@ -3623,16 +3744,17 @@ if active_items:
                     ),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
-                    key="excel_v13"
+                    key="excel_top_v14"
                 )
 
             with d2:
+
                 if modo == "video":
-                    zip_bytes = crear_zip_resultados(
+                    zip_top = crear_zip_resultados(
                         active_items
                     )
                 else:
-                    zip_bytes = crear_zip_resultados_imagenes(
+                    zip_top = crear_zip_resultados_imagenes(
                         active_items
                     )
 
@@ -3641,7 +3763,7 @@ if active_items:
                         "⬇ Descargar imágenes (ZIP)",
                         "⬇ Télécharger les images (ZIP)"
                     ),
-                    zip_bytes,
+                    zip_top,
                     file_name=(
                         "TerroCore_imagenes_video.zip"
                         if modo == "video"
@@ -3649,8 +3771,109 @@ if active_items:
                     ),
                     mime="application/zip",
                     use_container_width=True,
-                    key="zip_v13"
+                    key="zip_top_v14"
                 )
+
+    else:
+
+        with st.container(
+            border=True
+        ):
+            st.subheader(
+                tr(
+                    "Resumen del análisis",
+                    "Résumé de l’analyse"
+                )
+            )
+
+            st.info(
+                tr(
+                    "El resumen aparecerá aquí después de analizar el video o las imágenes.",
+                    "Le résumé apparaîtra ici après l’analyse de la vidéo ou des images."
+                )
+            )
+
+
+# ============================================================
+# RESULTADOS GENERALES
+# ============================================================
+
+if active_items:
+
+    st.markdown("---")
+
+    st.subheader(
+        tr(
+            "Resultados por escena / parcela candidata",
+            "Résultats par scène / parcelle candidate"
+        )
+    )
+
+    if modo == "video":
+        table_rows = [
+            {
+                tr("Escena", "Scène"): item["scene"],
+                tr("Tiempo", "Temps"): formato_tiempo(
+                    item["time"]
+                ),
+                tr(
+                    "Surcos estimados",
+                    "Rangs estimés"
+                ): item["count"],
+                tr(
+                    "Verde %",
+                    "Vert %"
+                ): round(
+                    item["green_pct"],
+                    1
+                ),
+                tr(
+                    "Rojo %",
+                    "Rouge %"
+                ): round(
+                    item["red_pct"],
+                    1
+                )
+            }
+            for item in active_items
+        ]
+
+    else:
+        table_rows = [
+            {
+                tr(
+                    "Imagen",
+                    "Image"
+                ): item["name"],
+                tr(
+                    "Surcos estimados",
+                    "Rangs estimés"
+                ): item["count"],
+                tr(
+                    "Verde %",
+                    "Vert %"
+                ): round(
+                    item["green_pct"],
+                    1
+                ),
+                tr(
+                    "Rojo %",
+                    "Rouge %"
+                ): round(
+                    item["red_pct"],
+                    1
+                )
+            }
+            for item in active_items
+        ]
+
+    st.dataframe(
+        pd.DataFrame(
+            table_rows
+        ),
+        use_container_width=True,
+        hide_index=True
+    )
 
 
     # ========================================================
