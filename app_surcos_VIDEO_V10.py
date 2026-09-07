@@ -41,7 +41,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🍇 Contador automático de surcos")
+st.title("🍇 TerroCore image AI")
 st.markdown(
     '<div class="sub">'
     'Extrae automáticamente los fotogramas más útiles, evita escenas consecutivas muy parecidas '
