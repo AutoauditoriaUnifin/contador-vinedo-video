@@ -35,7 +35,7 @@ st.markdown("""
     margin-top:10px;
 }
 .sub {
-    color:#a9b2bf;
+    color:#722F37;
     margin-bottom:1rem;
 }
 </style>
