@@ -5,3 +5,5 @@ Pillow
 scipy
 pandas
 openpyxl
+ultralytics
+openai
