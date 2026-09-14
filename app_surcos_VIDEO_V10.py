@@ -15,6 +15,7 @@ from PIL import Image
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks, savgol_filter
 from scipy.interpolate import UnivariateSpline
+from openai import OpenAI
 
 
 # ============================================================
@@ -61,6 +62,29 @@ if "idioma_terrocore" not in st.session_state:
 def tr(es, fr):
     """Texto visible según el idioma seleccionado."""
     return es if st.session_state.idioma_terrocore == "ES" else fr
+
+
+def probar_openai():
+    """
+    Prueba únicamente la conexión con OpenAI.
+    No analiza imágenes ni modifica el detector de surcos.
+    """
+    try:
+        api_key = st.secrets["OPENAI_API_KEY"]
+
+        client = OpenAI(
+            api_key=api_key
+        )
+
+        response = client.responses.create(
+            model="gpt-5.6-luna",
+            input="Responde únicamente con la palabra: CONECTADO"
+        )
+
+        return True, response.output_text
+
+    except Exception as e:
+        return False, str(e)
 
 
 # ============================================================
@@ -3874,6 +3898,36 @@ with side_col:
         ):
             st.session_state.idioma_terrocore = "FR"
             st.rerun()
+
+    # ========================================================
+    # PASO 1 - PRUEBA DE CONEXIÓN OPENAI
+    # ========================================================
+    if st.button(
+        tr(
+            "🧠 Probar conexión IA",
+            "🧠 Tester la connexion IA"
+        ),
+        key="probar_openai_paso1",
+        use_container_width=True
+    ):
+        ok_openai, resultado_openai = probar_openai()
+
+        if ok_openai:
+            st.success(
+                tr(
+                    "✅ OpenAI conectado correctamente",
+                    "✅ OpenAI connecté correctement"
+                )
+            )
+            st.caption(resultado_openai)
+        else:
+            st.error(
+                tr(
+                    "❌ No se pudo conectar con OpenAI",
+                    "❌ Impossible de se connecter à OpenAI"
+                )
+            )
+            st.code(resultado_openai)
 
     # Espacio pequeño entre los botones y el panel siguiente
     st.markdown(
