@@ -17,6 +17,7 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks, savgol_filter
 from scipy.interpolate import UnivariateSpline
 from openai import OpenAI
+from inference_sdk import InferenceHTTPClient
 
 
 # ============================================================
@@ -338,6 +339,211 @@ def crear_mascara_exclusion_ia(datos_ia, width, height):
 
     return mask
 
+
+
+# ============================================================
+# PRUEBA ROBOFLOW - MODELO YA ENTRENADO DE SURCOS
+# ============================================================
+
+ROBOFLOW_MODEL_ID = "row_segmentaiton_vineyard/1"
+
+
+def _decodificar_mascara_semantica_roboflow(result):
+    """
+    Roboflow Semantic Segmentation puede devolver la máscara como
+    base64. Esta función tolera varias formas de respuesta para que
+    la prueba no dependa de una sola versión del SDK.
+    """
+    prediction = None
+
+    if isinstance(result, dict):
+        prediction = result.get("predictions", result)
+
+    if isinstance(prediction, list):
+        prediction = prediction[0] if prediction else None
+
+    if not isinstance(prediction, dict):
+        raise RuntimeError("Roboflow no devolvió una predicción semántica válida.")
+
+    mask_b64 = (
+        prediction.get("segmentation_mask")
+        or prediction.get("mask")
+    )
+
+    if not mask_b64:
+        raise RuntimeError(
+            "La respuesta de Roboflow no contiene segmentation_mask. "
+            "Abre 'Ver respuesta Roboflow' para revisar el formato recibido."
+        )
+
+    if isinstance(mask_b64, dict):
+        mask_b64 = mask_b64.get("data") or mask_b64.get("base64")
+
+    if not isinstance(mask_b64, str):
+        raise RuntimeError("La máscara de Roboflow no llegó en formato base64.")
+
+    if "," in mask_b64 and mask_b64.strip().lower().startswith("data:"):
+        mask_b64 = mask_b64.split(",", 1)[1]
+
+    try:
+        raw = base64.b64decode(mask_b64)
+    except Exception as e:
+        raise RuntimeError(f"No se pudo decodificar la máscara de Roboflow: {e}")
+
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    mask = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
+
+    if mask is None:
+        raise RuntimeError("Roboflow devolvió una máscara que OpenCV no pudo abrir.")
+
+    if mask.ndim == 3:
+        mask = mask[:, :, 0]
+
+    # Cualquier clase distinta de fondo se toma como 'row'.
+    binary = (mask > 0).astype(np.uint8) * 255
+    return binary
+
+
+def _conteo_preliminar_desde_mascara(mask):
+    """
+    Conteo preliminar SOLO para evaluar la calidad del modelo.
+    No reemplaza todavía el conteo principal de TerroCore.
+    """
+    if mask is None or mask.size == 0 or np.mean(mask > 0) < 0.002:
+        return 0, 90.0
+
+    # Encontrar orientación dominante con Hough sobre la máscara.
+    edges = cv2.Canny(mask, 40, 120)
+    lines = cv2.HoughLinesP(
+        edges,
+        1,
+        np.pi / 180.0,
+        threshold=35,
+        minLineLength=max(35, int(min(mask.shape) * 0.08)),
+        maxLineGap=18,
+    )
+
+    angles=[]
+    weights=[]
+    if lines is not None:
+        for x1,y1,x2,y2 in np.asarray(lines).reshape(-1,4):
+            dx=float(x2-x1); dy=float(y2-y1)
+            L=float(np.hypot(dx,dy))
+            if L < 25: continue
+            a=(np.degrees(np.arctan2(dy,dx))+180.0)%180.0
+            angles.append(a); weights.append(L)
+
+    if angles:
+        a2=np.deg2rad(np.asarray(angles)*2.0)
+        wts=np.asarray(weights,dtype=np.float64)
+        ang=(np.degrees(np.arctan2(np.sum(wts*np.sin(a2)),np.sum(wts*np.cos(a2))))/2.0)%180.0
+    else:
+        ang=90.0
+
+    h,w=mask.shape[:2]
+    M=cv2.getRotationMatrix2D((w/2.0,h/2.0),90.0-ang,1.0)
+    rot=cv2.warpAffine(mask,M,(w,h),flags=cv2.INTER_NEAREST,borderMode=cv2.BORDER_CONSTANT)
+
+    # Usar la parte central para evitar bordes/edificios.
+    y0=int(h*0.08); y1=int(h*0.92)
+    prof=np.mean(rot[y0:y1] > 0, axis=0).astype(np.float32)
+    prof=gaussian_filter1d(prof,sigma=1.2)
+    trend=gaussian_filter1d(prof,sigma=max(6.0,w/55.0))
+    sig=prof-trend
+
+    spacing=estimar_espaciado_local(sig)
+    if spacing is None:
+        spacing=max(8.0,w/90.0)
+
+    peaks,_=find_peaks(
+        sig,
+        distance=max(6,int(round(spacing*0.80))),
+        prominence=max(0.003,float(np.std(sig))*0.22),
+    )
+
+    # Quitar picos muy débiles.
+    keep=[]
+    p55=float(np.percentile(prof,55))
+    for p in peaks:
+        if float(prof[p]) >= p55:
+            keep.append(int(p))
+
+    return len(keep), float(ang)
+
+
+def probar_surcos_roboflow(uploaded_file):
+    """
+    Ejecuta el modelo público ya entrenado row_segmentaiton_vineyard/1
+    y devuelve máscara + superposición. No modifica el análisis principal.
+    """
+    try:
+        api_key = st.secrets["ROBOFLOW_API_KEY"]
+
+        client = InferenceHTTPClient(
+            api_url="https://serverless.roboflow.com",
+            api_key=api_key,
+        )
+
+        # El SDK acepta bytes/numpy en algunas versiones, pero para máxima
+        # compatibilidad usamos un archivo temporal.
+        suffix = Path(uploaded_file.name or "imagen.jpg").suffix or ".jpg"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(uploaded_file.getvalue())
+            tmp_path = tmp.name
+
+        try:
+            result = client.infer(
+                tmp_path,
+                model_id=ROBOFLOW_MODEL_ID,
+            )
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+        mask = _decodificar_mascara_semantica_roboflow(result)
+
+        image_bytes = uploaded_file.getvalue()
+        bgr = cv2.imdecode(
+            np.frombuffer(image_bytes, dtype=np.uint8),
+            cv2.IMREAD_COLOR,
+        )
+        if bgr is None:
+            raise RuntimeError("No se pudo abrir la imagen subida.")
+
+        h,w=bgr.shape[:2]
+        if mask.shape[:2] != (h,w):
+            mask=cv2.resize(mask,(w,h),interpolation=cv2.INTER_NEAREST)
+
+        count, angle = _conteo_preliminar_desde_mascara(mask)
+
+        overlay=bgr.copy()
+        green_layer=np.zeros_like(overlay)
+        green_layer[:,:,1]=255
+        alpha=0.40
+        sel=mask>0
+        overlay[sel]=cv2.addWeighted(
+            overlay[sel],
+            1.0-alpha,
+            green_layer[sel],
+            alpha,
+            0,
+        )
+
+        contours,_=cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(overlay,contours,-1,(0,255,0),2,cv2.LINE_AA)
+
+        return True, {
+            "overlay": cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
+            "mask": mask,
+            "conteo_preliminar": int(count),
+            "angulo": float(angle),
+            "raw": result,
+        }
+
+    except Exception as e:
+        return False, str(e)
 
 # ============================================================
 # DISEÑO - COLOR VINO #722F37
@@ -4707,6 +4913,86 @@ with side_col:
                 )
                 st.code(resultado_ia)
 
+        st.markdown("---")
+        st.markdown(
+            tr(
+                "### 🌿 Prueba de surcos con Roboflow",
+                "### 🌿 Test des rangs avec Roboflow"
+            )
+        )
+
+        st.caption(
+            tr(
+                "Esta prueba NO cambia todavía el detector principal. Solo muestra la máscara del modelo entrenado.",
+                "Ce test ne modifie pas encore le détecteur principal. Il affiche uniquement le masque du modèle entraîné."
+            )
+        )
+
+        if st.button(
+            tr(
+                "🌿 Probar modelo de surcos Roboflow",
+                "🌿 Tester le modèle Roboflow des rangs"
+            ),
+            key="btn_probar_roboflow_surcos",
+            use_container_width=True,
+            disabled=(imagen_prueba_ia is None)
+        ):
+            with st.spinner(
+                tr(
+                    "Roboflow está segmentando los surcos...",
+                    "Roboflow segmente les rangs..."
+                )
+            ):
+                ok_rf, resultado_rf = probar_surcos_roboflow(imagen_prueba_ia)
+
+            if ok_rf:
+                st.session_state["ultima_prueba_roboflow"] = resultado_rf
+            else:
+                st.session_state["ultima_prueba_roboflow"] = None
+                st.error(
+                    tr(
+                        "❌ No se pudo ejecutar el modelo Roboflow",
+                        "❌ Impossible d'exécuter le modèle Roboflow"
+                    )
+                )
+                st.code(resultado_rf)
+
+        resultado_rf_guardado = st.session_state.get("ultima_prueba_roboflow")
+
+        if resultado_rf_guardado:
+            st.success(
+                tr(
+                    "✅ Máscara Roboflow generada",
+                    "✅ Masque Roboflow généré"
+                )
+            )
+
+            st.image(
+                resultado_rf_guardado["overlay"],
+                caption=tr(
+                    "Verde = zona que el modelo reconoce como fila de viñedo",
+                    "Vert = zone reconnue comme rang de vigne par le modèle"
+                ),
+                use_container_width=True
+            )
+
+            rf_c1, rf_c2 = st.columns(2)
+            with rf_c1:
+                st.metric(
+                    tr("Conteo preliminar", "Comptage préliminaire"),
+                    resultado_rf_guardado["conteo_preliminar"]
+                )
+            with rf_c2:
+                st.metric(
+                    tr("Dirección estimada", "Direction estimée"),
+                    f'{resultado_rf_guardado["angulo"]:.1f}°'
+                )
+
+            with st.expander(
+                tr("Ver respuesta Roboflow", "Voir la réponse Roboflow")
+            ):
+                st.json(resultado_rf_guardado["raw"])
+
     # Espacio pequeño entre los botones y el panel siguiente
     st.markdown(
         "<div style='height:10px;'></div>",
@@ -4910,7 +5196,7 @@ with side_col:
             progress = st.progress(
                 0,
                 text=tr(
-                    "Analizando imagenes...",
+                    "Analizando fotografías...",
                     "Analyse des photographies..."
                 )
             )
