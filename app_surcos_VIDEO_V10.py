@@ -275,17 +275,128 @@ REGLAS IMPORTANTES:
 
 
 
-def analizar_1_imagen_con_ia(uploaded_file):
-    """
-    Prueba manual de una sola imagen desde el panel del Paso 2/3.
-    """
-    image_bytes = uploaded_file.getvalue()
-    mime_type = uploaded_file.type or "image/jpeg"
+# ============================================================
+# BACKEND IA VISUAL - GPT IMAGE
+# ============================================================
 
-    return _analizar_bytes_con_ia(
-        image_bytes,
-        mime_type
+BACKEND_ANALYZE_URL = os.getenv(
+    "BACKEND_ANALYZE_URL",
+    "https://potential-disco-gxxq7gj969q7hpg75-8000.app.github.dev/analyze-image"
+).strip()
+
+# Si existe BACKEND_ANALYZE_URL en Streamlit Secrets, tiene prioridad.
+try:
+    if "BACKEND_ANALYZE_URL" in st.secrets:
+        BACKEND_ANALYZE_URL = str(
+            st.secrets["BACKEND_ANALYZE_URL"]
+        ).strip()
+except Exception:
+    pass
+
+
+def _descargar_imagen_resultado_backend(data):
+    """Descarga la imagen editada por el backend y la devuelve en BGR."""
+    url = (
+        data.get("imagen_resultado_url_publica")
+        or data.get("imagen_resultado_url")
     )
+
+    if not url:
+        raise RuntimeError("El backend no devolvió imagen_resultado_url.")
+
+    if url.startswith("/"):
+        base = BACKEND_ANALYZE_URL.rsplit("/analyze-image", 1)[0]
+        url = base + url
+
+    response = requests.get(url, timeout=300)
+    response.raise_for_status()
+
+    pil_result = Image.open(
+        io.BytesIO(response.content)
+    ).convert("RGB")
+
+    rgb = np.asarray(pil_result)
+    bgr = rgb[:, :, ::-1].copy()
+
+    return bgr, url
+
+
+def procesar_imagen_backend_ia(uploaded_file):
+    """
+    Envía la imagen al backend TerraCore IA.
+    El backend usa GPT Image para editar directamente la fotografía.
+    No usa el detector local para crear las líneas.
+    """
+    try:
+        if not BACKEND_ANALYZE_URL:
+            raise RuntimeError("BACKEND_ANALYZE_URL no está configurada.")
+
+        image_bytes = uploaded_file.getvalue()
+        if not image_bytes:
+            raise RuntimeError("La imagen está vacía.")
+
+        mime_type = uploaded_file.type or "image/jpeg"
+
+        files = {
+            "file": (
+                uploaded_file.name,
+                image_bytes,
+                mime_type
+            )
+        }
+
+        response = requests.post(
+            BACKEND_ANALYZE_URL,
+            files=files,
+            timeout=600
+        )
+
+        try:
+            data = response.json()
+        except Exception:
+            raise RuntimeError(
+                f"El backend respondió HTTP {response.status_code}, "
+                f"pero no devolvió JSON válido: {response.text[:1200]}"
+            )
+
+        if response.status_code != 200 or not data.get("ok", False):
+            raise RuntimeError(
+                data.get("error")
+                or f"Backend HTTP {response.status_code}"
+            )
+
+        annotated, result_url = _descargar_imagen_resultado_backend(data)
+
+        # El backend de edición visual actual no devuelve un conteo técnico.
+        # Si más adelante agrega 'analisis.surcos_estimados', la app lo toma automáticamente.
+        analisis = data.get("analisis") or {}
+        count = int(
+            analisis.get("surcos_estimados")
+            or data.get("surcos_estimados")
+            or 0
+        )
+
+        return True, {
+            "backend": data,
+            "annotated": annotated,
+            "result_url": result_url,
+            "count": count,
+            "green_pct": 0.0,
+            "red_pct": 0.0,
+            "angle": float(
+                analisis.get("orientacion_principal_grados")
+                or 0.0
+            ),
+            "metodo": data.get("metodo", "gpt-image")
+        }
+
+    except Exception as e:
+        return False, str(e)
+
+
+def analizar_1_imagen_con_ia(uploaded_file):
+    """Prueba manual: procesa una sola imagen usando el backend IA visual."""
+    return procesar_imagen_backend_ia(uploaded_file)
 
 
 
@@ -5207,45 +5318,34 @@ with side_col:
             if ok_ia:
                 st.success(
                     tr(
-                        "✅ Análisis completado",
-                        "✅ Analyse terminée"
+                        "✅ Imagen procesada con IA",
+                        "✅ Image traitée avec IA"
                     )
                 )
 
-                col1, col2 = st.columns(2)
+                st.image(
+                    cv2.cvtColor(
+                        resultado_ia["annotated"],
+                        cv2.COLOR_BGR2RGB
+                    ),
+                    caption=tr(
+                        "Resultado creado por la IA",
+                        "Résultat créé par l’IA"
+                    ),
+                    use_container_width=True
+                )
 
-                with col1:
-                    st.metric(
-                        tr("¿Es viñedo?", "Est-ce un vignoble ?"),
-                        "Sí" if resultado_ia.get("es_vinedo", False) else "No"
+                st.caption(
+                    tr(
+                        f"Método: {resultado_ia.get('metodo', 'IA visual')}",
+                        f"Méthode : {resultado_ia.get('metodo', 'IA visuelle')}"
                     )
-                    st.metric(
-                        tr("¿Hay camino?", "Y a-t-il un chemin ?"),
-                        "Sí" if resultado_ia.get("hay_camino", False) else "No"
-                    )
-                    st.metric(
-                        tr("¿Hay techo?", "Y a-t-il un toit ?"),
-                        "Sí" if resultado_ia.get("hay_techo", False) else "No"
-                    )
-
-                with col2:
-                    st.metric(
-                        tr("¿Hay construcción?", "Y a-t-il une construction ?"),
-                        "Sí" if resultado_ia.get("hay_construccion", False) else "No"
-                    )
-                    st.metric(
-                        tr("¿Analizar surcos?", "Analyser les rangs ?"),
-                        "Sí" if resultado_ia.get("analizar_surcos", False) else "No"
-                    )
-
-                st.markdown(
-                    f"**{tr('Resumen', 'Résumé')}:** {resultado_ia.get('resumen', '')}"
                 )
 
                 with st.expander(
-                    tr("Ver respuesta completa", "Voir la réponse complète")
+                    tr("Ver respuesta completa del backend", "Voir la réponse complète du backend")
                 ):
-                    st.json(resultado_ia)
+                    st.json(resultado_ia.get("backend", {}))
 
                 st.session_state["ultima_clasificacion_ia"] = resultado_ia
 
@@ -5648,67 +5748,29 @@ with side_col:
                 1
             ):
                 try:
-                    pil = Image.open(
+                    # ====================================================
+                    # IA VISUAL: enviar la fotografía completa al backend.
+                    # GPT Image crea directamente las líneas sobre la foto.
+                    # NO se llama al detector local analizar() para imágenes.
+                    # ====================================================
+                    ok_backend, backend_result = procesar_imagen_backend_ia(
                         uploaded_image
-                    ).convert("RGB")
-
-                    # ================================================
-                    # PASO 3: IA filtra escena antes de dibujar surcos.
-                    # ================================================
-                    ok_scene_ia, scene_ia = analizar_pil_con_ia(
-                        pil
                     )
 
-                    exclusion_mask = None
-
-                    if ok_scene_ia:
-                        if not bool(scene_ia.get("es_vinedo", False)):
-                            raise RuntimeError(
-                                "La IA indicó que esta imagen no es un viñedo útil."
-                            )
-
-                        if not bool(scene_ia.get("analizar_surcos", False)):
-                            raise RuntimeError(
-                                "La IA indicó que esta escena no debe analizarse para surcos."
-                            )
-
-                        exclusion_mask = crear_mascara_exclusion_ia(
-                            scene_ia,
-                            pil.width,
-                            pil.height
-                        )
-                    else:
-                        # Si falla OpenAI, no bloqueamos toda la app:
-                        # se usa el detector clásico como respaldo.
-                        st.warning(
-                            tr(
-                                f"IA no disponible para {uploaded_image.name}; se usará el detector clásico.",
-                                f"IA indisponible pour {uploaded_image.name} ; le détecteur classique sera utilisé."
-                            )
-                        )
-                        # Mostrar el motivo real para poder corregirlo.
-                        with st.expander(tr("Ver detalle del error de IA", "Voir le détail de l’erreur IA")):
-                            st.code(str(scene_ia))
-
-                    result = analizar(
-                        pil,
-                        exclusion_mask=exclusion_mask
-                    )
-
-                    annotated = cv2.cvtColor(
-                        result["image"],
-                        cv2.COLOR_RGB2BGR
-                    )
+                    if not ok_backend:
+                        raise RuntimeError(str(backend_result))
 
                     analyzed_images.append({
                         "id": f"{index}_{uploaded_image.name}",
                         "name": uploaded_image.name,
-                        "count": int(result["count"]),
-                        "green_pct": float(result["green_pct"]),
-                        "red_pct": float(result["red_pct"]),
-                        "angle": float(result["angle"]),
-                        "annotated": annotated,
-                        "ia_scene": scene_ia if ok_scene_ia else None
+                        "count": int(backend_result.get("count", 0)),
+                        "green_pct": float(backend_result.get("green_pct", 0.0)),
+                        "red_pct": float(backend_result.get("red_pct", 0.0)),
+                        "angle": float(backend_result.get("angle", 0.0)),
+                        "annotated": backend_result["annotated"],
+                        "ia_scene": backend_result.get("backend"),
+                        "result_url": backend_result.get("result_url"),
+                        "metodo": backend_result.get("metodo", "gpt-image")
                     })
 
                 except Exception as exc:
