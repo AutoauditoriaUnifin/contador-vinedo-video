@@ -4910,7 +4910,7 @@ with side_col:
             progress = st.progress(
                 0,
                 text=tr(
-                    "Analizando fotografías...",
+                    "Analizando imagenes...",
                     "Analyse des photographies..."
                 )
             )
