@@ -586,6 +586,254 @@ def probar_surcos_roboflow(uploaded_file):
     except Exception as e:
         return False, str(e)
 
+
+# ============================================================
+# SEGUNDA PRUEBA ROBOFLOW - INSTANCE SEGMENTATION
+# ============================================================
+
+ROBOFLOW_INSTANCE_MODEL_ID = "row-detection-0kctk/1"
+
+
+def _polygon_area(points):
+    if len(points) < 3:
+        return 0.0
+    pts = np.asarray(points, dtype=np.float32)
+    return float(abs(cv2.contourArea(pts)))
+
+
+def _elongacion_polygon(points):
+    """Relación largo/ancho usando PCA. Un surco debe ser alargado."""
+    pts = np.asarray(points, dtype=np.float32)
+    if len(pts) < 4:
+        return 0.0
+    centered = pts - pts.mean(axis=0)
+    cov = np.cov(centered.T)
+    try:
+        vals = np.sort(np.linalg.eigvalsh(cov))
+    except Exception:
+        return 0.0
+    if len(vals) < 2:
+        return 0.0
+    return float(np.sqrt(max(vals[-1], 1e-6) / max(vals[0], 1e-6)))
+
+
+def _linea_central_polygon(points):
+    """
+    Calcula una línea central recta aproximada para visualizar la instancia.
+    Solo se usa en esta prueba comparativa.
+    """
+    pts = np.asarray(points, dtype=np.float32)
+    if len(pts) < 4:
+        return None
+    center = pts.mean(axis=0)
+    centered = pts - center
+    cov = np.cov(centered.T)
+    try:
+        vals, vecs = np.linalg.eigh(cov)
+    except Exception:
+        return None
+    axis = vecs[:, int(np.argmax(vals))].astype(np.float32)
+    axis /= np.linalg.norm(axis) + 1e-8
+    proj = centered @ axis
+    a = center + axis * float(np.percentile(proj, 3))
+    b = center + axis * float(np.percentile(proj, 97))
+    return a, b
+
+
+def probar_detector_crop_row_instance(uploaded_file):
+    """
+    Prueba un modelo de Instance Segmentation ya entrenado:
+    row-detection-0kctk/1
+
+    Usa el endpoint REST directo de instance segmentation para evitar
+    el problema anterior del registry/Cloudflare del SDK.
+    """
+    try:
+        api_key = st.secrets["ROBOFLOW_API_KEY"]
+        image_bytes = uploaded_file.getvalue()
+        if not image_bytes:
+            raise RuntimeError("La imagen está vacía.")
+
+        endpoint = (
+            "https://outline.roboflow.com/"
+            "row-detection-0kctk/1"
+        )
+
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        response = requests.post(
+            endpoint,
+            params={
+                "api_key": api_key,
+                "confidence": 25,
+                "overlap": 30,
+            },
+            data=image_b64,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+                "User-Agent": "TerroCore-Streamlit/1.0",
+            },
+            timeout=90,
+        )
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Roboflow respondió HTTP {response.status_code}. "
+                f"Detalle: {response.text[:1500]}"
+            )
+
+        try:
+            result = response.json()
+        except Exception:
+            raise RuntimeError(
+                "Roboflow respondió, pero no devolvió JSON válido. "
+                f"Respuesta: {response.text[:1200]}"
+            )
+
+        predictions = result.get("predictions", []) if isinstance(result, dict) else []
+        if not isinstance(predictions, list):
+            predictions = []
+
+        bgr = cv2.imdecode(
+            np.frombuffer(image_bytes, dtype=np.uint8),
+            cv2.IMREAD_COLOR,
+        )
+        if bgr is None:
+            raise RuntimeError("No se pudo abrir la imagen subida.")
+
+        h, w = bgr.shape[:2]
+        overlay = bgr.copy()
+        translucent = bgr.copy()
+
+        valid = []
+        rejected = 0
+
+        for pred in predictions:
+            if not isinstance(pred, dict):
+                continue
+
+            confidence = float(pred.get("confidence", 0.0) or 0.0)
+            raw_points = pred.get("points", [])
+
+            points = []
+            for p in raw_points:
+                if isinstance(p, dict) and "x" in p and "y" in p:
+                    points.append([float(p["x"]), float(p["y"])])
+                elif isinstance(p, (list, tuple)) and len(p) >= 2:
+                    points.append([float(p[0]), float(p[1])])
+
+            if len(points) < 4:
+                rejected += 1
+                continue
+
+            pts = np.asarray(points, dtype=np.float32)
+            area = _polygon_area(pts)
+            elong = _elongacion_polygon(pts)
+
+            # Filtros suaves para la prueba: surcos = figuras alargadas.
+            if confidence < 0.25:
+                rejected += 1
+                continue
+            if area < max(80.0, h * w * 0.00003):
+                rejected += 1
+                continue
+            if elong < 2.2:
+                rejected += 1
+                continue
+
+            valid.append({
+                "points": pts,
+                "confidence": confidence,
+                "elongation": elong,
+                "area": area,
+                "class": pred.get("class", "row"),
+            })
+
+        # Ordenar de izquierda a derecha según el centro X para numerar.
+        valid.sort(key=lambda item: float(np.mean(item["points"][:, 0])))
+
+        for number, item in enumerate(valid, start=1):
+            pts = np.rint(item["points"]).astype(np.int32)
+            pts[:, 0] = np.clip(pts[:, 0], 0, w - 1)
+            pts[:, 1] = np.clip(pts[:, 1], 0, h - 1)
+
+            # Máscara por instancia.
+            cv2.fillPoly(
+                translucent,
+                [pts],
+                (20, 220, 60),
+            )
+
+            cv2.polylines(
+                overlay,
+                [pts.reshape(-1, 1, 2)],
+                True,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+
+            center_line = _linea_central_polygon(item["points"])
+            if center_line is not None:
+                p1, p2 = center_line
+                p1 = tuple(np.rint(p1).astype(int))
+                p2 = tuple(np.rint(p2).astype(int))
+                cv2.line(
+                    overlay,
+                    p1,
+                    p2,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+                # Numerar en ambos extremos.
+                for px, py in (p1, p2):
+                    px = int(np.clip(px, 0, w - 1))
+                    py = int(np.clip(py, 18, h - 5))
+                    cv2.putText(
+                        overlay,
+                        str(number),
+                        (px + 3, py - 3),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.50,
+                        (20, 20, 20),
+                        4,
+                        cv2.LINE_AA,
+                    )
+                    cv2.putText(
+                        overlay,
+                        str(number),
+                        (px + 3, py - 3),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.50,
+                        (255, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+
+        # Superponer relleno suave y luego bordes/números.
+        if valid:
+            blended = cv2.addWeighted(bgr, 0.74, translucent, 0.26, 0)
+            # Copiar píxeles del overlay donde hay dibujo visible.
+            diff = np.any(overlay != bgr, axis=2)
+            blended[diff] = overlay[diff]
+        else:
+            blended = overlay
+
+        return True, {
+            "overlay": cv2.cvtColor(blended, cv2.COLOR_BGR2RGB),
+            "conteo_instancias": int(len(valid)),
+            "predicciones_totales": int(len(predictions)),
+            "rechazadas": int(rejected),
+            "raw": result,
+        }
+
+    except Exception as e:
+        return False, str(e)
+
+
 # ============================================================
 # DISEÑO - COLOR VINO #722F37
 # ============================================================
@@ -5033,6 +5281,99 @@ with side_col:
                 tr("Ver respuesta Roboflow", "Voir la réponse Roboflow")
             ):
                 st.json(resultado_rf_guardado["raw"])
+
+
+        st.markdown("---")
+        st.markdown(
+            tr(
+                "### 🌱 Prueba detector Crop Row por instancia",
+                "### 🌱 Test Crop Row par instance"
+            )
+        )
+
+        st.caption(
+            tr(
+                "Este segundo modelo intenta separar cada fila como una instancia independiente. Es solo una comparación; todavía no cambia el detector principal.",
+                "Ce deuxième modèle tente de séparer chaque rang comme une instance indépendante. Il s'agit uniquement d'une comparaison."
+            )
+        )
+
+        if st.button(
+            tr(
+                "🌱 Probar detector Crop Row",
+                "🌱 Tester le détecteur Crop Row"
+            ),
+            key="btn_probar_crop_row_instance",
+            use_container_width=True,
+            disabled=(imagen_prueba_ia is None)
+        ):
+            with st.spinner(
+                tr(
+                    "Roboflow está separando los surcos por instancia...",
+                    "Roboflow sépare les rangs par instance..."
+                )
+            ):
+                ok_inst, resultado_inst = probar_detector_crop_row_instance(
+                    imagen_prueba_ia
+                )
+
+            if ok_inst:
+                st.session_state["ultima_prueba_crop_row_instance"] = resultado_inst
+            else:
+                st.session_state["ultima_prueba_crop_row_instance"] = None
+                st.error(
+                    tr(
+                        "❌ No se pudo ejecutar el detector Crop Row",
+                        "❌ Impossible d'exécuter le détecteur Crop Row"
+                    )
+                )
+                st.code(resultado_inst)
+
+        resultado_inst_guardado = st.session_state.get(
+            "ultima_prueba_crop_row_instance"
+        )
+
+        if resultado_inst_guardado:
+            st.success(
+                tr(
+                    "✅ Detector Crop Row ejecutado",
+                    "✅ Détecteur Crop Row exécuté"
+                )
+            )
+
+            st.image(
+                resultado_inst_guardado["overlay"],
+                caption=tr(
+                    "Verde = máscara de cada instancia; línea blanca = eje estimado del surco",
+                    "Vert = masque de chaque instance; ligne blanche = axe estimé du rang"
+                ),
+                use_container_width=True
+            )
+
+            ic1, ic2, ic3 = st.columns(3)
+            with ic1:
+                st.metric(
+                    tr("Surcos por instancia", "Rangs par instance"),
+                    resultado_inst_guardado["conteo_instancias"]
+                )
+            with ic2:
+                st.metric(
+                    tr("Predicciones totales", "Prédictions totales"),
+                    resultado_inst_guardado["predicciones_totales"]
+                )
+            with ic3:
+                st.metric(
+                    tr("Descartadas", "Rejetées"),
+                    resultado_inst_guardado["rechazadas"]
+                )
+
+            with st.expander(
+                tr(
+                    "Ver respuesta Crop Row",
+                    "Voir la réponse Crop Row"
+                )
+            ):
+                st.json(resultado_inst_guardado["raw"])
 
     # Espacio pequeño entre los botones y el panel siguiente
     st.markdown(
