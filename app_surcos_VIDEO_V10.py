@@ -155,8 +155,11 @@ Devuelve exactamente esta estructura:
 REGLAS IMPORTANTES:
 - Las coordenadas de cada punto son [x,y] normalizadas de 0 a 1000.
 - (0,0) es la esquina superior izquierda y (1000,1000) la inferior derecha.
-- En zonas_excluir incluye SOLO áreas claramente no cultivadas: caminos, calles, techos,
-  edificios, patios, estacionamientos, bodegas y superficies artificiales grandes.
+- En zonas_excluir incluye áreas claramente ajenas al patrón de hileras: caminos, calles,
+  techos, edificios, patios, estacionamientos, bodegas, superficies artificiales grandes,
+  árboles aislados, copas de árboles, setos, jardines y vegetación ornamental que NO forme
+  parte de las hileras regulares del viñedo.
+- Si hay árboles grandes en un borde de la parcela, delimita sus copas completas en zonas_excluir.
 - NO excluyas huecos secos dentro de un surco.
 - NO excluyas tierra visible entre hileras del viñedo.
 - NO excluyas una hilera débil o sin vegetación si forma parte del patrón del viñedo.
@@ -1348,6 +1351,13 @@ def detectar_componentes_vinedo(
 def estimar_espaciado_local(
     profile
 ):
+    """
+    Estima la distancia REAL entre hileras.
+
+    Evita el error frecuente de tomar como separación la mitad
+    del espaciamiento verdadero (bordes izquierdo/derecho de una
+    misma hilera), que era una de las causas del sobreconteo.
+    """
     p = np.asarray(
         profile,
         dtype=np.float64
@@ -1369,14 +1379,8 @@ def estimar_espaciado_local(
         )
     )
 
-    p = (
-        p -
-        trend
-    )
-
-    p -= np.mean(
-        p
-    )
+    p = p - trend
+    p -= np.mean(p)
 
     if np.std(p) < 1e-7:
         return None
@@ -1387,14 +1391,11 @@ def estimar_espaciado_local(
         mode="full"
     )
 
-    ac = ac[
-        len(p) - 1:
-    ]
+    ac = ac[len(p) - 1:]
 
     minimum = 6
-
     maximum = min(
-        45,
+        48,
         len(ac) - 1
     )
 
@@ -1407,61 +1408,299 @@ def estimar_espaciado_local(
     ]
 
     peaks, _ = find_peaks(
-        segment
+        segment,
+        distance=2
     )
 
     if len(peaks) == 0:
-        lag = (
-            minimum +
-            int(
-                np.argmax(
-                    segment
-                )
-            )
+        lag = minimum + int(
+            np.argmax(segment)
         )
     else:
-        values = segment[
-            peaks
-        ]
+        lags = minimum + peaks
+        values = segment[peaks]
 
-        maximum_value = float(
-            np.max(
-                values
-            )
+        # Pico de autocorrelación más fuerte.
+        best_idx = int(
+            np.argmax(values)
         )
+        lag = int(lags[best_idx])
+        best_value = float(values[best_idx])
 
-        strong = peaks[
-            values >=
-            maximum_value *
-            0.55
-        ]
+        # Si el pico dominante es demasiado corto, comprobar 2x.
+        # Los bordes de una misma hilera pueden crear un falso periodo
+        # de aproximadamente la mitad del espaciamiento real.
+        if lag <= 12:
+            target = lag * 2
+            near = np.where(
+                np.abs(lags - target) <= 2
+            )[0]
 
-        if len(strong):
-            lag = (
-                minimum +
-                int(
-                    strong[0]
-                )
-            )
-        else:
-            lag = (
-                minimum +
-                int(
-                    peaks[
+            if len(near):
+                near_best = int(
+                    near[
                         np.argmax(
-                            values
+                            values[near]
                         )
                     ]
                 )
-            )
+
+                if float(values[near_best]) >= best_value * 0.68:
+                    lag = int(
+                        lags[near_best]
+                    )
 
     return float(
         np.clip(
             lag,
-            7.0,
+            8.0,
             45.0
         )
     )
+
+
+# ============================================================
+# REJILLA GLOBAL - UN ID POR HILERA REAL
+# ============================================================
+
+def calcular_rejilla_global_surcos(
+    green_mask,
+    components
+):
+    """
+    Construye una sola rejilla transversal para toda la imagen.
+
+    Esto evita contar dos o tres veces la misma hilera cuando el
+    detector divide el viñedo en varios componentes por vigor,
+    huecos secos o cambios de iluminación.
+    """
+    if not components:
+        return None
+
+    h, w = green_mask.shape
+
+    angles = []
+    weights = []
+
+    for component in components:
+        angles.append(
+            float(component["angle"])
+        )
+        weights.append(
+            max(
+                1.0,
+                float(component.get("tiles", 1))
+            )
+        )
+
+    angles = np.asarray(
+        angles,
+        dtype=np.float64
+    )
+    weights = np.asarray(
+        weights,
+        dtype=np.float64
+    )
+
+    z = np.sum(
+        weights
+        *
+        np.exp(
+            1j * 2.0 * angles
+        )
+    )
+
+    if abs(z) < 1e-8:
+        mean_angle = float(
+            angles[0]
+        )
+    else:
+        mean_angle = float(
+            (np.angle(z) / 2.0) % np.pi
+        )
+
+    angle_deg = float(
+        np.rad2deg(mean_angle)
+    )
+
+    # Después de rotar, las hileras quedan aproximadamente verticales.
+    rotation = 90.0 - angle_deg
+
+    M = cv2.getRotationMatrix2D(
+        (w / 2.0, h / 2.0),
+        rotation,
+        1.0
+    )
+
+    rotated = cv2.warpAffine(
+        (green_mask > 0).astype(np.uint8) * 255,
+        M,
+        (w, h),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT
+    )
+
+    # Ignorar bordes extremos, donde suelen aparecer edificios/árboles.
+    ya = int(h * 0.06)
+    yb = int(h * 0.94)
+
+    zone = (
+        rotated[ya:yb] > 0
+    ).astype(np.float32)
+
+    if zone.size == 0:
+        return None
+
+    profile = np.mean(
+        zone,
+        axis=0
+    )
+
+    profile = gaussian_filter1d(
+        profile,
+        sigma=1.0
+    )
+
+    trend = gaussian_filter1d(
+        profile,
+        sigma=max(
+            7.0,
+            w / 55.0
+        )
+    )
+
+    signal = profile - trend
+
+    spacing = estimar_espaciado_local(
+        signal
+    )
+
+    if spacing is None:
+        return None
+
+    # Para el conteo final no permitimos picos a media hilera.
+    min_distance = max(
+        6,
+        int(
+            round(
+                spacing * 0.90
+            )
+        )
+    )
+
+    prominence = max(
+        0.004,
+        float(
+            np.max(signal) - np.median(signal)
+        ) * 0.13
+    )
+
+    peaks, props = find_peaks(
+        signal,
+        distance=min_distance,
+        prominence=prominence
+    )
+
+    if len(peaks) < 4:
+        return None
+
+    # Quitar picos muy débiles respecto al perfil de vegetación.
+    profile_floor = float(
+        np.percentile(
+            profile,
+            32
+        )
+    )
+
+    profile_span = max(
+        1e-6,
+        float(
+            np.percentile(profile, 88)
+            -
+            profile_floor
+        )
+    )
+
+    keep = []
+
+    for p in peaks:
+        strength = (
+            float(profile[p])
+            -
+            profile_floor
+        ) / profile_span
+
+        if strength >= 0.10:
+            keep.append(
+                int(p)
+            )
+
+    peaks = np.asarray(
+        keep,
+        dtype=np.int32
+    )
+
+    if len(peaks) < 4:
+        return None
+
+    return {
+        "angle": mean_angle,
+        "angle_deg": angle_deg,
+        "M": M,
+        "peaks": peaks,
+        "spacing": float(spacing)
+    }
+
+
+def asignar_track_a_rejilla(
+    points,
+    grid
+):
+    """
+    Devuelve el índice de la hilera global más cercana al track.
+    Si el track está entre hileras, devuelve None.
+    """
+    if grid is None or len(points) == 0:
+        return None
+
+    middle = np.asarray(
+        points[len(points) // 2],
+        dtype=np.float32
+    )
+
+    aug = np.array(
+        [middle[0], middle[1], 1.0],
+        dtype=np.float32
+    )
+
+    rotated_point = aug @ grid["M"].T
+    lateral_x = float(
+        rotated_point[0]
+    )
+
+    peaks = grid["peaks"].astype(
+        np.float32
+    )
+
+    nearest = int(
+        np.argmin(
+            np.abs(peaks - lateral_x)
+        )
+    )
+
+    distance = abs(
+        float(peaks[nearest])
+        -
+        lateral_x
+    )
+
+    if distance > max(
+        3.0,
+        grid["spacing"] * 0.46
+    ):
+        return None
+
+    return nearest
 
 
 # ============================================================
@@ -2617,6 +2856,14 @@ def analizar(
             "para hacer un trazado confiable."
         )
 
+    # Rejilla global: una posición transversal = una hilera real.
+    global_grid = calcular_rejilla_global_surcos(
+        green,
+        components
+    )
+
+    used_grid_ids = set()
+
     final = original.copy()
 
     occupancy = np.zeros(
@@ -2679,7 +2926,7 @@ def analizar(
             for px_test, py_test in np.rint(points[::max(1, len(points)//12)]).astype(np.int32):
                 if 0 <= px_test < w and 0 <= py_test < h and occupancy[py_test, px_test] > 0:
                     occupied_hits += 1
-            if occupied_hits >= 3:
+            if occupied_hits >= 2:
                 continue
 
             # ------------------------------------------------
@@ -2704,13 +2951,53 @@ def analizar(
             ):
                 continue
 
+            # Exigir una trayectoria suficientemente larga para evitar
+            # ramas, copas de árboles y fragmentos pequeños.
+            if line_length < max(
+                45.0,
+                spacing * 4.0,
+                min(h, w) * 0.075
+            ):
+                continue
+
+            # Si OpenAI marcó zonas a excluir, al menos 70% del track
+            # debe quedar dentro del viñedo permitido.
+            if exclusion_mask is not None:
+                sample = np.rint(
+                    points
+                ).astype(np.int32)
+
+                valid_samples = 0
+                total_samples = 0
+
+                for sx, sy in sample[::max(1, len(sample)//30)]:
+                    if 0 <= sx < w and 0 <= sy < h:
+                        total_samples += 1
+                        if exclusion_mask[sy, sx] == 0:
+                            valid_samples += 1
+
+                if total_samples > 0:
+                    valid_fraction = valid_samples / total_samples
+                    if valid_fraction < 0.70:
+                        continue
+
+            # Asociar el fragmento a UNA hilera global.
+            grid_id = asignar_track_a_rejilla(
+                points,
+                global_grid
+            )
+
+            if global_grid is not None and grid_id is None:
+                continue
+
             states = estados_color(
                 green_scores
             )
 
-            track_index = len(
-                all_tracks
-            ) + 1
+            if grid_id is not None:
+                track_index = int(grid_id) + 1
+            else:
+                track_index = len(all_tracks) + 1
 
             # Dibujar segmentos uno por uno.
             for j in range(
@@ -2835,7 +3122,7 @@ def analizar(
                         y2
                     ),
                     color,
-                    1,
+                    2,
                     cv2.LINE_AA
                 )
 
@@ -2900,7 +3187,7 @@ def analizar(
                     my - 4
                 ),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.30,
+                    0.55,
                     (
                         255,
                         255,
@@ -2920,7 +3207,7 @@ def analizar(
                         my - 4
                     ),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.30,
+                    0.55,
                     (
                         10,
                         10,
@@ -2956,7 +3243,7 @@ def analizar(
                     2,
                     int(
                         spacing *
-                        0.28
+                        0.58
                     )
                 ),
                 cv2.LINE_AA
@@ -2970,6 +3257,11 @@ def analizar(
             all_tracks.append(
                 points
             )
+
+            if grid_id is not None:
+                used_grid_ids.add(
+                    int(grid_id)
+                )
 
     if (
         accepted_components == 0
@@ -3015,9 +3307,9 @@ def analizar(
             cv2.COLOR_BGR2RGB
         ),
         "count": int(
-            len(
-                all_tracks
-            )
+            len(used_grid_ids)
+            if global_grid is not None and len(used_grid_ids) > 0
+            else len(all_tracks)
         ),
         "green_pct": float(
             green_pct
