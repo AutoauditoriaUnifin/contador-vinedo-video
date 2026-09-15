@@ -108,10 +108,12 @@ def limpiar_json_respuesta(texto):
 
 
 
-def analizar_1_imagen_con_ia(uploaded_file):
+def _analizar_bytes_con_ia(image_bytes, mime_type="image/jpeg"):
     """
-    Envía una sola imagen a OpenAI para clasificar la escena.
-    Todavía no dibuja líneas ni analiza surcos.
+    Clasifica la escena y devuelve polígonos aproximados de zonas
+    donde NO se deben dibujar surcos.
+
+    Coordenadas de los polígonos: 0..1000 respecto al ancho/alto.
     """
     try:
         api_key = st.secrets["OPENAI_API_KEY"]
@@ -120,35 +122,50 @@ def analizar_1_imagen_con_ia(uploaded_file):
             api_key=api_key
         )
 
-        image_bytes = uploaded_file.getvalue()
-        mime_type = uploaded_file.type or "image/jpeg"
-        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-        data_url = f"data:{mime_type};base64,{image_b64}"
+        image_b64 = base64.b64encode(
+            image_bytes
+        ).decode("utf-8")
+
+        data_url = (
+            f"data:{mime_type};base64,{image_b64}"
+        )
 
         prompt = """
-Analiza esta imagen agrícola y responde SOLO en JSON válido.
+Analiza esta imagen agrícola desde arriba.
+Responde SOLO con JSON válido, sin markdown.
 
-Quiero saber si la imagen contiene:
-- viñedo
-- caminos
-- techo o construcción
-- patio, bodega o superficie no agrícola
+Necesito distinguir el viñedo de zonas donde NO deben dibujarse líneas de surcos.
 
-Responde únicamente con este formato JSON:
-
+Devuelve exactamente esta estructura:
 {
   "es_vinedo": true,
   "hay_camino": false,
   "hay_techo": false,
   "hay_construccion": false,
   "analizar_surcos": true,
-  "resumen": "Texto corto en español explicando lo que se ve."
+  "resumen": "Texto breve en español.",
+  "zonas_excluir": [
+    {
+      "tipo": "camino",
+      "puntos": [[120,80],[250,80],[260,900],[110,900]]
+    }
+  ]
 }
 
-Reglas:
-- Si aparece techo o construcción dominante, "analizar_surcos" debe ser false.
-- Si NO es viñedo, "analizar_surcos" debe ser false.
-- Si sí es una parcela de viñedo visible, "analizar_surcos" debe ser true.
+REGLAS IMPORTANTES:
+- Las coordenadas de cada punto son [x,y] normalizadas de 0 a 1000.
+- (0,0) es la esquina superior izquierda y (1000,1000) la inferior derecha.
+- En zonas_excluir incluye SOLO áreas claramente no cultivadas: caminos, calles, techos,
+  edificios, patios, estacionamientos, bodegas y superficies artificiales grandes.
+- NO excluyas huecos secos dentro de un surco.
+- NO excluyas tierra visible entre hileras del viñedo.
+- NO excluyas una hilera débil o sin vegetación si forma parte del patrón del viñedo.
+- Usa polígonos de 4 a 12 puntos y trata de ajustarlos al contorno visible.
+- Si no hay zonas que excluir, devuelve "zonas_excluir": [].
+- Si existe viñedo útil aunque también haya techo/camino, "analizar_surcos" puede ser true.
+- Si NO hay viñedo útil, "analizar_surcos" debe ser false.
+- Si la imagen es principalmente techo/patio/construcción y casi no hay viñedo útil,
+  "analizar_surcos" debe ser false.
 - Devuelve SOLO JSON válido.
 """
 
@@ -164,19 +181,159 @@ Reglas:
                         },
                         {
                             "type": "input_image",
-                            "image_url": data_url
+                            "image_url": data_url,
+                            "detail": "high"
                         }
                     ]
                 }
             ]
         )
 
-        salida = response.output_text
-        datos = limpiar_json_respuesta(salida)
+        datos = limpiar_json_respuesta(
+            response.output_text
+        )
+
+        # Asegurar estructura mínima.
+        if not isinstance(datos, dict):
+            raise ValueError(
+                "La respuesta de IA no fue un objeto JSON."
+            )
+
+        if "zonas_excluir" not in datos:
+            datos["zonas_excluir"] = []
+
+        if not isinstance(
+            datos.get("zonas_excluir"),
+            list
+        ):
+            datos["zonas_excluir"] = []
+
         return True, datos
 
     except Exception as e:
         return False, str(e)
+
+
+
+def analizar_1_imagen_con_ia(uploaded_file):
+    """
+    Prueba manual de una sola imagen desde el panel del Paso 2/3.
+    """
+    image_bytes = uploaded_file.getvalue()
+    mime_type = uploaded_file.type or "image/jpeg"
+
+    return _analizar_bytes_con_ia(
+        image_bytes,
+        mime_type
+    )
+
+
+
+def analizar_pil_con_ia(pil_img):
+    """
+    Versión usada internamente por el análisis normal de imágenes.
+    """
+    buffer = io.BytesIO()
+    pil_img.convert("RGB").save(
+        buffer,
+        format="JPEG",
+        quality=90
+    )
+
+    return _analizar_bytes_con_ia(
+        buffer.getvalue(),
+        "image/jpeg"
+    )
+
+
+
+def crear_mascara_exclusion_ia(datos_ia, width, height):
+    """
+    Convierte zonas_excluir (0..1000) a una máscara OpenCV.
+    255 = zona donde NO se deben dibujar surcos.
+    """
+    mask = np.zeros(
+        (height, width),
+        dtype=np.uint8
+    )
+
+    zonas = datos_ia.get(
+        "zonas_excluir",
+        []
+    ) if isinstance(datos_ia, dict) else []
+
+    for zona in zonas:
+        if not isinstance(zona, dict):
+            continue
+
+        puntos = zona.get(
+            "puntos",
+            []
+        )
+
+        if not isinstance(puntos, list) or len(puntos) < 3:
+            continue
+
+        polygon = []
+
+        for punto in puntos[:20]:
+            if (
+                not isinstance(punto, (list, tuple))
+                or
+                len(punto) < 2
+            ):
+                continue
+
+            try:
+                nx = float(punto[0])
+                ny = float(punto[1])
+            except Exception:
+                continue
+
+            nx = float(np.clip(nx, 0, 1000))
+            ny = float(np.clip(ny, 0, 1000))
+
+            px = int(round(nx / 1000.0 * (width - 1)))
+            py = int(round(ny / 1000.0 * (height - 1)))
+
+            polygon.append([px, py])
+
+        if len(polygon) >= 3:
+            poly = np.asarray(
+                polygon,
+                dtype=np.int32
+            )
+
+            cv2.fillPoly(
+                mask,
+                [poly],
+                255
+            )
+
+    # Un pequeño margen de seguridad alrededor de caminos/techos.
+    if np.any(mask > 0):
+        kernel_size = max(
+            3,
+            int(round(min(width, height) * 0.004))
+        )
+
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+
+        kernel_size = min(kernel_size, 15)
+
+        kernel = np.ones(
+            (kernel_size, kernel_size),
+            dtype=np.uint8
+        )
+
+        mask = cv2.dilate(
+            mask,
+            kernel,
+            iterations=1
+        )
+
+    return mask
 
 
 # ============================================================
@@ -2370,7 +2527,8 @@ def estados_color(
 # ============================================================
 
 def analizar(
-    pil_img
+    pil_img,
+    exclusion_mask=None
 ):
     original = cv2.cvtColor(
         np.asarray(
@@ -2383,6 +2541,30 @@ def analizar(
 
     h, w = original.shape[:2]
 
+    # --------------------------------------------------------
+    # Paso 3: IA puede bloquear techo/camino/construcción.
+    # La detección se ejecuta sobre una copia neutralizada,
+    # pero el resultado final se dibuja sobre la foto original.
+    # --------------------------------------------------------
+    analysis_image = original.copy()
+
+    if exclusion_mask is not None:
+        if exclusion_mask.shape[:2] != (h, w):
+            exclusion_mask = cv2.resize(
+                exclusion_mask,
+                (w, h),
+                interpolation=cv2.INTER_NEAREST
+            )
+
+        exclusion_mask = (
+            exclusion_mask > 0
+        ).astype(np.uint8) * 255
+
+        # Gris neutro: no genera vegetación falsa y evita bordes fuertes.
+        analysis_image[
+            exclusion_mask > 0
+        ] = (128, 128, 128)
+
     (
         green,
         theta,
@@ -2392,7 +2574,7 @@ def analizar(
         ny,
         nx
     ) = detectar_componentes_vinedo(
-        original,
+        analysis_image,
         tile=max(
             24,
             int(
@@ -2593,6 +2775,20 @@ def analizar(
                     )
                 )
 
+                # No dibujar dentro de zonas excluidas por IA.
+                if exclusion_mask is not None:
+                    mid_x = int(round((x1 + x2) / 2.0))
+                    mid_y = int(round((y1 + y2) / 2.0))
+
+                    if (
+                        exclusion_mask[y1, x1] > 0
+                        or
+                        exclusion_mask[y2, x2] > 0
+                        or
+                        exclusion_mask[mid_y, mid_x] > 0
+                    ):
+                        continue
+
                 green_segment = bool(
                     states[
                         min(
@@ -2670,27 +2866,31 @@ def analizar(
                 )
             )
 
-            cv2.putText(
-                final,
-                str(
-                    track_index
-                ),
-                (
-                    mx + 4,
-                    my - 4
-                ),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.30,
-                (
-                    255,
-                    255,
-                    255
-                ),
-                2,
-                cv2.LINE_AA
-            )
+            # Si el centro cae en techo/camino, buscar otro punto del surco.
+            if (
+                exclusion_mask is not None
+                and
+                exclusion_mask[my, mx] > 0
+            ):
+                safe_label = None
 
-            cv2.putText(
+                for candidate in points:
+                    cx = int(np.clip(round(candidate[0]), 0, w - 1))
+                    cy = int(np.clip(round(candidate[1]), 0, h - 1))
+
+                    if exclusion_mask[cy, cx] == 0:
+                        safe_label = (cx, cy)
+                        break
+
+                if safe_label is not None:
+                    mx, my = safe_label
+
+            if (
+                exclusion_mask is None
+                or
+                exclusion_mask[my, mx] == 0
+            ):
+                cv2.putText(
                 final,
                 str(
                     track_index
@@ -2699,16 +2899,36 @@ def analizar(
                     mx + 4,
                     my - 4
                 ),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.30,
-                (
-                    10,
-                    10,
-                    10
-                ),
-                1,
-                cv2.LINE_AA
-            )
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.30,
+                    (
+                        255,
+                        255,
+                        255
+                    ),
+                    2,
+                    cv2.LINE_AA
+                )
+
+                cv2.putText(
+                    final,
+                    str(
+                        track_index
+                    ),
+                    (
+                        mx + 4,
+                        my - 4
+                    ),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.30,
+                    (
+                        10,
+                        10,
+                        10
+                    ),
+                    1,
+                    cv2.LINE_AA
+                )
 
             # ------------------------------------------------
             # Marcar ocupación DESPUÉS de terminar el surco.
@@ -4350,8 +4570,44 @@ with side_col:
                         uploaded_image
                     ).convert("RGB")
 
-                    result = analizar(
+                    # ================================================
+                    # PASO 3: IA filtra escena antes de dibujar surcos.
+                    # ================================================
+                    ok_scene_ia, scene_ia = analizar_pil_con_ia(
                         pil
+                    )
+
+                    exclusion_mask = None
+
+                    if ok_scene_ia:
+                        if not bool(scene_ia.get("es_vinedo", False)):
+                            raise RuntimeError(
+                                "La IA indicó que esta imagen no es un viñedo útil."
+                            )
+
+                        if not bool(scene_ia.get("analizar_surcos", False)):
+                            raise RuntimeError(
+                                "La IA indicó que esta escena no debe analizarse para surcos."
+                            )
+
+                        exclusion_mask = crear_mascara_exclusion_ia(
+                            scene_ia,
+                            pil.width,
+                            pil.height
+                        )
+                    else:
+                        # Si falla OpenAI, no bloqueamos toda la app:
+                        # se usa el detector clásico como respaldo.
+                        st.warning(
+                            tr(
+                                f"IA no disponible para {uploaded_image.name}; se usará el detector clásico.",
+                                f"IA indisponible pour {uploaded_image.name} ; le détecteur classique sera utilisé."
+                            )
+                        )
+
+                    result = analizar(
+                        pil,
+                        exclusion_mask=exclusion_mask
                     )
 
                     annotated = cv2.cvtColor(
@@ -4366,7 +4622,8 @@ with side_col:
                         "green_pct": float(result["green_pct"]),
                         "red_pct": float(result["red_pct"]),
                         "angle": float(result["angle"]),
-                        "annotated": annotated
+                        "annotated": annotated,
+                        "ia_scene": scene_ia if ok_scene_ia else None
                     })
 
                 except Exception as exc:
