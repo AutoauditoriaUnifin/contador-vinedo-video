@@ -1,5 +1,6 @@
 import io
 import base64
+import json
 import os
 import csv
 import math
@@ -82,6 +83,97 @@ def probar_openai():
         )
 
         return True, response.output_text
+
+    except Exception as e:
+        return False, str(e)
+
+
+def limpiar_json_respuesta(texto):
+    """
+    Limpia la respuesta del modelo para convertirla a JSON,
+    incluso si viene envuelta entre bloques ```json ... ```.
+    """
+    texto = (texto or "").strip()
+
+    if texto.startswith("```json"):
+        texto = texto.replace("```json", "", 1).strip()
+
+    if texto.startswith("```"):
+        texto = texto.replace("```", "", 1).strip()
+
+    if texto.endswith("```"):
+        texto = texto[:-3].strip()
+
+    return json.loads(texto)
+
+
+
+def analizar_1_imagen_con_ia(uploaded_file):
+    """
+    Envía una sola imagen a OpenAI para clasificar la escena.
+    Todavía no dibuja líneas ni analiza surcos.
+    """
+    try:
+        api_key = st.secrets["OPENAI_API_KEY"]
+
+        client = OpenAI(
+            api_key=api_key
+        )
+
+        image_bytes = uploaded_file.getvalue()
+        mime_type = uploaded_file.type or "image/jpeg"
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        data_url = f"data:{mime_type};base64,{image_b64}"
+
+        prompt = """
+Analiza esta imagen agrícola y responde SOLO en JSON válido.
+
+Quiero saber si la imagen contiene:
+- viñedo
+- caminos
+- techo o construcción
+- patio, bodega o superficie no agrícola
+
+Responde únicamente con este formato JSON:
+
+{
+  "es_vinedo": true,
+  "hay_camino": false,
+  "hay_techo": false,
+  "hay_construccion": false,
+  "analizar_surcos": true,
+  "resumen": "Texto corto en español explicando lo que se ve."
+}
+
+Reglas:
+- Si aparece techo o construcción dominante, "analizar_surcos" debe ser false.
+- Si NO es viñedo, "analizar_surcos" debe ser false.
+- Si sí es una parcela de viñedo visible, "analizar_surcos" debe ser true.
+- Devuelve SOLO JSON válido.
+"""
+
+        response = client.responses.create(
+            model="gpt-5.6-luna",
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": prompt
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": data_url
+                        }
+                    ]
+                }
+            ]
+        )
+
+        salida = response.output_text
+        datos = limpiar_json_respuesta(salida)
+        return True, datos
 
     except Exception as e:
         return False, str(e)
@@ -3928,6 +4020,114 @@ with side_col:
                 )
             )
             st.code(resultado_openai)
+
+    # ========================================================
+    # PASO 2 - ANALIZAR 1 IMAGEN CON IA
+    # ========================================================
+    with st.container(border=True):
+
+        st.markdown(
+            f"""
+            <div style="
+                font-weight:700;
+                font-size:18px;
+                margin-bottom:8px;
+            ">
+                {tr("2. Analizar 1 imagen con IA", "2. Analyser 1 image avec IA")}
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        imagen_prueba_ia = st.file_uploader(
+            tr(
+                "Sube una sola imagen para revisar si es viñedo, camino o techo",
+                "Téléversez une seule image pour vérifier si c'est vignoble, chemin ou toit"
+            ),
+            type=["jpg", "jpeg", "png"],
+            key="imagen_prueba_ia"
+        )
+
+        if imagen_prueba_ia is not None:
+            st.image(
+                imagen_prueba_ia,
+                caption=tr(
+                    "Imagen enviada a la IA",
+                    "Image envoyée à l'IA"
+                ),
+                use_container_width=True
+            )
+
+        if st.button(
+            tr(
+                "🔍 Analizar 1 imagen con IA",
+                "🔍 Analyser 1 image avec IA"
+            ),
+            key="btn_analizar_1_imagen_ia",
+            use_container_width=True,
+            disabled=(imagen_prueba_ia is None)
+        ):
+            with st.spinner(
+                tr(
+                    "Analizando imagen con IA...",
+                    "Analyse de l'image avec IA..."
+                )
+            ):
+                ok_ia, resultado_ia = analizar_1_imagen_con_ia(imagen_prueba_ia)
+
+            if ok_ia:
+                st.success(
+                    tr(
+                        "✅ Análisis completado",
+                        "✅ Analyse terminée"
+                    )
+                )
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.metric(
+                        tr("¿Es viñedo?", "Est-ce un vignoble ?"),
+                        "Sí" if resultado_ia.get("es_vinedo", False) else "No"
+                    )
+                    st.metric(
+                        tr("¿Hay camino?", "Y a-t-il un chemin ?"),
+                        "Sí" if resultado_ia.get("hay_camino", False) else "No"
+                    )
+                    st.metric(
+                        tr("¿Hay techo?", "Y a-t-il un toit ?"),
+                        "Sí" if resultado_ia.get("hay_techo", False) else "No"
+                    )
+
+                with col2:
+                    st.metric(
+                        tr("¿Hay construcción?", "Y a-t-il une construction ?"),
+                        "Sí" if resultado_ia.get("hay_construccion", False) else "No"
+                    )
+                    st.metric(
+                        tr("¿Analizar surcos?", "Analyser les rangs ?"),
+                        "Sí" if resultado_ia.get("analizar_surcos", False) else "No"
+                    )
+
+                st.markdown(
+                    f"**{tr('Resumen', 'Résumé')}:** {resultado_ia.get('resumen', '')}"
+                )
+
+                with st.expander(
+                    tr("Ver respuesta completa", "Voir la réponse complète")
+                ):
+                    st.json(resultado_ia)
+
+                st.session_state["ultima_clasificacion_ia"] = resultado_ia
+
+            else:
+                st.error(
+                    tr(
+                        "❌ No se pudo analizar la imagen con IA",
+                        "❌ Impossible d'analyser l'image avec IA"
+                    )
+                )
+                st.code(resultado_ia)
 
     # Espacio pequeño entre los botones y el panel siguiente
     st.markdown(
