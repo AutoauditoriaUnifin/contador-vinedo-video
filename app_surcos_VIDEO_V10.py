@@ -3256,6 +3256,89 @@ def estados_color(
     return state
 
 
+
+# ============================================================
+# AYUDAS PARA DIBUJAR SURCOS CON MEJOR PRESENTACIÓN
+# ============================================================
+
+def ordenar_trayectoria_vertical(points):
+    pts = np.asarray(points, dtype=np.float32)
+    if len(pts) < 2:
+        return pts
+    if float(pts[0, 1]) <= float(pts[-1, 1]):
+        return pts
+    return pts[::-1].copy()
+
+
+def longitud_trayectoria(points):
+    pts = np.asarray(points, dtype=np.float32)
+    if len(pts) < 2:
+        return 0.0
+    return float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
+
+
+def puntaje_track(points, green_scores, spacing):
+    pts = np.asarray(points, dtype=np.float32)
+    g = np.asarray(green_scores, dtype=np.float32)
+    if len(pts) < 2:
+        return -1e9
+    length = longitud_trayectoria(pts)
+    vertical_span = float(np.max(pts[:, 1]) - np.min(pts[:, 1])) if len(pts) else 0.0
+    green_mean = float(np.mean(g)) if len(g) else 0.0
+    straight_bonus = vertical_span / max(length, 1e-6)
+    return (
+        1.0 * length
+        + 0.75 * vertical_span
+        + 16.0 * green_mean
+        + 8.0 * straight_bonus
+        - 0.15 * float(spacing)
+    )
+
+
+def dibujar_numero_claro(img, text, xy, scale=0.55):
+    x, y = int(xy[0]), int(xy[1])
+    cv2.putText(
+        img,
+        str(text),
+        (x, y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        scale,
+        (15, 15, 15),
+        4,
+        cv2.LINE_AA
+    )
+    cv2.putText(
+        img,
+        str(text),
+        (x, y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        scale,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA
+    )
+
+
+def puntos_numeracion_superior_inferior(points, w, h):
+    pts = ordenar_trayectoria_vertical(points)
+    if len(pts) == 0:
+        return None, None
+
+    top = pts[0]
+    bottom = pts[-1]
+
+    top_xy = (
+        int(np.clip(round(top[0]) + 4, 0, w - 1)),
+        int(np.clip(round(top[1]) - 6, 18, h - 1))
+    )
+    bottom_xy = (
+        int(np.clip(round(bottom[0]) + 4, 0, w - 1)),
+        int(np.clip(round(bottom[1]) + 18, 0, h - 6))
+    )
+
+    return top_xy, bottom_xy
+
+
 # ============================================================
 # ANÁLISIS PRINCIPAL V12
 # ============================================================
@@ -3274,12 +3357,6 @@ def analizar(
     )
 
     h, w = original.shape[:2]
-
-    # --------------------------------------------------------
-    # Paso 3: IA puede bloquear techo/camino/construcción.
-    # La detección se ejecuta sobre una copia neutralizada,
-    # pero el resultado final se dibuja sobre la foto original.
-    # --------------------------------------------------------
     analysis_image = original.copy()
 
     if exclusion_mask is not None:
@@ -3289,15 +3366,8 @@ def analizar(
                 (w, h),
                 interpolation=cv2.INTER_NEAREST
             )
-
-        exclusion_mask = (
-            exclusion_mask > 0
-        ).astype(np.uint8) * 255
-
-        # Gris neutro: no genera vegetación falsa y evita bordes fuertes.
-        analysis_image[
-            exclusion_mask > 0
-        ] = (128, 128, 128)
+        exclusion_mask = (exclusion_mask > 0).astype(np.uint8) * 255
+        analysis_image[exclusion_mask > 0] = (128, 128, 128)
 
     (
         green,
@@ -3311,13 +3381,7 @@ def analizar(
         analysis_image,
         tile=max(
             24,
-            int(
-                min(
-                    h,
-                    w
-                ) /
-                18
-            )
+            int(min(h, w) / 18)
         )
     )
 
@@ -3326,82 +3390,29 @@ def analizar(
             "No se encontró una zona con patrón claro de surcos."
         )
 
-    # --------------------------------------------------------
-    # Evitar escenas donde solo hay una franja pequeña de viñedo.
-    # Esto reduce líneas falsas sobre jardines, edificios o caminos.
-    # --------------------------------------------------------
-    total_component_tiles = sum(
-        component[
-            "tiles"
-        ]
-        for component in components
-    )
-
-    tile_coverage = (
-        total_component_tiles /
-        max(
-            ny * nx,
-            1
-        )
-    )
+    total_component_tiles = sum(component["tiles"] for component in components)
+    tile_coverage = total_component_tiles / max(ny * nx, 1)
 
     if tile_coverage < 0.16:
         raise RuntimeError(
-            "La imagen no contiene suficiente superficie de viñedo "
-            "para hacer un trazado confiable."
+            "La imagen no contiene suficiente superficie de viñedo para hacer un trazado confiable."
         )
 
-    # Rejilla global: una posición transversal = una hilera real.
-    global_grid = calcular_rejilla_global_surcos(
-        green,
-        components
-    )
-
-    used_grid_ids = set()
-
-    final = original.copy()
-
-    occupancy = np.zeros(
-        (h, w),
-        dtype=np.uint8
-    )
-
-    all_tracks = []
-
-    total_green = 0
-    total_red = 0
-
+    global_grid = calcular_rejilla_global_surcos(green, components)
+    occupancy = np.zeros((h, w), dtype=np.uint8)
+    candidate_tracks = {}
     accepted_components = 0
-
     component_angles = []
 
-    # Procesar primero los bloques más grandes.
     for component in components:
-
-        seeds, spacing = semillas_componente(
-            component,
-            response
-        )
-
-        if (
-            spacing is None
-            or
-            len(seeds) < 4
-        ):
+        seeds, spacing = semillas_componente(component, response)
+        if spacing is None or len(seeds) < 4:
             continue
 
         accepted_components += 1
-
-        component_angles.append(
-            np.rad2deg(
-                component[
-                    "angle"
-                ]
-            )
-        )
+        component_angles.append(np.rad2deg(component["angle"]))
 
         for seed in seeds:
-
             points, green_scores = trazar_surco_local(
                 seed,
                 component,
@@ -3416,405 +3427,143 @@ def analizar(
             if len(points) < 8:
                 continue
 
-            # Descartar semillas que caen sobre un surco ya trazado.
+            # Suavizar antes de evaluar/dibujar.
+            points = suavizar_trayectoria_surco(points, spacing)
+            points = ordenar_trayectoria_vertical(points)
+
             occupied_hits = 0
-            for px_test, py_test in np.rint(points[::max(1, len(points)//12)]).astype(np.int32):
+            sample_step = max(1, len(points) // 12)
+            for px_test, py_test in np.rint(points[::sample_step]).astype(np.int32):
                 if 0 <= px_test < w and 0 <= py_test < h and occupancy[py_test, px_test] > 0:
                     occupied_hits += 1
             if occupied_hits >= 2:
                 continue
 
-            # ------------------------------------------------
-            # Conservar incluso surcos parciales.
-            # La semilla ya proviene del patrón repetitivo.
-            # ------------------------------------------------
-            line_length = float(
-                np.sum(
-                    np.linalg.norm(
-                        np.diff(
-                            points,
-                            axis=0
-                        ),
-                        axis=1
-                    )
-                )
-            )
+            line_length = longitud_trayectoria(points)
+            vertical_span = float(np.max(points[:, 1]) - np.min(points[:, 1]))
 
-            if line_length < max(
-                24.0,
-                spacing * 2.5
-            ):
+            if line_length < max(45.0, spacing * 4.0, min(h, w) * 0.075):
+                continue
+            if vertical_span < max(34.0, spacing * 3.6, h * 0.08):
                 continue
 
-            # Exigir una trayectoria suficientemente larga para evitar
-            # ramas, copas de árboles y fragmentos pequeños.
-            if line_length < max(
-                45.0,
-                spacing * 4.0,
-                min(h, w) * 0.075
-            ):
-                continue
-
-            # Si OpenAI marcó zonas a excluir, al menos 70% del track
-            # debe quedar dentro del viñedo permitido.
             if exclusion_mask is not None:
-                sample = np.rint(
-                    points
-                ).astype(np.int32)
-
+                sample = np.rint(points).astype(np.int32)
                 valid_samples = 0
                 total_samples = 0
-
-                for sx, sy in sample[::max(1, len(sample)//30)]:
+                for sx, sy in sample[::max(1, len(sample) // 30)]:
                     if 0 <= sx < w and 0 <= sy < h:
                         total_samples += 1
                         if exclusion_mask[sy, sx] == 0:
                             valid_samples += 1
+                if total_samples > 0 and (valid_samples / total_samples) < 0.72:
+                    continue
 
-                if total_samples > 0:
-                    valid_fraction = valid_samples / total_samples
-                    if valid_fraction < 0.70:
-                        continue
-
-            # Asociar el fragmento a UNA hilera global.
-            grid_id = asignar_track_a_rejilla(
-                points,
-                global_grid
-            )
-
+            grid_id = asignar_track_a_rejilla(points, global_grid)
             if global_grid is not None and grid_id is None:
                 continue
 
-            states = estados_color(
-                green_scores
-            )
+            states = estados_color(green_scores)
+            track_key = int(grid_id) if grid_id is not None else len(candidate_tracks)
+            score = puntaje_track(points, green_scores, spacing)
 
-            if grid_id is not None:
-                track_index = int(grid_id) + 1
-            else:
-                track_index = len(all_tracks) + 1
+            current = candidate_tracks.get(track_key)
+            if current is None or score > current["score"]:
+                candidate_tracks[track_key] = {
+                    "points": points.copy(),
+                    "states": states.copy(),
+                    "score": float(score),
+                    "spacing": float(spacing),
+                    "grid_id": grid_id,
+                }
 
-            # Dibujar segmentos uno por uno.
-            for j in range(
-                len(points) - 1
-            ):
-
-                p1 = points[j]
-                p2 = points[j + 1]
-
-                if not (
-                    np.all(
-                        np.isfinite(
-                            p1
-                        )
-                    )
-                    and
-                    np.all(
-                        np.isfinite(
-                            p2
-                        )
-                    )
-                ):
-                    continue
-
-                x1 = int(
-                    np.clip(
-                        round(
-                            p1[0]
-                        ),
-                        0,
-                        w - 1
-                    )
-                )
-
-                y1 = int(
-                    np.clip(
-                        round(
-                            p1[1]
-                        ),
-                        0,
-                        h - 1
-                    )
-                )
-
-                x2 = int(
-                    np.clip(
-                        round(
-                            p2[0]
-                        ),
-                        0,
-                        w - 1
-                    )
-                )
-
-                y2 = int(
-                    np.clip(
-                        round(
-                            p2[1]
-                        ),
-                        0,
-                        h - 1
-                    )
-                )
-
-                # No dibujar dentro de zonas excluidas por IA.
-                if exclusion_mask is not None:
-                    mid_x = int(round((x1 + x2) / 2.0))
-                    mid_y = int(round((y1 + y2) / 2.0))
-
-                    if (
-                        exclusion_mask[y1, x1] > 0
-                        or
-                        exclusion_mask[y2, x2] > 0
-                        or
-                        exclusion_mask[mid_y, mid_x] > 0
-                    ):
-                        continue
-
-                green_segment = bool(
-                    states[
-                        min(
-                            j,
-                            len(
-                                states
-                            ) - 1
-                        )
-                    ]
-                    or
-                    states[
-                        min(
-                            j + 1,
-                            len(
-                                states
-                            ) - 1
-                        )
-                    ]
-                )
-
-                if green_segment:
-                    color = (
-                        0,
-                        240,
-                        0
-                    )
-                    total_green += 1
-                else:
-                    color = (
-                        0,
-                        0,
-                        255
-                    )
-                    total_red += 1
-
-                cv2.line(
-                    final,
-                    (
-                        x1,
-                        y1
-                    ),
-                    (
-                        x2,
-                        y2
-                    ),
-                    color,
-                    2,
-                    cv2.LINE_AA
-                )
-
-            # Numeración en la parte media para no amontonar arriba.
-            middle = points[
-                len(
-                    points
-                ) // 2
-            ]
-
-            mx = int(
-                np.clip(
-                    round(
-                        middle[0]
-                    ),
-                    0,
-                    w - 1
-                )
-            )
-
-            my = int(
-                np.clip(
-                    round(
-                        middle[1]
-                    ),
-                    0,
-                    h - 1
-                )
-            )
-
-            # Si el centro cae en techo/camino, buscar otro punto del surco.
-            if (
-                exclusion_mask is not None
-                and
-                exclusion_mask[my, mx] > 0
-            ):
-                safe_label = None
-
-                for candidate in points:
-                    cx = int(np.clip(round(candidate[0]), 0, w - 1))
-                    cy = int(np.clip(round(candidate[1]), 0, h - 1))
-
-                    if exclusion_mask[cy, cx] == 0:
-                        safe_label = (cx, cy)
-                        break
-
-                if safe_label is not None:
-                    mx, my = safe_label
-
-            if (
-                exclusion_mask is None
-                or
-                exclusion_mask[my, mx] == 0
-            ):
-                cv2.putText(
-                final,
-                str(
-                    track_index
-                ),
-                (
-                    mx + 4,
-                    my - 4
-                ),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (
-                        255,
-                        255,
-                        255
-                    ),
-                    2,
-                    cv2.LINE_AA
-                )
-
-                cv2.putText(
-                    final,
-                    str(
-                        track_index
-                    ),
-                    (
-                        mx + 4,
-                        my - 4
-                    ),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (
-                        10,
-                        10,
-                        10
-                    ),
-                    1,
-                    cv2.LINE_AA
-                )
-
-            # ------------------------------------------------
-            # Marcar ocupación DESPUÉS de terminar el surco.
-            # Esto evita que los siguientes se peguen al mismo.
-            # ------------------------------------------------
-            track_pixels = np.rint(
-                points
-            ).astype(
-                np.int32
-            )
-
-            occupancy_line = np.zeros(
-                (h, w),
-                dtype=np.uint8
-            )
-
+            occupancy_line = np.zeros((h, w), dtype=np.uint8)
             cv2.polylines(
                 occupancy_line,
-                [
-                    track_pixels
-                ],
+                [np.rint(points).astype(np.int32)],
                 False,
                 255,
-                max(
-                    2,
-                    int(
-                        spacing *
-                        0.58
-                    )
-                ),
+                max(2, int(spacing * 0.60)),
                 cv2.LINE_AA
             )
+            occupancy = np.maximum(occupancy, occupancy_line)
 
-            occupancy = np.maximum(
-                occupancy,
-                occupancy_line
-            )
-
-            all_tracks.append(
-                points
-            )
-
-            if grid_id is not None:
-                used_grid_ids.add(
-                    int(grid_id)
-                )
-
-    if (
-        accepted_components == 0
-        or
-        len(all_tracks) < 4
-    ):
+    if accepted_components == 0 or len(candidate_tracks) < 4:
         raise RuntimeError(
-            "Se encontró vegetación, pero no un patrón repetitivo "
-            "de surcos suficientemente claro."
+            "Se encontró vegetación, pero no un patrón repetitivo de surcos suficientemente claro."
         )
 
-    total = (
-        total_green +
-        total_red
-    )
+    final = original.copy()
+    total_green = 0
+    total_red = 0
 
-    green_pct = (
-        100.0 *
-        total_green /
-        total
-        if total
-        else 0.0
-    )
-
-    red_pct = (
-        100.0 -
-        green_pct
-        if total
-        else 0.0
-    )
-
-    # Solo dato informativo:
-    # promedio de orientaciones de componentes.
-    mean_angle = float(
-        np.mean(
-            component_angles
+    ordered_items = sorted(
+        candidate_tracks.items(),
+        key=lambda kv: (
+            1e9 if kv[1]["grid_id"] is None else int(kv[1]["grid_id"]),
+            float(np.mean(kv[1]["points"][:, 0]))
         )
-    ) if component_angles else 0.0
+    )
+
+    visible_count = 0
+    for _, item in ordered_items:
+        points = item["points"]
+        states = item["states"]
+        spacing = item["spacing"]
+
+        drawn_points = []
+        for j in range(len(points) - 1):
+            p1 = points[j]
+            p2 = points[j + 1]
+            if not (np.all(np.isfinite(p1)) and np.all(np.isfinite(p2))):
+                continue
+
+            x1 = int(np.clip(round(p1[0]), 0, w - 1))
+            y1 = int(np.clip(round(p1[1]), 0, h - 1))
+            x2 = int(np.clip(round(p2[0]), 0, w - 1))
+            y2 = int(np.clip(round(p2[1]), 0, h - 1))
+
+            if exclusion_mask is not None:
+                mid_x = int(round((x1 + x2) / 2.0))
+                mid_y = int(round((y1 + y2) / 2.0))
+                if exclusion_mask[y1, x1] > 0 or exclusion_mask[y2, x2] > 0 or exclusion_mask[mid_y, mid_x] > 0:
+                    continue
+
+            is_green = bool(states[min(j, len(states) - 1)] or states[min(j + 1, len(states) - 1)])
+            color = (0, 240, 0) if is_green else (0, 0, 255)
+            if is_green:
+                total_green += 1
+            else:
+                total_red += 1
+
+            cv2.line(final, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
+            if not drawn_points:
+                drawn_points.append([x1, y1])
+            drawn_points.append([x2, y2])
+
+        if len(drawn_points) < 2:
+            continue
+
+        visible_count += 1
+        label_points = np.asarray(drawn_points, dtype=np.float32)
+        top_xy, bottom_xy = puntos_numeracion_superior_inferior(label_points, w, h)
+        if top_xy is not None:
+            dibujar_numero_claro(final, visible_count, top_xy, scale=0.52)
+        if bottom_xy is not None:
+            dibujar_numero_claro(final, visible_count, bottom_xy, scale=0.52)
+
+    total = total_green + total_red
+    green_pct = 100.0 * total_green / total if total else 0.0
+    red_pct = 100.0 - green_pct if total else 0.0
+    mean_angle = float(np.mean(component_angles)) if component_angles else 0.0
 
     return {
-        "image": cv2.cvtColor(
-            final,
-            cv2.COLOR_BGR2RGB
-        ),
-        "count": int(
-            len(used_grid_ids)
-            if global_grid is not None and len(used_grid_ids) > 0
-            else len(all_tracks)
-        ),
-        "green_pct": float(
-            green_pct
-        ),
-        "red_pct": float(
-            red_pct
-        ),
+        "image": cv2.cvtColor(final, cv2.COLOR_BGR2RGB),
+        "count": int(visible_count),
+        "green_pct": float(green_pct),
+        "red_pct": float(red_pct),
         "angle": mean_angle
     }
-
 
 
 
@@ -4244,37 +3993,57 @@ def video_v33_analizar(pil_img):
     seeds, spacing, x0_detectado, x1_detectado = video_v33_semillas_surcos(rot_mask, y0, y1)
     if len(seeds) < 5:
         raise RuntimeError('No se detectó una parcela de surcos suficientemente clara.')
+
     x0 = int(x0_detectado)
     x1 = int(x1_detectado)
     parcel_mask = np.zeros_like(rot_mask)
     parcel_mask[y0:y1, x0:x1] = rot_mask[y0:y1, x0:x1]
     response = video_v33_crear_respuesta(rot_img, parcel_mask)
+
     tracks = []
     for i, seed in enumerate(seeds):
-        if i == 0:
-            left = x0
-        else:
-            left = int((seeds[i - 1] + seed) / 2)
-        if i == len(seeds) - 1:
-            right = x1
-        else:
-            right = int((seed + seeds[i + 1]) / 2)
+        left = x0 if i == 0 else int((seeds[i - 1] + seed) / 2)
+        right = x1 if i == len(seeds) - 1 else int((seed + seeds[i + 1]) / 2)
         if right - left < 5:
             continue
-        pts, green = video_v33_seguir_surco(response, parcel_mask, int(seed), left, right, y0, y1)
-        tracks.append({'points': pts, 'green': green})
+
+        pts_rot, green = video_v33_seguir_surco(response, parcel_mask, int(seed), left, right, y0, y1)
+        if len(pts_rot) < 8:
+            continue
+
+        pts_rot = suavizar_trayectoria_surco(pts_rot, spacing)
+        pts = video_v33_aplicar_matriz(pts_rot, Minv)
+        pts = ordenar_trayectoria_vertical(pts)
+
+        if longitud_trayectoria(pts) < max(40.0, spacing * 4.0, min(h, w) * 0.07):
+            continue
+
+        tracks.append({
+            'points_rot': pts_rot,
+            'points': pts,
+            'green': green,
+            'mid_x': float(np.mean(pts[:, 0]))
+        })
+
+    if len(tracks) < 4:
+        raise RuntimeError('No se detectó una parcela de surcos suficientemente clara.')
+
+    tracks.sort(key=lambda item: item['mid_x'])
+
     final = original.copy()
     total_green = 0
     total_red = 0
     mask_preview_rot = np.zeros_like(rot_mask)
     mask_preview_rot[y0:y1, x0:x1] = 255
     mask_preview = cv2.warpAffine(mask_preview_rot, Minv, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT)
-    for number, tr in enumerate(tracks, 1):
-        pts_rot = tr['points']
+
+    visible_count = 0
+    for tr in tracks:
+        pts = tr['points']
         green = tr['green']
         state = video_v33_estado_verde(green)
-        pts = video_v33_aplicar_matriz(pts_rot, Minv)
-        first_drawn = None
+        drawn_points = []
+
         for j in range(len(pts) - 1):
             p1 = pts[j]
             p2 = pts[j + 1]
@@ -4286,26 +4055,42 @@ def video_v33_analizar(pil_img):
             y2p = int(np.clip(round(p2[1]), 0, h - 1))
             if mask_preview[y1p, x1p] == 0 or mask_preview[y2p, x2p] == 0:
                 continue
+
             is_green = bool(state[j] or state[min(j + 1, len(state) - 1)])
+            color = (0, 240, 0) if is_green else (0, 0, 255)
             if is_green:
-                color = (0, 240, 0)
                 total_green += 1
             else:
-                color = (0, 0, 255)
                 total_red += 1
-            cv2.line(final, (x1p, y1p), (x2p, y2p), color, 1, cv2.LINE_AA)
-            if first_drawn is None:
-                first_drawn = (x1p, y1p)
-        if first_drawn is not None:
-            label = str(number)
-            label_x = max(0, first_drawn[0] - 4)
-            label_y = max(13, first_drawn[1] - 4)
-            cv2.putText(final, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 2, cv2.LINE_AA)
-            cv2.putText(final, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (10, 10, 10), 1, cv2.LINE_AA)
+
+            cv2.line(final, (x1p, y1p), (x2p, y2p), color, 2, cv2.LINE_AA)
+            if not drawn_points:
+                drawn_points.append([x1p, y1p])
+            drawn_points.append([x2p, y2p])
+
+        if len(drawn_points) < 2:
+            continue
+
+        visible_count += 1
+        label_points = np.asarray(drawn_points, dtype=np.float32)
+        top_xy, bottom_xy = puntos_numeracion_superior_inferior(label_points, w, h)
+        if top_xy is not None:
+            dibujar_numero_claro(final, visible_count, top_xy, scale=0.46)
+        if bottom_xy is not None:
+            dibujar_numero_claro(final, visible_count, bottom_xy, scale=0.46)
+
     total = total_green + total_red
     green_pct = 100.0 * total_green / total if total else 0.0
     red_pct = 100.0 - green_pct if total else 0.0
-    return {'image': cv2.cvtColor(final, cv2.COLOR_BGR2RGB), 'mask': mask_preview, 'count': len(tracks), 'green_pct': green_pct, 'red_pct': red_pct, 'angle': angle}
+
+    return {
+        'image': cv2.cvtColor(final, cv2.COLOR_BGR2RGB),
+        'mask': mask_preview,
+        'count': int(visible_count),
+        'green_pct': green_pct,
+        'red_pct': red_pct,
+        'angle': angle
+    }
 
 # ============================================================
 # VIDEO: CALIDAD Y SIMILITUD
