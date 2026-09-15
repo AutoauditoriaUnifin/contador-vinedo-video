@@ -6,4 +6,4 @@ scipy
 pandas
 openpyxl
 openai
-inference-sdk
+requests
