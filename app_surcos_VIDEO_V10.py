@@ -6,6 +6,7 @@ import csv
 import math
 import zipfile
 import tempfile
+import requests
 from pathlib import Path
 
 import cv2
@@ -17,7 +18,6 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks, savgol_filter
 from scipy.interpolate import UnivariateSpline
 from openai import OpenAI
-from inference_sdk import InferenceHTTPClient
 
 
 # ============================================================
@@ -473,38 +473,62 @@ def _conteo_preliminar_desde_mascara(mask):
 
 def probar_surcos_roboflow(uploaded_file):
     """
-    Ejecuta el modelo público ya entrenado row_segmentaiton_vineyard/1
-    y devuelve máscara + superposición. No modifica el análisis principal.
+    Ejecuta el modelo público row_segmentaiton_vineyard/1 usando
+    directamente el endpoint REST de segmentación semántica.
+
+    Importante:
+    - NO usa inference-sdk.
+    - NO consulta /model/registry.
+    - Esto evita el bloqueo de Cloudflare que apareció desde
+      Streamlit Cloud contra serverless.roboflow.com/model/registry.
     """
     try:
         api_key = st.secrets["ROBOFLOW_API_KEY"]
 
-        client = InferenceHTTPClient(
-            api_url="https://serverless.roboflow.com",
-            api_key=api_key,
+        image_bytes = uploaded_file.getvalue()
+        if not image_bytes:
+            raise RuntimeError("La imagen está vacía.")
+
+        # Roboflow Semantic Segmentation legacy/direct endpoint.
+        endpoint = (
+            "https://segment.roboflow.com/"
+            "row_segmentaiton_vineyard/1"
         )
 
-        # El SDK acepta bytes/numpy en algunas versiones, pero para máxima
-        # compatibilidad usamos un archivo temporal.
-        suffix = Path(uploaded_file.name or "imagen.jpg").suffix or ".jpg"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(uploaded_file.getvalue())
-            tmp_path = tmp.name
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        response = requests.post(
+            endpoint,
+            params={
+                "api_key": api_key,
+                "confidence": 40,
+            },
+            data=image_b64,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+                "User-Agent": "TerroCore-Streamlit/1.0",
+            },
+            timeout=90,
+        )
+
+        if response.status_code != 200:
+            body = response.text[:1500]
+            raise RuntimeError(
+                f"Roboflow respondió HTTP {response.status_code}. "
+                f"Detalle: {body}"
+            )
 
         try:
-            result = client.infer(
-                tmp_path,
-                model_id=ROBOFLOW_MODEL_ID,
+            result = response.json()
+        except Exception:
+            raise RuntimeError(
+                "Roboflow respondió, pero no devolvió JSON válido. "
+                f"Respuesta: {response.text[:1200]}"
             )
-        finally:
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
 
         mask = _decodificar_mascara_semantica_roboflow(result)
 
-        image_bytes = uploaded_file.getvalue()
         bgr = cv2.imdecode(
             np.frombuffer(image_bytes, dtype=np.uint8),
             cv2.IMREAD_COLOR,
@@ -512,27 +536,44 @@ def probar_surcos_roboflow(uploaded_file):
         if bgr is None:
             raise RuntimeError("No se pudo abrir la imagen subida.")
 
-        h,w=bgr.shape[:2]
-        if mask.shape[:2] != (h,w):
-            mask=cv2.resize(mask,(w,h),interpolation=cv2.INTER_NEAREST)
+        h, w = bgr.shape[:2]
+        if mask.shape[:2] != (h, w):
+            mask = cv2.resize(
+                mask,
+                (w, h),
+                interpolation=cv2.INTER_NEAREST,
+            )
 
         count, angle = _conteo_preliminar_desde_mascara(mask)
 
-        overlay=bgr.copy()
-        green_layer=np.zeros_like(overlay)
-        green_layer[:,:,1]=255
-        alpha=0.40
-        sel=mask>0
-        overlay[sel]=cv2.addWeighted(
-            overlay[sel],
-            1.0-alpha,
-            green_layer[sel],
-            alpha,
-            0,
-        )
+        overlay = bgr.copy()
+        green_layer = np.zeros_like(overlay)
+        green_layer[:, :, 1] = 255
+        alpha = 0.40
+        sel = mask > 0
 
-        contours,_=cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(overlay,contours,-1,(0,255,0),2,cv2.LINE_AA)
+        if np.any(sel):
+            overlay[sel] = cv2.addWeighted(
+                overlay[sel],
+                1.0 - alpha,
+                green_layer[sel],
+                alpha,
+                0,
+            )
+
+        contours, _ = cv2.findContours(
+            mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        cv2.drawContours(
+            overlay,
+            contours,
+            -1,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
 
         return True, {
             "overlay": cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
