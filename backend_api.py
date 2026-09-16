@@ -4,10 +4,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from openai import OpenAI
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from pathlib import Path
 from datetime import datetime
 import base64
+import io
 import json
 import os
 import uuid
@@ -43,10 +45,10 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI(
     title="TerraCore IA",
-    version="1.1.0",
+    version="1.2.0",
     description=(
-        "Edita imágenes de viñedo con GPT Image y después cuenta "
-        "los surcos marcados usando visión."
+        "Normaliza la imagen, dibuja líneas de surcos con GPT Image "
+        "y cuenta los surcos marcados con visión."
     ),
 )
 
@@ -75,16 +77,11 @@ app.mount(
 # UTILIDADES
 # ============================================================
 
-def crear_nombre_archivo(original_name: str) -> tuple[str, str]:
-    suffix = Path(original_name or "imagen.jpg").suffix.lower()
-
-    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
-        suffix = ".jpg"
-
+def crear_nombres() -> tuple[str, str]:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     token = uuid.uuid4().hex[:8]
 
-    input_name = f"{stamp}_{token}{suffix}"
+    input_name = f"{stamp}_{token}.png"
     output_name = f"resultado_{stamp}_{token}.png"
 
     return input_name, output_name
@@ -126,29 +123,81 @@ def limpiar_json(texto: str) -> dict:
 
 
 # ============================================================
+# NORMALIZACIÓN DE IMÁGENES
+# ============================================================
+
+def normalizar_imagen(raw: bytes) -> Image.Image:
+    """
+    Convierte cualquier JPG/JPEG/PNG/WEBP válido a:
+    - orientación EXIF correcta
+    - RGB
+    - tamaño razonable
+    - PNG estándar al guardarse
+
+    Esto evita errores como:
+    Invalid image file or mode
+    """
+    if not raw:
+        raise ValueError("La imagen recibida está vacía.")
+
+    try:
+        imagen = Image.open(io.BytesIO(raw))
+        imagen.load()
+    except UnidentifiedImageError:
+        raise ValueError(
+            "El archivo recibido no pudo reconocerse como una imagen válida."
+        )
+    except Exception as exc:
+        raise ValueError(f"No se pudo abrir la imagen: {exc}")
+
+    try:
+        imagen = ImageOps.exif_transpose(imagen)
+    except Exception:
+        pass
+
+    # Eliminar modos problemáticos como CMYK, P, LA, I, etc.
+    if imagen.mode != "RGB":
+        imagen = imagen.convert("RGB")
+
+    # Reducir imágenes excesivamente grandes para hacer la edición más estable.
+    max_side = 2048
+    width, height = imagen.size
+
+    if max(width, height) > max_side:
+        scale = max_side / float(max(width, height))
+        new_size = (
+            max(1, int(round(width * scale))),
+            max(1, int(round(height * scale))),
+        )
+        imagen = imagen.resize(new_size, Image.Resampling.LANCZOS)
+
+    return imagen
+
+
+# ============================================================
 # PROMPT DE EDICIÓN
 # ============================================================
 
 def vineyard_prompt() -> str:
     return """
-Edit the provided aerial vineyard photo while preserving the original photo,
-the same framing, camera angle, lighting, vineyard geometry, and parcel boundaries.
+Edit the provided aerial vineyard photo while preserving the original photograph,
+same framing, camera angle, lighting, vineyard geometry, and parcel boundaries.
 
 GOAL:
 Overlay guide lines that follow the REAL vineyard rows as accurately as possible.
 
 INSTRUCTIONS:
 - Draw exactly ONE thin smooth guide line centered on EACH true vineyard row.
-- Each line must follow the real row shape, including small curves or deviations.
-- Use GREEN on portions of a row where vegetation is visibly present and healthy.
+- Each line must follow the real row shape, including curves or small deviations.
+- Use GREEN on portions of a row where vegetation is visibly present.
 - Use RED only on portions of that SAME row where plants are visibly missing,
   dry, interrupted, or absent.
-- A green section and a red section belonging to the same physical row must remain
-  aligned as one continuous row path.
+- Green and red portions belonging to the same physical row must remain aligned
+  as one continuous row path.
 - Do not create duplicate parallel lines on the same vineyard row.
 - Do not invent extra vineyard rows.
 - Do not draw lines in the spaces between rows.
-- Do not draw on roads, perimeter dirt lanes, roofs, buildings, patios, large trees,
+- Do not draw on roads, perimeter lanes, roofs, buildings, patios, large trees,
   shadows, parking areas, or neighboring non-vineyard zones.
 - Keep the original photograph visible and unchanged except for the thin overlay lines.
 - Do not fill areas.
@@ -164,16 +213,13 @@ STYLE:
 
 
 # ============================================================
-# CONTAR SURCOS EN LA IMAGEN YA MARCADA
+# CONTEO DE SURCOS EN LA IMAGEN YA MARCADA
 # ============================================================
 
 def contar_surcos_con_vision(image_bytes: bytes) -> dict:
     """
-    Cuenta los surcos observando la imagen FINAL ya marcada por GPT Image.
-
-    Regla clave:
-    una misma hilera puede tener tramos verdes y rojos;
-    esos tramos se cuentan como UN solo surco.
+    Cuenta las trayectorias marcadas en la imagen final.
+    Un mismo surco puede contener tramos verdes y rojos.
     """
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
     data_url = f"data:image/png;base64,{image_b64}"
@@ -182,21 +228,21 @@ def contar_surcos_con_vision(image_bytes: bytes) -> dict:
 Observa cuidadosamente esta imagen aérea de un viñedo YA MARCADA con líneas
 verdes y rojas.
 
-Tu única tarea es CONTAR LOS SURCOS MARCADOS.
+Tu tarea es contar únicamente los SURCOS MARCADOS.
 
-REGLAS DE CONTEO:
-- Cuenta cada trayectoria/hilera física una sola vez.
-- Una hilera puede estar formada por segmentos verdes y rojos; si están alineados
-  sobre la misma trayectoria, cuentan como UN solo surco.
-- NO cuentes cada segmento rojo o verde por separado.
-- NO cuentes bordes de caminos, techos, árboles, sombras ni elementos de la foto.
-- NO cuentes líneas duplicadas que estén sobre la misma hilera.
-- Sigue visualmente cada trayectoria de un extremo al otro antes de sumar.
-- Si una línea se interrumpe por un tramo seco pero continúa en la misma alineación,
+REGLAS:
+- Cuenta cada trayectoria o hilera física una sola vez.
+- Una hilera puede tener segmentos verdes y rojos.
+- Si los segmentos están alineados sobre la misma trayectoria, cuentan como UN solo surco.
+- NO cuentes segmentos individuales.
+- NO cuentes bordes de caminos, techos, árboles, sombras ni elementos originales de la foto.
+- NO cuentes dos veces una línea que representa la misma hilera.
+- Sigue visualmente cada trayectoria desde un extremo hasta el otro antes de sumar.
+- Si una línea se interrumpe por un tramo seco y continúa en la misma alineación,
   sigue siendo el mismo surco.
-- El número debe representar únicamente las hileras que están realmente marcadas.
+- Cuenta solamente las hileras que tienen una línea de guía visible.
 
-Devuelve SOLO JSON válido con esta estructura exacta:
+Devuelve SOLO JSON válido con exactamente esta estructura:
 
 {
   "surcos_contados": 0,
@@ -239,6 +285,7 @@ Para "confianza" usa solamente:
     surcos = max(0, surcos)
 
     confianza = str(data.get("confianza", "media")).lower().strip()
+
     if confianza not in {"alta", "media", "baja"}:
         confianza = "media"
 
@@ -258,7 +305,8 @@ def root():
     return {
         "ok": True,
         "mensaje": "Backend TerraCore IA activo",
-        "version": "1.1.0",
+        "version": "1.2.0",
+        "normalizacion_imagen": "RGB PNG",
         "metodo_lineas": "gpt-image-2.5-sunburst",
         "metodo_conteo": "gpt-5.6-luna",
         "docs": "/docs",
@@ -271,8 +319,6 @@ def root():
 
 @app.post("/analyze-image")
 async def analyze_image(file: UploadFile = File(...)):
-    input_path = None
-
     try:
         raw = await file.read()
 
@@ -285,12 +331,38 @@ async def analyze_image(file: UploadFile = File(...)):
                 },
             )
 
-        input_name, output_name = crear_nombre_archivo(file.filename or "imagen.jpg")
+        input_name, output_name = crear_nombres()
 
         input_path = UPLOAD_DIR / input_name
         output_path = OUTPUT_DIR / output_name
 
-        input_path.write_bytes(raw)
+        # --------------------------------------------------------
+        # 0. NORMALIZAR LA FOTO ANTES DE ENVIARLA A GPT IMAGE
+        # --------------------------------------------------------
+        imagen_normalizada = normalizar_imagen(raw)
+
+        imagen_normalizada.save(
+            input_path,
+            format="PNG",
+            optimize=False,
+        )
+
+        # Validación final: abrir de nuevo el PNG guardado.
+        try:
+            comprobacion = Image.open(input_path)
+            comprobacion.load()
+
+            if comprobacion.mode != "RGB":
+                comprobacion = comprobacion.convert("RGB")
+                comprobacion.save(
+                    input_path,
+                    format="PNG",
+                    optimize=False,
+                )
+        except Exception as exc:
+            raise RuntimeError(
+                f"No se pudo validar el PNG normalizado: {exc}"
+            )
 
         # --------------------------------------------------------
         # 1. GPT IMAGE DIBUJA LOS SURCOS
@@ -302,6 +374,9 @@ async def analyze_image(file: UploadFile = File(...)):
                 prompt=vineyard_prompt(),
             )
 
+        if not result.data:
+            raise RuntimeError("OpenAI no devolvió ninguna imagen editada.")
+
         image_base64 = result.data[0].b64_json
 
         if not image_base64:
@@ -309,8 +384,23 @@ async def analyze_image(file: UploadFile = File(...)):
                 "OpenAI no devolvió la imagen editada en base64."
             )
 
-        image_bytes = base64.b64decode(image_base64)
+        try:
+            image_bytes = base64.b64decode(image_base64)
+        except Exception as exc:
+            raise RuntimeError(
+                f"No se pudo decodificar la imagen generada: {exc}"
+            )
+
         output_path.write_bytes(image_bytes)
+
+        # Validar también la salida.
+        try:
+            salida = Image.open(io.BytesIO(image_bytes))
+            salida.load()
+        except Exception as exc:
+            raise RuntimeError(
+                f"OpenAI devolvió una imagen que no pudo abrirse: {exc}"
+            )
 
         # --------------------------------------------------------
         # 2. GPT VISIÓN CUENTA LOS SURCOS YA MARCADOS
@@ -332,17 +422,19 @@ async def analyze_image(file: UploadFile = File(...)):
 
         response_data = {
             "ok": True,
+
             "archivo_original": input_name,
+
             "imagen_original_url": original_relative,
             "imagen_original_url_publica": url_publica(original_relative),
+
             "imagen_resultado_url": result_relative,
             "imagen_resultado_url_publica": url_publica(result_relative),
 
-            # Conteo directo para que tu app actual pueda leerlo.
+            # Compatible con tu app Streamlit actual.
             "surcos_estimados": int(conteo["surcos_contados"]),
             "surcos_contados": int(conteo["surcos_contados"]),
 
-            # También lo incluimos dentro de analisis.
             "analisis": {
                 "surcos_estimados": int(conteo["surcos_contados"]),
                 "surcos_contados": int(conteo["surcos_contados"]),
@@ -352,8 +444,13 @@ async def analyze_image(file: UploadFile = File(...)):
 
             "metodo": "gpt-image-2.5-sunburst",
             "metodo_conteo": "gpt-5.6-luna",
+            "normalizacion": "RGB PNG",
+
             "tipo_proceso": "edicion_visual_con_ia_y_conteo_visual",
-            "mensaje": "Imagen procesada y surcos contados correctamente con IA.",
+
+            "mensaje": (
+                "Imagen normalizada, procesada y surcos contados correctamente."
+            ),
         }
 
         if conteo_error:
