@@ -367,27 +367,13 @@ def procesar_imagen_backend_ia(uploaded_file):
 
         annotated, result_url = _descargar_imagen_resultado_backend(data)
 
-        # Leer métricas devueltas por el backend IA.
+        # El backend de edición visual actual no devuelve un conteo técnico.
+        # Si más adelante agrega 'analisis.surcos_estimados', la app lo toma automáticamente.
         analisis = data.get("analisis") or {}
-
         count = int(
             analisis.get("surcos_estimados")
-            or analisis.get("surcos_contados")
             or data.get("surcos_estimados")
-            or data.get("surcos_contados")
             or 0
-        )
-
-        green_pct = float(
-            analisis.get("verde_pct")
-            or data.get("verde_pct")
-            or 0.0
-        )
-
-        red_pct = float(
-            analisis.get("rojo_pct")
-            or data.get("rojo_pct")
-            or 0.0
         )
 
         return True, {
@@ -395,17 +381,13 @@ def procesar_imagen_backend_ia(uploaded_file):
             "annotated": annotated,
             "result_url": result_url,
             "count": count,
-            "green_pct": green_pct,
-            "red_pct": red_pct,
+            "green_pct": 0.0,
+            "red_pct": 0.0,
             "angle": float(
                 analisis.get("orientacion_principal_grados")
                 or 0.0
             ),
-            "metodo": (
-                data.get("metodo")
-                or data.get("metodo_lineas")
-                or "gpt-image"
-            )
+            "metodo": data.get("metodo", "gpt-image")
         }
 
     except Exception as e:
@@ -4805,8 +4787,8 @@ with side_col:
 
         imagen_prueba_ia = st.file_uploader(
             tr(
-                "Sube una sola imagen para analizar los surcos con IA",
-                "Téléversez une seule image pour analyser les rangs avec IA"
+                "Sube una sola imagen para revisar si es viñedo, camino o techo",
+                "Téléversez une seule image pour vérifier si c'est vignoble, chemin ou toit"
             ),
             type=["jpg", "jpeg", "png"],
             key="imagen_prueba_ia"
@@ -4865,26 +4847,6 @@ with side_col:
                         f"Méthode : {resultado_ia.get('metodo', 'IA visuelle')}"
                     )
                 )
-
-                metric_c1, metric_c2, metric_c3 = st.columns(3)
-
-                with metric_c1:
-                    st.metric(
-                        tr("Surcos", "Rangs"),
-                        int(resultado_ia.get("count", 0))
-                    )
-
-                with metric_c2:
-                    st.metric(
-                        tr("Verde %", "Vert %"),
-                        f'{float(resultado_ia.get("green_pct", 0.0)):.1f}%'
-                    )
-
-                with metric_c3:
-                    st.metric(
-                        tr("Rojo %", "Rouge %"),
-                        f'{float(resultado_ia.get("red_pct", 0.0)):.1f}%'
-                    )
 
                 with st.expander(
                     tr("Ver respuesta completa del backend", "Voir la réponse complète du backend")
