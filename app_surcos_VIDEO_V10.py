@@ -381,8 +381,17 @@ def procesar_imagen_backend_ia(uploaded_file):
             "annotated": annotated,
             "result_url": result_url,
             "count": count,
-            "green_pct": 0.0,
-            "red_pct": 0.0,
+            "green_pct": float(
+          analisis.get("verde_pct")
+          or data.get("verde_pct")
+          or 0.0
+          ),
+
+            "red_pct": float(
+          analisis.get("rojo_pct")
+          or data.get("rojo_pct")
+          or 0.0
+          ), 
             "angle": float(
                 analisis.get("orientacion_principal_grados")
                 or 0.0
