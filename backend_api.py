@@ -1,55 +1,46 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from openai import OpenAI
-from PIL import Image, ImageOps, UnidentifiedImageError
 
 from pathlib import Path
 from datetime import datetime
+from PIL import Image
 import base64
-import io
-import json
-import os
+import shutil
 import uuid
+import json
+import re
+import io
+import os
 
-
-# ============================================================
-# CONFIGURACIÓN
-# ============================================================
+# =========================================================
+# CONFIGURACION
+# =========================================================
 
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
-UPLOAD_DIR = BASE_DIR / "uploads"
-OUTPUT_DIR = BASE_DIR / "outputs"
+UPLOADS_DIR = BASE_DIR / "uploads"
+OUTPUTS_DIR = BASE_DIR / "outputs"
 
-UPLOAD_DIR.mkdir(exist_ok=True)
-OUTPUT_DIR.mkdir(exist_ok=True)
+UPLOADS_DIR.mkdir(exist_ok=True)
+OUTPUTS_DIR.mkdir(exist_ok=True)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+OPENAI_VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini").strip()
+OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1").strip()
 
 if not OPENAI_API_KEY:
-    raise RuntimeError(
-        "Falta OPENAI_API_KEY. Configúrala como variable de entorno o secreto."
-    )
+    print("⚠️ No se encontró OPENAI_API_KEY en .env")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-
-# ============================================================
-# FASTAPI
-# ============================================================
-
 app = FastAPI(
-    title="TerraCore IA",
-    version="1.2.0",
-    description=(
-        "Normaliza la imagen, dibuja líneas de surcos con GPT Image "
-        "y cuenta los surcos marcados con visión."
-    ),
+    title="Backend Viñedo TerraCore IA",
+    version="1.3.0"
 )
 
 app.add_middleware(
@@ -60,409 +51,331 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount(
-    "/uploads",
-    StaticFiles(directory=str(UPLOAD_DIR)),
-    name="uploads",
-)
-
-app.mount(
-    "/outputs",
-    StaticFiles(directory=str(OUTPUT_DIR)),
-    name="outputs",
-)
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+app.mount("/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
 
 
-# ============================================================
-# UTILIDADES
-# ============================================================
+# =========================================================
+# PROMPTS
+# =========================================================
 
-def crear_nombres() -> tuple[str, str]:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    token = uuid.uuid4().hex[:8]
+PROMPT_ANALISIS = """
+Analiza esta imagen aérea de un viñedo.
 
-    input_name = f"{stamp}_{token}.png"
-    output_name = f"resultado_{stamp}_{token}.png"
+Necesito que respondas SOLO en JSON válido, sin explicación extra, sin markdown y sin texto adicional.
 
-    return input_name, output_name
-
-
-def url_publica(relative_path: str) -> str:
-    if PUBLIC_BASE_URL:
-        return f"{PUBLIC_BASE_URL}{relative_path}"
-    return relative_path
-
-
-def limpiar_json(texto: str) -> dict:
-    texto = (texto or "").strip()
-
-    if texto.startswith("```json"):
-        texto = texto[7:].strip()
-    elif texto.startswith("```"):
-        texto = texto[3:].strip()
-
-    if texto.endswith("```"):
-        texto = texto[:-3].strip()
-
-    try:
-        data = json.loads(texto)
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        pass
-
-    inicio = texto.find("{")
-    fin = texto.rfind("}")
-
-    if inicio >= 0 and fin > inicio:
-        data = json.loads(texto[inicio:fin + 1])
-        if isinstance(data, dict):
-            return data
-
-    raise ValueError("La IA no devolvió JSON válido.")
-
-
-# ============================================================
-# NORMALIZACIÓN DE IMÁGENES
-# ============================================================
-
-def normalizar_imagen(raw: bytes) -> Image.Image:
-    """
-    Convierte cualquier JPG/JPEG/PNG/WEBP válido a:
-    - orientación EXIF correcta
-    - RGB
-    - tamaño razonable
-    - PNG estándar al guardarse
-
-    Esto evita errores como:
-    Invalid image file or mode
-    """
-    if not raw:
-        raise ValueError("La imagen recibida está vacía.")
-
-    try:
-        imagen = Image.open(io.BytesIO(raw))
-        imagen.load()
-    except UnidentifiedImageError:
-        raise ValueError(
-            "El archivo recibido no pudo reconocerse como una imagen válida."
-        )
-    except Exception as exc:
-        raise ValueError(f"No se pudo abrir la imagen: {exc}")
-
-    try:
-        imagen = ImageOps.exif_transpose(imagen)
-    except Exception:
-        pass
-
-    # Eliminar modos problemáticos como CMYK, P, LA, I, etc.
-    if imagen.mode != "RGB":
-        imagen = imagen.convert("RGB")
-
-    # Reducir imágenes excesivamente grandes para hacer la edición más estable.
-    max_side = 2048
-    width, height = imagen.size
-
-    if max(width, height) > max_side:
-        scale = max_side / float(max(width, height))
-        new_size = (
-            max(1, int(round(width * scale))),
-            max(1, int(round(height * scale))),
-        )
-        imagen = imagen.resize(new_size, Image.Resampling.LANCZOS)
-
-    return imagen
-
-
-# ============================================================
-# PROMPT DE EDICIÓN
-# ============================================================
-
-def vineyard_prompt() -> str:
-    return """
-Edit the provided aerial vineyard photo while preserving the original photograph,
-same framing, camera angle, lighting, vineyard geometry, and parcel boundaries.
-
-GOAL:
-Overlay guide lines that follow the REAL vineyard rows as accurately as possible.
-
-INSTRUCTIONS:
-- Draw exactly ONE thin smooth guide line centered on EACH true vineyard row.
-- Each line must follow the real row shape, including curves or small deviations.
-- Use GREEN on portions of a row where vegetation is visibly present.
-- Use RED only on portions of that SAME row where plants are visibly missing,
-  dry, interrupted, or absent.
-- Green and red portions belonging to the same physical row must remain aligned
-  as one continuous row path.
-- Do not create duplicate parallel lines on the same vineyard row.
-- Do not invent extra vineyard rows.
-- Do not draw lines in the spaces between rows.
-- Do not draw on roads, perimeter lanes, roofs, buildings, patios, large trees,
-  shadows, parking areas, or neighboring non-vineyard zones.
-- Keep the original photograph visible and unchanged except for the thin overlay lines.
-- Do not fill areas.
-- Do not add decorative elements.
-- Do not add labels or numbers.
-- If a row is uncertain, omit it instead of inventing it.
-
-STYLE:
-- Thin clean overlay lines.
-- Professional agronomic review style.
-- Preserve as much original image detail as possible.
-"""
-
-
-# ============================================================
-# CONTEO DE SURCOS EN LA IMAGEN YA MARCADA
-# ============================================================
-
-def contar_surcos_con_vision(image_bytes: bytes) -> dict:
-    """
-    Cuenta las trayectorias marcadas en la imagen final.
-    Un mismo surco puede contener tramos verdes y rojos.
-    """
-    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-    data_url = f"data:image/png;base64,{image_b64}"
-
-    prompt = """
-Observa cuidadosamente esta imagen aérea de un viñedo YA MARCADA con líneas
-verdes y rojas.
-
-Tu tarea es contar únicamente los SURCOS MARCADOS.
-
-REGLAS:
-- Cuenta cada trayectoria o hilera física una sola vez.
-- Una hilera puede tener segmentos verdes y rojos.
-- Si los segmentos están alineados sobre la misma trayectoria, cuentan como UN solo surco.
-- NO cuentes segmentos individuales.
-- NO cuentes bordes de caminos, techos, árboles, sombras ni elementos originales de la foto.
-- NO cuentes dos veces una línea que representa la misma hilera.
-- Sigue visualmente cada trayectoria desde un extremo hasta el otro antes de sumar.
-- Si una línea se interrumpe por un tramo seco y continúa en la misma alineación,
-  sigue siendo el mismo surco.
-- Cuenta solamente las hileras que tienen una línea de guía visible.
-
-Devuelve SOLO JSON válido con exactamente esta estructura:
+Devuelve exactamente esta estructura:
 
 {
-  "surcos_contados": 0,
-  "confianza": "alta",
-  "observacion": "breve explicación"
+  "es_vinedo": true,
+  "surcos_estimados": 0,
+  "verde_pct": 0,
+  "rojo_pct": 0,
+  "orientacion_principal_grados": 90,
+  "resumen": ""
 }
 
-Para "confianza" usa solamente:
-"alta", "media" o "baja".
+Reglas:
+- "es_vinedo": true si claramente es una parcela de viñedo.
+- "surcos_estimados": número total aproximado de surcos visibles en la parcela principal.
+- "verde_pct": porcentaje estimado de vegetación sana / verde.
+- "rojo_pct": porcentaje estimado de tramos secos, faltantes o débiles.
+- verde_pct + rojo_pct debe sumar aproximadamente 100.
+- Ignora caminos, techos, construcciones y bordes externos.
+- Si no es viñedo, responde:
+  {
+    "es_vinedo": false,
+    "surcos_estimados": 0,
+    "verde_pct": 0,
+    "rojo_pct": 0,
+    "orientacion_principal_grados": 0,
+    "resumen": "No parece viñedo"
+  }
+- No pongas nada fuera del JSON.
 """
 
-    response = client.responses.create(
-        model="gpt-5.6-luna",
-        reasoning={"effort": "medium"},
+PROMPT_DIBUJO = """
+Edita ESTA MISMA imagen del viñedo directamente sobre la fotografía original.
+
+Instrucciones obligatorias:
+- Dibuja una línea delgada siguiendo el centro de cada surco visible de la parcela principal.
+- Donde el surco esté sano o con vegetación, pinta la línea en VERDE.
+- Donde el surco tenga tramos secos, débiles o faltantes, pinta esos tramos en ROJO.
+- Las líneas deben seguir la forma real del surco, no hacer una retícula rígida.
+- No dibujes líneas sobre caminos, techos, construcciones ni fuera de la parcela principal.
+- Numera cada surco con números pequeños y legibles.
+- Coloca el número de cada surco ARRIBA y también ABAJO.
+- El número de arriba y el de abajo deben corresponder al mismo surco.
+- Mantén la foto original de fondo.
+- No agregues título, leyenda, caja, tabla ni texto extra.
+"""
+
+
+# =========================================================
+# FUNCIONES AUXILIARES
+# =========================================================
+
+def extraer_json_de_texto(texto: str) -> dict:
+    texto = texto.strip()
+
+    try:
+        return json.loads(texto)
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", texto, re.DOTALL)
+    if not match:
+        raise ValueError("No se encontró un JSON válido en la respuesta del modelo.")
+
+    bloque = match.group(0)
+    return json.loads(bloque)
+
+
+def clamp(valor, minimo, maximo):
+    try:
+        valor = int(round(float(valor)))
+    except Exception:
+        valor = minimo
+    return max(minimo, min(valor, maximo))
+
+
+def normalizar_porcentajes(verdes: int, rojos: int):
+    verdes = clamp(verdes, 0, 100)
+    rojos = clamp(rojos, 0, 100)
+
+    total = verdes + rojos
+
+    if total == 0:
+        return 0, 0
+
+    if total == 100:
+        return verdes, rojos
+
+    verdes = round((verdes / total) * 100)
+    rojos = 100 - verdes
+
+    verdes = clamp(verdes, 0, 100)
+    rojos = clamp(rojos, 0, 100)
+
+    return verdes, rojos
+
+
+def guardar_upload(upload_file: UploadFile) -> Path:
+    extension = Path(upload_file.filename or "imagen.jpg").suffix.lower()
+    if extension not in [".jpg", ".jpeg", ".png", ".webp", ".bmp"]:
+        extension = ".jpg"
+
+    nombre = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{extension}"
+    destino = UPLOADS_DIR / nombre
+
+    with open(destino, "wb") as buffer:
+        shutil.copyfileobj(upload_file.file, buffer)
+
+    return destino
+
+
+def convertir_a_png_rgb(ruta_imagen: Path) -> Path:
+    salida = ruta_imagen.with_suffix(".png")
+
+    with Image.open(ruta_imagen) as img:
+        img = img.convert("RGB")
+        img.save(salida, format="PNG")
+
+    return salida
+
+
+def imagen_a_data_url(ruta_imagen: Path) -> str:
+    mime = "image/png"
+    with open(ruta_imagen, "rb") as f:
+        contenido = f.read()
+    b64 = base64.b64encode(contenido).decode("utf-8")
+    return f"data:{mime};base64,{b64}"
+
+
+def elegir_size_para_edicion(ruta_imagen: Path) -> str:
+    with Image.open(ruta_imagen) as img:
+        w, h = img.size
+
+    if abs(w - h) < 100:
+        return "1024x1024"
+    elif w > h:
+        return "1536x1024"
+    else:
+        return "1024x1536"
+
+
+def analizar_imagen_con_ia(ruta_png: Path) -> dict:
+    data_url = imagen_a_data_url(ruta_png)
+
+    respuesta = client.responses.create(
+        model=OPENAI_VISION_MODEL,
         input=[
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "input_text",
-                        "text": prompt,
+                        "text": PROMPT_ANALISIS
                     },
                     {
                         "type": "input_image",
                         "image_url": data_url,
-                        "detail": "high",
-                    },
-                ],
+                        "detail": "high"
+                    }
+                ]
             }
-        ],
+        ]
     )
 
-    data = limpiar_json(getattr(response, "output_text", "") or "")
+    texto = getattr(respuesta, "output_text", "") or ""
+    datos = extraer_json_de_texto(texto)
 
+    es_vinedo = bool(datos.get("es_vinedo", False))
+    surcos_estimados = clamp(datos.get("surcos_estimados", 0), 0, 1000)
+    verde_pct = clamp(datos.get("verde_pct", 0), 0, 100)
+    rojo_pct = clamp(datos.get("rojo_pct", 0), 0, 100)
+    verde_pct, rojo_pct = normalizar_porcentajes(verde_pct, rojo_pct)
+
+    orientacion = datos.get("orientacion_principal_grados", 90)
     try:
-        surcos = int(data.get("surcos_contados", 0))
+        orientacion = float(orientacion)
     except Exception:
-        surcos = 0
+        orientacion = 90
 
-    surcos = max(0, surcos)
-
-    confianza = str(data.get("confianza", "media")).lower().strip()
-
-    if confianza not in {"alta", "media", "baja"}:
-        confianza = "media"
+    resumen = str(datos.get("resumen", "")).strip()
 
     return {
-        "surcos_contados": surcos,
-        "confianza": confianza,
-        "observacion": str(data.get("observacion", "")).strip(),
+        "es_vinedo": es_vinedo,
+        "surcos_estimados": surcos_estimados,
+        "verde_pct": verde_pct,
+        "rojo_pct": rojo_pct,
+        "orientacion_principal_grados": orientacion,
+        "resumen": resumen
     }
 
 
-# ============================================================
-# ESTADO
-# ============================================================
+def editar_imagen_con_ia(ruta_png: Path) -> bytes:
+    size = elegir_size_para_edicion(ruta_png)
+
+    with open(ruta_png, "rb") as f:
+        respuesta = client.images.edit(
+            model=OPENAI_IMAGE_MODEL,
+            image=f,
+            prompt=PROMPT_DIBUJO,
+            size=size
+        )
+
+    item = respuesta.data[0]
+
+    b64 = None
+    if hasattr(item, "b64_json"):
+        b64 = item.b64_json
+    elif isinstance(item, dict):
+        b64 = item.get("b64_json")
+
+    if not b64:
+        raise ValueError("La API no devolvió la imagen editada en base64.")
+
+    return base64.b64decode(b64)
+
+
+def guardar_resultado_png(imagen_bytes: bytes, nombre_base: str) -> Path:
+    salida = OUTPUTS_DIR / f"resultado_{nombre_base}.png"
+
+    img = Image.open(io.BytesIO(imagen_bytes)).convert("RGB")
+    img.save(salida, format="PNG")
+
+    return salida
+
+
+def url_publica(request: Request, ruta_relativa: str) -> str:
+    base = str(request.base_url).rstrip("/")
+    return f"{base}{ruta_relativa}"
+
+
+# =========================================================
+# RUTAS
+# =========================================================
 
 @app.get("/")
-def root():
+def inicio():
     return {
         "ok": True,
         "mensaje": "Backend TerraCore IA activo",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "normalizacion_imagen": "RGB PNG",
-        "metodo_lineas": "gpt-image-2.5-sunburst",
-        "metodo_conteo": "gpt-5.6-luna",
-        "docs": "/docs",
+        "metodo_lineas": OPENAI_IMAGE_MODEL,
+        "metodo_conteo": OPENAI_VISION_MODEL,
+        "docs": "/docs"
     }
 
 
-# ============================================================
-# ANALIZAR IMAGEN
-# ============================================================
-
 @app.post("/analyze-image")
-async def analyze_image(file: UploadFile = File(...)):
+async def analyze_image(request: Request, file: UploadFile = File(...)):
     try:
-        raw = await file.read()
-
-        if not raw:
+        if not OPENAI_API_KEY:
             return JSONResponse(
-                status_code=400,
+                status_code=500,
                 content={
                     "ok": False,
-                    "error": "La imagen recibida está vacía.",
-                },
+                    "error": "Falta OPENAI_API_KEY en el archivo .env"
+                }
             )
 
-        input_name, output_name = crear_nombres()
+        # Guardar imagen original
+        ruta_original = guardar_upload(file)
+        nombre_archivo = ruta_original.name
+        nombre_base = ruta_original.stem
 
-        input_path = UPLOAD_DIR / input_name
-        output_path = OUTPUT_DIR / output_name
+        # Normalizar a PNG RGB para evitar errores de imagen inválida
+        ruta_png = convertir_a_png_rgb(ruta_original)
 
-        # --------------------------------------------------------
-        # 0. NORMALIZAR LA FOTO ANTES DE ENVIARLA A GPT IMAGE
-        # --------------------------------------------------------
-        imagen_normalizada = normalizar_imagen(raw)
+        # 1) Analizar con IA
+        analisis = analizar_imagen_con_ia(ruta_png)
 
-        imagen_normalizada.save(
-            input_path,
-            format="PNG",
-            optimize=False,
+        if not analisis["es_vinedo"]:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "ok": True,
+                    "archivo_original": nombre_archivo,
+                    "imagen_original_url": f"/uploads/{nombre_archivo}",
+                    "imagen_original_url_publica": url_publica(request, f"/uploads/{nombre_archivo}"),
+                    "analisis": analisis,
+                    "mensaje": "La imagen no parece ser un viñedo."
+                }
+            )
+
+        # 2) Editar con IA para dibujar líneas
+        imagen_editada_bytes = editar_imagen_con_ia(ruta_png)
+        ruta_salida = guardar_resultado_png(imagen_editada_bytes, nombre_base)
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ok": True,
+                "archivo_original": nombre_archivo,
+                "imagen_original_url": f"/uploads/{nombre_archivo}",
+                "imagen_original_url_publica": url_publica(request, f"/uploads/{nombre_archivo}"),
+                "imagen_resultado_url": f"/outputs/{ruta_salida.name}",
+                "imagen_resultado_url_publica": url_publica(request, f"/outputs/{ruta_salida.name}"),
+                "analisis": {
+                    "es_vinedo": analisis["es_vinedo"],
+                    "surcos_estimados": analisis["surcos_estimados"],
+                    "verde_pct": analisis["verde_pct"],
+                    "rojo_pct": analisis["rojo_pct"],
+                    "orientacion_principal_grados": analisis["orientacion_principal_grados"],
+                    "resumen": analisis["resumen"]
+                },
+                "mensaje": "Imagen procesada correctamente con IA."
+            }
         )
 
-        # Validación final: abrir de nuevo el PNG guardado.
-        try:
-            comprobacion = Image.open(input_path)
-            comprobacion.load()
-
-            if comprobacion.mode != "RGB":
-                comprobacion = comprobacion.convert("RGB")
-                comprobacion.save(
-                    input_path,
-                    format="PNG",
-                    optimize=False,
-                )
-        except Exception as exc:
-            raise RuntimeError(
-                f"No se pudo validar el PNG normalizado: {exc}"
-            )
-
-        # --------------------------------------------------------
-        # 1. GPT IMAGE DIBUJA LOS SURCOS
-        # --------------------------------------------------------
-        with input_path.open("rb") as img_file:
-            result = client.images.edit(
-                model="gpt-image-2.5-sunburst",
-                image=img_file,
-                prompt=vineyard_prompt(),
-            )
-
-        if not result.data:
-            raise RuntimeError("OpenAI no devolvió ninguna imagen editada.")
-
-        image_base64 = result.data[0].b64_json
-
-        if not image_base64:
-            raise RuntimeError(
-                "OpenAI no devolvió la imagen editada en base64."
-            )
-
-        try:
-            image_bytes = base64.b64decode(image_base64)
-        except Exception as exc:
-            raise RuntimeError(
-                f"No se pudo decodificar la imagen generada: {exc}"
-            )
-
-        output_path.write_bytes(image_bytes)
-
-        # Validar también la salida.
-        try:
-            salida = Image.open(io.BytesIO(image_bytes))
-            salida.load()
-        except Exception as exc:
-            raise RuntimeError(
-                f"OpenAI devolvió una imagen que no pudo abrirse: {exc}"
-            )
-
-        # --------------------------------------------------------
-        # 2. GPT VISIÓN CUENTA LOS SURCOS YA MARCADOS
-        # --------------------------------------------------------
-        conteo_error = None
-
-        try:
-            conteo = contar_surcos_con_vision(image_bytes)
-        except Exception as exc:
-            conteo = {
-                "surcos_contados": 0,
-                "confianza": "baja",
-                "observacion": "No se pudo completar el conteo visual.",
-            }
-            conteo_error = str(exc)
-
-        original_relative = f"/uploads/{input_name}"
-        result_relative = f"/outputs/{output_name}"
-
-        response_data = {
-            "ok": True,
-
-            "archivo_original": input_name,
-
-            "imagen_original_url": original_relative,
-            "imagen_original_url_publica": url_publica(original_relative),
-
-            "imagen_resultado_url": result_relative,
-            "imagen_resultado_url_publica": url_publica(result_relative),
-
-            # Compatible con tu app Streamlit actual.
-            "surcos_estimados": int(conteo["surcos_contados"]),
-            "surcos_contados": int(conteo["surcos_contados"]),
-
-            "analisis": {
-                "surcos_estimados": int(conteo["surcos_contados"]),
-                "surcos_contados": int(conteo["surcos_contados"]),
-                "confianza_conteo": conteo["confianza"],
-                "observacion_conteo": conteo["observacion"],
-            },
-
-            "metodo": "gpt-image-2.5-sunburst",
-            "metodo_conteo": "gpt-5.6-luna",
-            "normalizacion": "RGB PNG",
-
-            "tipo_proceso": "edicion_visual_con_ia_y_conteo_visual",
-
-            "mensaje": (
-                "Imagen normalizada, procesada y surcos contados correctamente."
-            ),
-        }
-
-        if conteo_error:
-            response_data["advertencia_conteo"] = conteo_error
-
-        return response_data
-
-    except Exception as exc:
+    except Exception as e:
         return JSONResponse(
             status_code=500,
             content={
                 "ok": False,
-                "error": str(exc),
-            },
+                "error": str(e)
+            }
         )
