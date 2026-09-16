@@ -45,10 +45,10 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI(
     title="TerraCore IA",
-    version="1.2.0",
+    version="1.3.0",
     description=(
-        "Normaliza la imagen, dibuja líneas de surcos con GPT Image "
-        "y cuenta los surcos marcados con visión."
+        "Normaliza la imagen, dibuja líneas de surcos con GPT Image, "
+        "cuenta los surcos y calcula porcentaje verde/rojo."
     ),
 )
 
@@ -133,9 +133,6 @@ def normalizar_imagen(raw: bytes) -> Image.Image:
     - RGB
     - tamaño razonable
     - PNG estándar al guardarse
-
-    Esto evita errores como:
-    Invalid image file or mode
     """
     if not raw:
         raise ValueError("La imagen recibida está vacía.")
@@ -155,11 +152,9 @@ def normalizar_imagen(raw: bytes) -> Image.Image:
     except Exception:
         pass
 
-    # Eliminar modos problemáticos como CMYK, P, LA, I, etc.
     if imagen.mode != "RGB":
         imagen = imagen.convert("RGB")
 
-    # Reducir imágenes excesivamente grandes para hacer la edición más estable.
     max_side = 2048
     width, height = imagen.size
 
@@ -189,8 +184,8 @@ Overlay guide lines that follow the REAL vineyard rows as accurately as possible
 INSTRUCTIONS:
 - Draw exactly ONE thin smooth guide line centered on EACH true vineyard row.
 - Each line must follow the real row shape, including curves or small deviations.
-- Use GREEN on portions of a row where vegetation is visibly present.
-- Use RED only on portions of that SAME row where plants are visibly missing,
+- Use BRIGHT GREEN on portions of a row where vegetation is visibly present.
+- Use BRIGHT RED only on portions of that SAME row where plants are visibly missing,
   dry, interrupted, or absent.
 - Green and red portions belonging to the same physical row must remain aligned
   as one continuous row path.
@@ -202,11 +197,12 @@ INSTRUCTIONS:
 - Keep the original photograph visible and unchanged except for the thin overlay lines.
 - Do not fill areas.
 - Do not add decorative elements.
-- Do not add labels or numbers.
+- DO NOT add labels, text, or numbers.
 - If a row is uncertain, omit it instead of inventing it.
 
 STYLE:
 - Thin clean overlay lines.
+- Bright saturated green and bright saturated red so the overlay is easy to measure.
 - Professional agronomic review style.
 - Preserve as much original image detail as possible.
 """
@@ -297,6 +293,80 @@ Para "confianza" usa solamente:
 
 
 # ============================================================
+# PORCENTAJE VERDE / ROJO DE LAS LÍNEAS
+# ============================================================
+
+def calcular_porcentajes_lineas(image_bytes: bytes) -> dict:
+    """
+    Calcula el porcentaje relativo de los píxeles BRILLANTES/SATURADOS
+    verdes y rojos del overlay.
+
+    Importante:
+    - No calcula el porcentaje de toda la vegetación del terreno.
+    - Calcula la proporción entre los tramos de línea verdes y rojos
+      que aparecen en la imagen generada.
+    """
+    imagen = Image.open(io.BytesIO(image_bytes)).convert("HSV")
+
+    # Reducir un poco la imagen para acelerar el cálculo sin alterar proporciones.
+    max_side = 1600
+    w, h = imagen.size
+
+    if max(w, h) > max_side:
+        scale = max_side / float(max(w, h))
+        imagen = imagen.resize(
+            (
+                max(1, int(round(w * scale))),
+                max(1, int(round(h * scale))),
+            ),
+            Image.Resampling.BILINEAR,
+        )
+
+    pixeles_verdes = 0
+    pixeles_rojos = 0
+
+    # En PIL HSV:
+    # H: 0..255, S: 0..255, V: 0..255
+    # Rojo ≈ H cercano a 0 o 255
+    # Verde ≈ H alrededor de 60..110
+    for h_val, s_val, v_val in imagen.getdata():
+
+        # Solo colores muy vivos/brillantes para evitar contar
+        # la vegetación natural de la fotografía.
+        if s_val < 150 or v_val < 140:
+            continue
+
+        # Verde brillante
+        if 45 <= h_val <= 105:
+            pixeles_verdes += 1
+            continue
+
+        # Rojo brillante
+        if h_val <= 12 or h_val >= 245:
+            pixeles_rojos += 1
+
+    total = pixeles_verdes + pixeles_rojos
+
+    if total <= 0:
+        return {
+            "pixeles_verdes": 0,
+            "pixeles_rojos": 0,
+            "verde_pct": 0.0,
+            "rojo_pct": 0.0,
+        }
+
+    verde_pct = round((pixeles_verdes / total) * 100.0, 1)
+    rojo_pct = round(100.0 - verde_pct, 1)
+
+    return {
+        "pixeles_verdes": int(pixeles_verdes),
+        "pixeles_rojos": int(pixeles_rojos),
+        "verde_pct": float(verde_pct),
+        "rojo_pct": float(rojo_pct),
+    }
+
+
+# ============================================================
 # ESTADO
 # ============================================================
 
@@ -305,10 +375,11 @@ def root():
     return {
         "ok": True,
         "mensaje": "Backend TerraCore IA activo",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "normalizacion_imagen": "RGB PNG",
         "metodo_lineas": "gpt-image-2.5-sunburst",
         "metodo_conteo": "gpt-5.6-luna",
+        "porcentajes": "píxeles brillantes del overlay verde/rojo",
         "docs": "/docs",
     }
 
@@ -337,7 +408,7 @@ async def analyze_image(file: UploadFile = File(...)):
         output_path = OUTPUT_DIR / output_name
 
         # --------------------------------------------------------
-        # 0. NORMALIZAR LA FOTO ANTES DE ENVIARLA A GPT IMAGE
+        # 0. NORMALIZAR FOTO
         # --------------------------------------------------------
         imagen_normalizada = normalizar_imagen(raw)
 
@@ -347,7 +418,7 @@ async def analyze_image(file: UploadFile = File(...)):
             optimize=False,
         )
 
-        # Validación final: abrir de nuevo el PNG guardado.
+        # Validación final del PNG.
         try:
             comprobacion = Image.open(input_path)
             comprobacion.load()
@@ -393,7 +464,7 @@ async def analyze_image(file: UploadFile = File(...)):
 
         output_path.write_bytes(image_bytes)
 
-        # Validar también la salida.
+        # Validar salida generada.
         try:
             salida = Image.open(io.BytesIO(image_bytes))
             salida.load()
@@ -403,7 +474,7 @@ async def analyze_image(file: UploadFile = File(...)):
             )
 
         # --------------------------------------------------------
-        # 2. GPT VISIÓN CUENTA LOS SURCOS YA MARCADOS
+        # 2. CONTAR SURCOS CON VISIÓN
         # --------------------------------------------------------
         conteo_error = None
 
@@ -416,6 +487,22 @@ async def analyze_image(file: UploadFile = File(...)):
                 "observacion": "No se pudo completar el conteo visual.",
             }
             conteo_error = str(exc)
+
+        # --------------------------------------------------------
+        # 3. CALCULAR PORCENTAJES VERDE / ROJO
+        # --------------------------------------------------------
+        try:
+            porcentajes = calcular_porcentajes_lineas(image_bytes)
+        except Exception as exc:
+            porcentajes = {
+                "pixeles_verdes": 0,
+                "pixeles_rojos": 0,
+                "verde_pct": 0.0,
+                "rojo_pct": 0.0,
+            }
+            porcentaje_error = str(exc)
+        else:
+            porcentaje_error = None
 
         original_relative = f"/uploads/{input_name}"
         result_relative = f"/outputs/{output_name}"
@@ -431,30 +518,53 @@ async def analyze_image(file: UploadFile = File(...)):
             "imagen_resultado_url": result_relative,
             "imagen_resultado_url_publica": url_publica(result_relative),
 
-            # Compatible con tu app Streamlit actual.
+            # Conteo
             "surcos_estimados": int(conteo["surcos_contados"]),
             "surcos_contados": int(conteo["surcos_contados"]),
+
+            # Porcentajes directos para que tu Streamlit los lea fácil
+            "verde_pct": float(porcentajes["verde_pct"]),
+            "rojo_pct": float(porcentajes["rojo_pct"]),
 
             "analisis": {
                 "surcos_estimados": int(conteo["surcos_contados"]),
                 "surcos_contados": int(conteo["surcos_contados"]),
+
+                "verde_pct": float(porcentajes["verde_pct"]),
+                "rojo_pct": float(porcentajes["rojo_pct"]),
+
                 "confianza_conteo": conteo["confianza"],
                 "observacion_conteo": conteo["observacion"],
+
+                "pixeles_linea_verdes": int(
+                    porcentajes["pixeles_verdes"]
+                ),
+                "pixeles_linea_rojos": int(
+                    porcentajes["pixeles_rojos"]
+                ),
             },
 
             "metodo": "gpt-image-2.5-sunburst",
+            "metodo_lineas": "gpt-image-2.5-sunburst",
             "metodo_conteo": "gpt-5.6-luna",
+            "metodo_porcentajes": "HSV líneas brillantes verde/rojo",
+
             "normalizacion": "RGB PNG",
 
-            "tipo_proceso": "edicion_visual_con_ia_y_conteo_visual",
+            "tipo_proceso": (
+                "edicion_visual_con_ia_conteo_y_porcentajes"
+            ),
 
             "mensaje": (
-                "Imagen normalizada, procesada y surcos contados correctamente."
+                "Imagen procesada, surcos contados y porcentajes calculados."
             ),
         }
 
         if conteo_error:
             response_data["advertencia_conteo"] = conteo_error
+
+        if porcentaje_error:
+            response_data["advertencia_porcentajes"] = porcentaje_error
 
         return response_data
 
