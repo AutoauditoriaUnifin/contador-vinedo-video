@@ -1,9 +1,9 @@
 streamlit
-opencv-python-headless
-numpy
-Pillow
-scipy
-pandas
-openpyxl
-openai
 requests
+pandas
+python-dotenv
+fastapi
+uvicorn
+python-multipart
+openai
+pillow
