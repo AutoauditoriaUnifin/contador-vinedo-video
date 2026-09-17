@@ -396,6 +396,50 @@ def procesar_imagen_backend_ia(uploaded_file):
                 analisis.get("orientacion_principal_grados")
                 or 0.0
             ),
+
+            # Diagnóstico agronómico devuelto por el backend.
+            # Se conservan todos los campos anteriores.
+            "zona_mas_afectada": (
+                analisis.get("zona_mas_afectada")
+                or data.get("zona_mas_afectada")
+                or "No determinada"
+            ),
+            "nivel_afectacion_visual": (
+                analisis.get("nivel_afectacion_visual")
+                or data.get("nivel_afectacion_visual")
+                or "No determinado"
+            ),
+            "diagnostico_visual": (
+                analisis.get("diagnostico_visual")
+                or data.get("diagnostico_visual")
+                or ""
+            ),
+            "causas_probables": (
+                analisis.get("causas_probables")
+                or data.get("causas_probables")
+                or []
+            ),
+            "explicacion_nutrientes": (
+                analisis.get("explicacion_nutrientes")
+                or data.get("explicacion_nutrientes")
+                or ""
+            ),
+            "recomendaciones_iniciales": (
+                analisis.get("recomendaciones_iniciales")
+                or data.get("recomendaciones_iniciales")
+                or []
+            ),
+            "nota_diagnostico": (
+                analisis.get("nota_diagnostico")
+                or data.get("nota_diagnostico")
+                or ""
+            ),
+            "detalle_zonas": (
+                analisis.get("detalle_zonas")
+                or data.get("detalle_zonas")
+                or {}
+            ),
+
             "metodo": data.get("metodo", "gpt-image")
         }
 
@@ -5112,6 +5156,41 @@ with side_col:
                         "annotated": backend_result["annotated"],
                         "ia_scene": backend_result.get("backend"),
                         "result_url": backend_result.get("result_url"),
+
+                        # Diagnóstico agronómico
+                        "zona_mas_afectada": backend_result.get(
+                            "zona_mas_afectada",
+                            "No determinada"
+                        ),
+                        "nivel_afectacion_visual": backend_result.get(
+                            "nivel_afectacion_visual",
+                            "No determinado"
+                        ),
+                        "diagnostico_visual": backend_result.get(
+                            "diagnostico_visual",
+                            ""
+                        ),
+                        "causas_probables": backend_result.get(
+                            "causas_probables",
+                            []
+                        ),
+                        "explicacion_nutrientes": backend_result.get(
+                            "explicacion_nutrientes",
+                            ""
+                        ),
+                        "recomendaciones_iniciales": backend_result.get(
+                            "recomendaciones_iniciales",
+                            []
+                        ),
+                        "nota_diagnostico": backend_result.get(
+                            "nota_diagnostico",
+                            ""
+                        ),
+                        "detalle_zonas": backend_result.get(
+                            "detalle_zonas",
+                            {}
+                        ),
+
                         "metodo": backend_result.get("metodo", "gpt-image")
                     })
 
@@ -5371,6 +5450,20 @@ if active_items:
                 ): round(
                     item["red_pct"],
                     1
+                ),
+                tr(
+                    "Zona más afectada",
+                    "Zone la plus touchée"
+                ): item.get(
+                    "zona_mas_afectada",
+                    "—"
+                ),
+                tr(
+                    "Nivel visual",
+                    "Niveau visuel"
+                ): item.get(
+                    "nivel_afectacion_visual",
+                    "—"
                 )
             }
             for item in active_items
@@ -5383,6 +5476,142 @@ if active_items:
         use_container_width=True,
         hide_index=True
     )
+
+
+    # ========================================================
+    # DIAGNÓSTICO AGRONÓMICO - SOLO IMÁGENES
+    # Se agrega sin quitar la tabla ni las imágenes existentes.
+    # ========================================================
+    if modo == "imagenes":
+
+        st.subheader(
+            tr(
+                "Diagnóstico agronómico",
+                "Diagnostic agronomique"
+            )
+        )
+
+        st.caption(
+            tr(
+                "Interpretación visual preliminar. Para confirmar deficiencias de nutrientes se requiere análisis de suelo, análisis foliar y revisión del riego.",
+                "Interprétation visuelle préliminaire. Pour confirmer une carence en nutriments, une analyse du sol, une analyse foliaire et une vérification de l'irrigation sont nécessaires."
+            )
+        )
+
+        for diag_idx, item in enumerate(active_items):
+
+            with st.container(border=True):
+
+                st.markdown(
+                    f"### {item.get('name', tr('Imagen', 'Image'))}"
+                )
+
+                diag_col1, diag_col2, diag_col3, diag_col4 = st.columns(4)
+
+                with diag_col1:
+                    st.metric(
+                        tr("Surcos", "Rangs"),
+                        int(item.get("count", 0))
+                    )
+
+                with diag_col2:
+                    st.metric(
+                        tr("Verde", "Vert"),
+                        f"{float(item.get('green_pct', 0.0)):.1f}%"
+                    )
+
+                with diag_col3:
+                    st.metric(
+                        tr("Seco / rojo", "Sec / rouge"),
+                        f"{float(item.get('red_pct', 0.0)):.1f}%"
+                    )
+
+                with diag_col4:
+                    st.metric(
+                        tr("Nivel visual", "Niveau visuel"),
+                        str(
+                            item.get(
+                                "nivel_afectacion_visual",
+                                "No determinado"
+                            )
+                        ).capitalize()
+                    )
+
+                st.markdown(
+                    tr(
+                        "**Zona más afectada:** ",
+                        "**Zone la plus touchée :** "
+                    )
+                    +
+                    str(
+                        item.get(
+                            "zona_mas_afectada",
+                            "No determinada"
+                        )
+                    ).capitalize()
+                )
+
+                diagnostico_visual = str(
+                    item.get("diagnostico_visual", "") or ""
+                ).strip()
+
+                if diagnostico_visual:
+                    st.markdown(
+                        tr(
+                            "#### Diagnóstico visual",
+                            "#### Diagnostic visuel"
+                        )
+                    )
+                    st.write(diagnostico_visual)
+
+                causas = item.get("causas_probables", []) or []
+
+                if causas:
+                    st.markdown(
+                        tr(
+                            "#### Causas probables",
+                            "#### Causes probables"
+                        )
+                    )
+
+                    for causa in causas:
+                        st.markdown(f"- {causa}")
+
+                explicacion_nutrientes = str(
+                    item.get("explicacion_nutrientes", "") or ""
+                ).strip()
+
+                if explicacion_nutrientes:
+                    st.markdown(
+                        tr(
+                            "#### Suelo y nutrientes",
+                            "#### Sol et nutriments"
+                        )
+                    )
+                    st.write(explicacion_nutrientes)
+
+                recomendaciones = item.get(
+                    "recomendaciones_iniciales",
+                    []
+                ) or []
+
+                if recomendaciones:
+                    st.markdown(
+                        tr(
+                            "#### Recomendaciones iniciales",
+                            "#### Recommandations initiales"
+                        )
+                    )
+
+                    for recomendacion in recomendaciones:
+                        st.markdown(f"- {recomendacion}")
+
+                nota = str(
+                    item.get("nota_diagnostico", "") or ""
+                ).strip()
+
+                if nota:
+                    st.info(nota)
 
 
     # ========================================================
@@ -5411,6 +5640,17 @@ if active_items:
                 ),
                 use_container_width=True
             )
+
+            # Mini-resumen agronómico debajo de cada imagen.
+            if modo == "imagenes":
+                st.markdown(
+                    tr(
+                        f"**Zona más afectada:** {item.get('zona_mas_afectada', '—')}  |  "
+                        f"**Nivel visual:** {item.get('nivel_afectacion_visual', '—')}",
+                        f"**Zone la plus touchée :** {item.get('zona_mas_afectada', '—')}  |  "
+                        f"**Niveau visuel :** {item.get('nivel_afectacion_visual', '—')}"
+                    )
+                )
 
             # Solo botón BORRAR
             if st.button(
