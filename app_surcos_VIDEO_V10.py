@@ -406,7 +406,9 @@ def procesar_imagen_backend_ia(uploaded_file):
             ),
             "nivel_afectacion_visual": (
                 analisis.get("nivel_afectacion_visual")
+                or analisis.get("nivel_visual")
                 or data.get("nivel_afectacion_visual")
+                or data.get("nivel_visual")
                 or "No determinado"
             ),
             "diagnostico_visual": (
@@ -416,7 +418,9 @@ def procesar_imagen_backend_ia(uploaded_file):
             ),
             "causas_probables": (
                 analisis.get("causas_probables")
+                or analisis.get("motivos_probables")
                 or data.get("causas_probables")
+                or data.get("motivos_probables")
                 or []
             ),
             "explicacion_nutrientes": (
@@ -426,7 +430,17 @@ def procesar_imagen_backend_ia(uploaded_file):
             ),
             "recomendaciones_iniciales": (
                 analisis.get("recomendaciones_iniciales")
+                or (
+                    [analisis.get("recomendacion_corta")]
+                    if analisis.get("recomendacion_corta")
+                    else []
+                )
                 or data.get("recomendaciones_iniciales")
+                or (
+                    [data.get("recomendacion_corta")]
+                    if data.get("recomendacion_corta")
+                    else []
+                )
                 or []
             ),
             "nota_diagnostico": (
@@ -5554,6 +5568,29 @@ if active_items:
                 diagnostico_visual = str(
                     item.get("diagnostico_visual", "") or ""
                 ).strip()
+
+                if not diagnostico_visual:
+                    zona_tmp = str(
+                        item.get("zona_mas_afectada", "No determinada")
+                    )
+                    nivel_tmp = str(
+                        item.get(
+                            "nivel_afectacion_visual",
+                            "No determinado"
+                        )
+                    )
+
+                    if (
+                        zona_tmp not in {"", "No determinada", "—"}
+                        or
+                        nivel_tmp not in {"", "No determinado", "—"}
+                    ):
+                        diagnostico_visual = tr(
+                            f"El análisis visual reporta un nivel {nivel_tmp.lower()} "
+                            f"y señala como zona más afectada: {zona_tmp}.",
+                            f"L'analyse visuelle indique un niveau {nivel_tmp.lower()} "
+                            f"et signale comme zone la plus touchée : {zona_tmp}."
+                        )
 
                 if diagnostico_visual:
                     st.markdown(
