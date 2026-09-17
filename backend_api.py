@@ -45,7 +45,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI(
     title="TerraCore IA",
-    version="1.3.1",
+    version="1.4.0",
     description=(
         "Normaliza la imagen, dibuja líneas de surcos con GPT Image, "
         "cuenta los surcos y calcula porcentaje verde/rojo."
@@ -176,51 +176,35 @@ def normalizar_imagen(raw: bytes) -> Image.Image:
 def vineyard_prompt() -> str:
     return """
 Edit the provided aerial vineyard photo while preserving the original photograph,
-the same framing, camera angle, parcel layout, vineyard geometry, and visible roads.
+same framing, camera angle, lighting, vineyard geometry, and parcel boundaries.
 
 GOAL:
 Overlay guide lines that follow the REAL vineyard rows as accurately as possible.
 
-MAIN INSTRUCTIONS:
+INSTRUCTIONS:
 - Draw exactly ONE thin smooth guide line centered on EACH true vineyard row.
-- Each line must follow the real row shape from one end of the row to the other.
-- The line must stay on the row, not between rows.
-- Do not invent rows.
-- Do not duplicate rows.
-- Do not draw on roads, bare lanes, borders, roofs, vehicles, shadows, buildings, patios, large trees, or non-vineyard areas.
-- Keep the original photograph unchanged except for the thin overlay lines.
+- Each line must follow the real row shape, including curves or small deviations.
+- Use BRIGHT GREEN on portions of a row where vegetation is visibly present.
+- Use BRIGHT RED only on portions of that SAME row where plants are visibly missing,
+  dry, interrupted, or absent.
+- Green and red portions belonging to the same physical row must remain aligned
+  as one continuous row path.
+- Do not create duplicate parallel lines on the same vineyard row.
+- Do not invent extra vineyard rows.
+- Do not draw lines in the spaces between rows.
+- Do not draw on roads, perimeter lanes, roofs, buildings, patios, large trees,
+  shadows, parking areas, or neighboring non-vineyard zones.
+- Keep the original photograph visible and unchanged except for the thin overlay lines.
 - Do not fill areas.
 - Do not add decorative elements.
-
-COLOR RULES:
-- Use BRIGHT GREEN only on row segments where vegetation is clearly present and active.
-- Use BRIGHT RED on row segments where vegetation is weak, sparse, interrupted, dry, missing, or absent.
-- A single physical row may contain both green and red segments.
-- Green and red segments of the same row must stay aligned as one continuous row path.
-
-IMPORTANT RED RULES:
-Use RED more aggressively whenever the row segment shows one or more of these conditions:
-- visible brown or beige gaps
-- exposed soil in the row center
-- sparse vegetation
-- discontinuous or interrupted plants
-- missing plants
-- weak canopy
-- dry-looking sections
-- long or short empty gaps
-
-IMPORTANT DECISION RULE:
-- If a segment is doubtful between green and red, prefer RED.
-- Do NOT leave mostly dry or weak sections in green.
-- There should be noticeable red segments wherever the row is incomplete or dry.
+- DO NOT add labels, text, or numbers.
+- If a row is uncertain, omit it instead of inventing it.
 
 STYLE:
 - Thin clean overlay lines.
 - Bright saturated green and bright saturated red so the overlay is easy to measure.
 - Professional agronomic review style.
 - Preserve as much original image detail as possible.
-- Do NOT add labels, text, or numbers.
-- If a row is uncertain, omit it instead of inventing it.
 """
 
 
@@ -324,6 +308,7 @@ def calcular_porcentajes_lineas(image_bytes: bytes) -> dict:
     """
     imagen = Image.open(io.BytesIO(image_bytes)).convert("HSV")
 
+    # Reducir un poco la imagen para acelerar el cálculo sin alterar proporciones.
     max_side = 1600
     w, h = imagen.size
 
@@ -340,14 +325,23 @@ def calcular_porcentajes_lineas(image_bytes: bytes) -> dict:
     pixeles_verdes = 0
     pixeles_rojos = 0
 
+    # En PIL HSV:
+    # H: 0..255, S: 0..255, V: 0..255
+    # Rojo ≈ H cercano a 0 o 255
+    # Verde ≈ H alrededor de 60..110
     for h_val, s_val, v_val in imagen.getdata():
+
+        # Solo colores muy vivos/brillantes para evitar contar
+        # la vegetación natural de la fotografía.
         if s_val < 150 or v_val < 140:
             continue
 
+        # Verde brillante
         if 45 <= h_val <= 105:
             pixeles_verdes += 1
             continue
 
+        # Rojo brillante
         if h_val <= 12 or h_val >= 245:
             pixeles_rojos += 1
 
@@ -362,7 +356,7 @@ def calcular_porcentajes_lineas(image_bytes: bytes) -> dict:
         }
 
     verde_pct = round((pixeles_verdes / total) * 100.0, 1)
-    rojo_pct = round((pixeles_rojos / total) * 100.0, 1)
+    rojo_pct = round(100.0 - verde_pct, 1)
 
     return {
         "pixeles_verdes": int(pixeles_verdes),
@@ -370,6 +364,218 @@ def calcular_porcentajes_lineas(image_bytes: bytes) -> dict:
         "verde_pct": float(verde_pct),
         "rojo_pct": float(rojo_pct),
     }
+
+
+# ============================================================
+# DIAGNÓSTICO VISUAL AGRONÓMICO
+# ============================================================
+
+def detectar_zona_mas_afectada(image_bytes: bytes) -> dict:
+    """
+    Divide la imagen procesada en izquierda / centro / derecha y estima
+    en cuál hay mayor presencia de la línea roja del overlay.
+
+    Esto NO diagnostica por sí solo la causa agronómica.
+    """
+    imagen = Image.open(io.BytesIO(image_bytes)).convert("HSV")
+
+    max_side = 1600
+    w, h = imagen.size
+
+    if max(w, h) > max_side:
+        scale = max_side / float(max(w, h))
+        imagen = imagen.resize(
+            (
+                max(1, int(round(w * scale))),
+                max(1, int(round(h * scale))),
+            ),
+            Image.Resampling.BILINEAR,
+        )
+        w, h = imagen.size
+
+    zonas = {
+        "izquierda": {"rojo": 0, "verde": 0},
+        "centro": {"rojo": 0, "verde": 0},
+        "derecha": {"rojo": 0, "verde": 0},
+    }
+
+    tercio_1 = w / 3.0
+    tercio_2 = 2.0 * w / 3.0
+
+    pix = imagen.load()
+
+    for y in range(h):
+        for x in range(w):
+            h_val, s_val, v_val = pix[x, y]
+
+            # Solo overlay muy saturado/brillante.
+            if s_val < 150 or v_val < 140:
+                continue
+
+            if x < tercio_1:
+                zona = "izquierda"
+            elif x < tercio_2:
+                zona = "centro"
+            else:
+                zona = "derecha"
+
+            if 45 <= h_val <= 105:
+                zonas[zona]["verde"] += 1
+            elif h_val <= 12 or h_val >= 245:
+                zonas[zona]["rojo"] += 1
+
+    # Proporción de rojo dentro de cada zona.
+    detalle = {}
+
+    for nombre, valores in zonas.items():
+        total = valores["rojo"] + valores["verde"]
+
+        if total > 0:
+            rojo_pct = round(
+                valores["rojo"] / total * 100.0,
+                1,
+            )
+        else:
+            rojo_pct = 0.0
+
+        detalle[nombre] = {
+            "rojo_pct": rojo_pct,
+            "pixeles_rojos": int(valores["rojo"]),
+            "pixeles_verdes": int(valores["verde"]),
+        }
+
+    zona_mas_afectada = max(
+        detalle,
+        key=lambda z: detalle[z]["rojo_pct"],
+    )
+
+    if all(
+        detalle[z]["pixeles_rojos"] == 0
+        for z in detalle
+    ):
+        zona_mas_afectada = "sin afectación clara"
+
+    return {
+        "zona_mas_afectada": zona_mas_afectada,
+        "detalle_zonas": detalle,
+    }
+
+
+def construir_diagnostico_agronomico(
+    verde_pct: float,
+    rojo_pct: float,
+    zona_mas_afectada: str,
+) -> dict:
+    """
+    Genera una interpretación VISUAL PRELIMINAR.
+
+    Importante:
+    La imagen no permite confirmar por sí sola una deficiencia de N, P, K
+    u otro nutriente. Las causas se reportan como hipótesis a validar con
+    inspección, riego, suelo y análisis foliar.
+    """
+    verde_pct = float(max(0.0, min(100.0, verde_pct)))
+    rojo_pct = float(max(0.0, min(100.0, rojo_pct)))
+
+    if rojo_pct >= 45.0:
+        nivel = "alto"
+        diagnostico = (
+            f"Se observa una afectación visual alta, con una proporción "
+            f"importante de tramos secos, ralos o con pérdida de cobertura. "
+            f"La mayor afectación visual aparece en la zona {zona_mas_afectada}."
+        )
+        causas = [
+            "estrés hídrico o riego insuficiente/desuniforme",
+            "baja disponibilidad de nutrientes",
+            "compactación, mal drenaje o limitación de raíces",
+            "salinidad u otra limitación química del suelo",
+            "problemas sanitarios que requieren revisión en campo",
+        ]
+        recomendaciones = [
+            "revisar presión, caudal y uniformidad del sistema de riego",
+            "realizar análisis de suelo por zona afectada y zona sana de comparación",
+            "realizar análisis foliar para confirmar o descartar deficiencias nutricionales",
+            "medir pH, conductividad eléctrica y materia orgánica del suelo",
+            "evaluar compactación, drenaje, raíces, plagas y enfermedades en campo",
+        ]
+
+    elif rojo_pct >= 20.0:
+        nivel = "medio"
+        diagnostico = (
+            f"Se observa una afectación visual media, con mezcla de tramos "
+            f"vigorosos y tramos débiles o secos. La mayor afectación visual "
+            f"aparece en la zona {zona_mas_afectada}."
+        )
+        causas = [
+            "estrés hídrico localizado",
+            "distribución irregular del riego",
+            "fertilidad o materia orgánica desuniforme",
+            "compactación o variación física del suelo",
+            "posible problema sanitario localizado",
+        ]
+        recomendaciones = [
+            "inspeccionar en campo los tramos rojos",
+            "comparar humedad y funcionamiento del riego entre zonas",
+            "tomar muestras de suelo separadas en zona afectada y zona sana",
+            "considerar análisis foliar para confirmar estado nutricional",
+            "revisar raíces y presencia de plagas o enfermedades",
+        ]
+
+    elif rojo_pct > 0.0:
+        nivel = "bajo"
+        diagnostico = (
+            f"Se observa una afectación visual baja o localizada. La mayor parte "
+            f"de la cobertura marcada permanece verde, aunque existen algunos "
+            f"tramos débiles o secos, principalmente en la zona {zona_mas_afectada}."
+        )
+        causas = [
+            "estrés puntual por humedad",
+            "variación normal del vigor",
+            "pequeñas diferencias de suelo o fertilidad",
+            "fallas puntuales de riego",
+        ]
+        recomendaciones = [
+            "dar seguimiento a los puntos rojos en siguientes vuelos",
+            "verificar emisores de riego cercanos a los tramos afectados",
+            "hacer inspección de campo en los puntos más repetitivos",
+            "muestrear suelo si la afectación aumenta o se concentra",
+        ]
+
+    else:
+        nivel = "sin afectación roja detectada"
+        diagnostico = (
+            "No se detectó una proporción relevante de línea roja en la imagen "
+            "procesada. Visualmente, el overlay indica predominio de vegetación."
+        )
+        causas = [
+            "sin una causa de sequedad evidente en esta imagen procesada"
+        ]
+        recomendaciones = [
+            "continuar monitoreo periódico",
+            "mantener validación de campo y manejo agronómico preventivo",
+        ]
+
+    explicacion_nutrientes = (
+        "Una fotografía por sí sola no permite afirmar qué nutriente falta. "
+        "Nitrógeno, fósforo, potasio, magnesio, hierro u otros elementos pueden "
+        "influir en el vigor, pero síntomas similares también pueden aparecer por "
+        "falta o exceso de agua, salinidad, compactación, problemas de raíz, "
+        "plagas o enfermedades. Para decidir una fertilización se recomienda "
+        "confirmar con análisis de suelo y, de ser posible, análisis foliar."
+    )
+
+    return {
+        "nivel_afectacion_visual": nivel,
+        "diagnostico_visual": diagnostico,
+        "causas_probables": causas,
+        "explicacion_nutrientes": explicacion_nutrientes,
+        "recomendaciones_iniciales": recomendaciones,
+        "nota": (
+            "Diagnóstico visual preliminar. No sustituye análisis de suelo, "
+            "análisis foliar, revisión del riego ni diagnóstico agronómico en campo."
+        ),
+    }
+
 
 
 # ============================================================
@@ -381,7 +587,7 @@ def root():
     return {
         "ok": True,
         "mensaje": "Backend TerraCore IA activo",
-        "version": "1.3.1",
+        "version": "1.4.0",
         "normalizacion_imagen": "RGB PNG",
         "metodo_lineas": "gpt-image-2.5-sunburst",
         "metodo_conteo": "gpt-5.6-luna",
@@ -424,6 +630,7 @@ async def analyze_image(file: UploadFile = File(...)):
             optimize=False,
         )
 
+        # Validación final del PNG.
         try:
             comprobacion = Image.open(input_path)
             comprobacion.load()
@@ -469,6 +676,7 @@ async def analyze_image(file: UploadFile = File(...)):
 
         output_path.write_bytes(image_bytes)
 
+        # Validar salida generada.
         try:
             salida = Image.open(io.BytesIO(image_bytes))
             salida.load()
@@ -508,6 +716,43 @@ async def analyze_image(file: UploadFile = File(...)):
         else:
             porcentaje_error = None
 
+        # --------------------------------------------------------
+        # 4. DIAGNÓSTICO VISUAL AGRONÓMICO
+        # --------------------------------------------------------
+        try:
+            zonas = detectar_zona_mas_afectada(image_bytes)
+
+            diagnostico_agronomico = construir_diagnostico_agronomico(
+                verde_pct=float(porcentajes["verde_pct"]),
+                rojo_pct=float(porcentajes["rojo_pct"]),
+                zona_mas_afectada=zonas["zona_mas_afectada"],
+            )
+
+            diagnostico_error = None
+
+        except Exception as exc:
+            zonas = {
+                "zona_mas_afectada": "no determinada",
+                "detalle_zonas": {},
+            }
+
+            diagnostico_agronomico = {
+                "nivel_afectacion_visual": "no determinado",
+                "diagnostico_visual": (
+                    "No se pudo completar el diagnóstico visual agronómico."
+                ),
+                "causas_probables": [],
+                "explicacion_nutrientes": (
+                    "No se pudo generar una interpretación de nutrientes."
+                ),
+                "recomendaciones_iniciales": [],
+                "nota": (
+                    "Se requiere revisión del resultado y validación en campo."
+                ),
+            }
+
+            diagnostico_error = str(exc)
+
         original_relative = f"/uploads/{input_name}"
         result_relative = f"/outputs/{output_name}"
 
@@ -522,11 +767,32 @@ async def analyze_image(file: UploadFile = File(...)):
             "imagen_resultado_url": result_relative,
             "imagen_resultado_url_publica": url_publica(result_relative),
 
+            # Conteo
             "surcos_estimados": int(conteo["surcos_contados"]),
             "surcos_contados": int(conteo["surcos_contados"]),
 
+            # Porcentajes directos para que tu Streamlit los lea fácil
             "verde_pct": float(porcentajes["verde_pct"]),
             "rojo_pct": float(porcentajes["rojo_pct"]),
+
+            # Diagnóstico visual agronómico
+            "zona_mas_afectada": zonas["zona_mas_afectada"],
+            "nivel_afectacion_visual": diagnostico_agronomico[
+                "nivel_afectacion_visual"
+            ],
+            "diagnostico_visual": diagnostico_agronomico[
+                "diagnostico_visual"
+            ],
+            "causas_probables": diagnostico_agronomico[
+                "causas_probables"
+            ],
+            "explicacion_nutrientes": diagnostico_agronomico[
+                "explicacion_nutrientes"
+            ],
+            "recomendaciones_iniciales": diagnostico_agronomico[
+                "recomendaciones_iniciales"
+            ],
+            "nota_diagnostico": diagnostico_agronomico["nota"],
 
             "analisis": {
                 "surcos_estimados": int(conteo["surcos_contados"]),
@@ -544,6 +810,25 @@ async def analyze_image(file: UploadFile = File(...)):
                 "pixeles_linea_rojos": int(
                     porcentajes["pixeles_rojos"]
                 ),
+
+                "zona_mas_afectada": zonas["zona_mas_afectada"],
+                "detalle_zonas": zonas["detalle_zonas"],
+                "nivel_afectacion_visual": diagnostico_agronomico[
+                    "nivel_afectacion_visual"
+                ],
+                "diagnostico_visual": diagnostico_agronomico[
+                    "diagnostico_visual"
+                ],
+                "causas_probables": diagnostico_agronomico[
+                    "causas_probables"
+                ],
+                "explicacion_nutrientes": diagnostico_agronomico[
+                    "explicacion_nutrientes"
+                ],
+                "recomendaciones_iniciales": diagnostico_agronomico[
+                    "recomendaciones_iniciales"
+                ],
+                "nota_diagnostico": diagnostico_agronomico["nota"],
             },
 
             "metodo": "gpt-image-2.5-sunburst",
@@ -554,11 +839,11 @@ async def analyze_image(file: UploadFile = File(...)):
             "normalizacion": "RGB PNG",
 
             "tipo_proceso": (
-                "edicion_visual_con_ia_conteo_y_porcentajes"
+                "edicion_visual_con_ia_conteo_porcentajes_y_diagnostico"
             ),
 
             "mensaje": (
-                "Imagen procesada, surcos contados y porcentajes calculados."
+                "Imagen procesada, surcos contados, porcentajes y diagnóstico visual calculados."
             ),
         }
 
@@ -567,6 +852,9 @@ async def analyze_image(file: UploadFile = File(...)):
 
         if porcentaje_error:
             response_data["advertencia_porcentajes"] = porcentaje_error
+
+        if diagnostico_error:
+            response_data["advertencia_diagnostico"] = diagnostico_error
 
         return response_data
 
