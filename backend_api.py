@@ -45,7 +45,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI(
     title="TerraCore IA",
-    version="1.3.0",
+    version="1.3.1",
     description=(
         "Normaliza la imagen, dibuja líneas de surcos con GPT Image, "
         "cuenta los surcos y calcula porcentaje verde/rojo."
@@ -176,35 +176,51 @@ def normalizar_imagen(raw: bytes) -> Image.Image:
 def vineyard_prompt() -> str:
     return """
 Edit the provided aerial vineyard photo while preserving the original photograph,
-same framing, camera angle, lighting, vineyard geometry, and parcel boundaries.
+the same framing, camera angle, parcel layout, vineyard geometry, and visible roads.
 
 GOAL:
 Overlay guide lines that follow the REAL vineyard rows as accurately as possible.
 
-INSTRUCTIONS:
+MAIN INSTRUCTIONS:
 - Draw exactly ONE thin smooth guide line centered on EACH true vineyard row.
-- Each line must follow the real row shape, including curves or small deviations.
-- Use BRIGHT GREEN on portions of a row where vegetation is visibly present.
-- Use BRIGHT RED only on portions of that SAME row where plants are visibly missing,
-  dry, interrupted, or absent.
-- Green and red portions belonging to the same physical row must remain aligned
-  as one continuous row path.
-- Do not create duplicate parallel lines on the same vineyard row.
-- Do not invent extra vineyard rows.
-- Do not draw lines in the spaces between rows.
-- Do not draw on roads, perimeter lanes, roofs, buildings, patios, large trees,
-  shadows, parking areas, or neighboring non-vineyard zones.
-- Keep the original photograph visible and unchanged except for the thin overlay lines.
+- Each line must follow the real row shape from one end of the row to the other.
+- The line must stay on the row, not between rows.
+- Do not invent rows.
+- Do not duplicate rows.
+- Do not draw on roads, bare lanes, borders, roofs, vehicles, shadows, buildings, patios, large trees, or non-vineyard areas.
+- Keep the original photograph unchanged except for the thin overlay lines.
 - Do not fill areas.
 - Do not add decorative elements.
-- DO NOT add labels, text, or numbers.
-- If a row is uncertain, omit it instead of inventing it.
+
+COLOR RULES:
+- Use BRIGHT GREEN only on row segments where vegetation is clearly present and active.
+- Use BRIGHT RED on row segments where vegetation is weak, sparse, interrupted, dry, missing, or absent.
+- A single physical row may contain both green and red segments.
+- Green and red segments of the same row must stay aligned as one continuous row path.
+
+IMPORTANT RED RULES:
+Use RED more aggressively whenever the row segment shows one or more of these conditions:
+- visible brown or beige gaps
+- exposed soil in the row center
+- sparse vegetation
+- discontinuous or interrupted plants
+- missing plants
+- weak canopy
+- dry-looking sections
+- long or short empty gaps
+
+IMPORTANT DECISION RULE:
+- If a segment is doubtful between green and red, prefer RED.
+- Do NOT leave mostly dry or weak sections in green.
+- There should be noticeable red segments wherever the row is incomplete or dry.
 
 STYLE:
 - Thin clean overlay lines.
 - Bright saturated green and bright saturated red so the overlay is easy to measure.
 - Professional agronomic review style.
 - Preserve as much original image detail as possible.
+- Do NOT add labels, text, or numbers.
+- If a row is uncertain, omit it instead of inventing it.
 """
 
 
@@ -308,7 +324,6 @@ def calcular_porcentajes_lineas(image_bytes: bytes) -> dict:
     """
     imagen = Image.open(io.BytesIO(image_bytes)).convert("HSV")
 
-    # Reducir un poco la imagen para acelerar el cálculo sin alterar proporciones.
     max_side = 1600
     w, h = imagen.size
 
@@ -325,23 +340,14 @@ def calcular_porcentajes_lineas(image_bytes: bytes) -> dict:
     pixeles_verdes = 0
     pixeles_rojos = 0
 
-    # En PIL HSV:
-    # H: 0..255, S: 0..255, V: 0..255
-    # Rojo ≈ H cercano a 0 o 255
-    # Verde ≈ H alrededor de 60..110
     for h_val, s_val, v_val in imagen.getdata():
-
-        # Solo colores muy vivos/brillantes para evitar contar
-        # la vegetación natural de la fotografía.
         if s_val < 150 or v_val < 140:
             continue
 
-        # Verde brillante
         if 45 <= h_val <= 105:
             pixeles_verdes += 1
             continue
 
-        # Rojo brillante
         if h_val <= 12 or h_val >= 245:
             pixeles_rojos += 1
 
@@ -356,7 +362,7 @@ def calcular_porcentajes_lineas(image_bytes: bytes) -> dict:
         }
 
     verde_pct = round((pixeles_verdes / total) * 100.0, 1)
-    rojo_pct = round(100.0 - verde_pct, 1)
+    rojo_pct = round((pixeles_rojos / total) * 100.0, 1)
 
     return {
         "pixeles_verdes": int(pixeles_verdes),
@@ -375,7 +381,7 @@ def root():
     return {
         "ok": True,
         "mensaje": "Backend TerraCore IA activo",
-        "version": "1.3.0",
+        "version": "1.3.1",
         "normalizacion_imagen": "RGB PNG",
         "metodo_lineas": "gpt-image-2.5-sunburst",
         "metodo_conteo": "gpt-5.6-luna",
@@ -418,7 +424,6 @@ async def analyze_image(file: UploadFile = File(...)):
             optimize=False,
         )
 
-        # Validación final del PNG.
         try:
             comprobacion = Image.open(input_path)
             comprobacion.load()
@@ -464,7 +469,6 @@ async def analyze_image(file: UploadFile = File(...)):
 
         output_path.write_bytes(image_bytes)
 
-        # Validar salida generada.
         try:
             salida = Image.open(io.BytesIO(image_bytes))
             salida.load()
@@ -518,11 +522,9 @@ async def analyze_image(file: UploadFile = File(...)):
             "imagen_resultado_url": result_relative,
             "imagen_resultado_url_publica": url_publica(result_relative),
 
-            # Conteo
             "surcos_estimados": int(conteo["surcos_contados"]),
             "surcos_contados": int(conteo["surcos_contados"]),
 
-            # Porcentajes directos para que tu Streamlit los lea fácil
             "verde_pct": float(porcentajes["verde_pct"]),
             "rojo_pct": float(porcentajes["rojo_pct"]),
 
