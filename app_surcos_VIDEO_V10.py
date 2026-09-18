@@ -66,6 +66,72 @@ def tr(es, fr):
     return es if st.session_state.idioma_terrocore == "ES" else fr
 
 
+def tr_diag_texto(texto):
+    """Traduce únicamente textos del diagnóstico cuando el idioma es FR."""
+    if st.session_state.idioma_terrocore == "ES":
+        return str(texto or "")
+
+    t = str(texto or "").strip()
+    if not t:
+        return ""
+
+    exactos = {
+        "centro": "centre",
+        "izquierda": "gauche",
+        "derecha": "droite",
+        "medio": "moyen",
+        "media": "moyenne",
+        "alto": "élevé",
+        "alta": "élevée",
+        "bajo": "faible",
+        "baja": "faible",
+        "no determinado": "non déterminé",
+        "no determinada": "non déterminée",
+
+        "estrés hídrico localizado": "stress hydrique localisé",
+        "distribución irregular del riego": "distribution irrégulière de l’irrigation",
+        "fertilidad o materia orgánica desuniforme": "fertilité ou matière organique hétérogène",
+        "compactación o variación física del suelo": "compaction ou variation physique du sol",
+        "posible problema sanitario localizado": "possible problème phytosanitaire localisé",
+
+        "inspeccionar en campo los tramos rojos": "inspecter sur le terrain les sections rouges",
+        "comparar humedad y funcionamiento del riego entre zonas": "comparer l’humidité et le fonctionnement de l’irrigation entre les zones",
+        "tomar muestras de suelo separadas en zona afectada y zona sana": "prélever séparément des échantillons de sol dans la zone affectée et la zone saine",
+        "considerar análisis foliar para confirmar estado nutricional": "envisager une analyse foliaire pour confirmer l’état nutritionnel",
+        "revisar raíces y presencia de plagas o enfermedades": "vérifier les racines ainsi que la présence de ravageurs ou de maladies",
+
+        "Una fotografía por sí sola no permite afirmar qué nutriente falta. Nitrógeno, fósforo, potasio, magnesio, hierro u otros elementos pueden influir en el vigor, pero síntomas similares también pueden aparecer por falta o exceso de agua, salinidad, compactación, problemas de raíz, plagas o enfermedades. Para decidir una fertilización se recomienda confirmar con análisis de suelo y, de ser posible, análisis foliar.":
+        "Une photographie seule ne permet pas d’identifier avec certitude le nutriment manquant. L’azote, le phosphore, le potassium, le magnésium, le fer ou d’autres éléments peuvent influencer la vigueur, mais des symptômes similaires peuvent aussi être causés par un manque ou un excès d’eau, la salinité, la compaction, des problèmes racinaires, des ravageurs ou des maladies. Avant de décider d’une fertilisation, il est recommandé de confirmer par une analyse du sol et, si possible, une analyse foliaire.",
+
+        "Diagnóstico visual preliminar. No sustituye análisis de suelo, análisis foliar, revisión del riego ni diagnóstico agronómico en campo.":
+        "Diagnostic visuel préliminaire. Il ne remplace pas une analyse du sol, une analyse foliaire, une vérification de l’irrigation ni un diagnostic agronomique sur le terrain.",
+
+        "La mezcla de tramos verdes y rojos indica heterogeneidad en el vigor del viñedo. Puede existir un problema localizado de humedad, fertilidad o compactación.":
+        "Le mélange de sections vertes et rouges indique une hétérogénéité de la vigueur du vignoble. Il peut exister un problème localisé d’humidité, de fertilité ou de compaction.",
+    }
+
+    if t.lower() in exactos:
+        return exactos[t.lower()]
+    if t in exactos:
+        return exactos[t]
+
+    # Diagnóstico dinámico con zona al final.
+    prefijo = (
+        "Se observa una afectación visual media, con mezcla de tramos vigorosos "
+        "y tramos débiles o secos. La mayor afectación visual aparece en la zona "
+    )
+    if t.startswith(prefijo):
+        zona = t[len(prefijo):].rstrip(".")
+        zona_fr = exactos.get(zona.lower(), zona)
+        return (
+            "Une affectation visuelle moyenne est observée, avec un mélange de sections "
+            "vigoureuses et de sections faibles ou sèches. L’affectation visuelle la plus "
+            f"importante se situe dans la zone {zona_fr}."
+        )
+
+    return t
+
+
 def probar_openai():
     """
     Prueba únicamente la conexión con OpenAI.
@@ -5446,7 +5512,7 @@ if active_items:
                 with diag_col4:
                     st.metric(
                         tr("Nivel visual", "Niveau visuel"),
-                        str(
+                        tr_diag_texto(
                             item.get(
                                 "nivel_afectacion_visual",
                                 "No determinado"
@@ -5460,7 +5526,7 @@ if active_items:
                         "**Zone la plus touchée :** "
                     )
                     +
-                    str(
+                    tr_diag_texto(
                         item.get(
                             "zona_mas_afectada",
                             "No determinada"
@@ -5502,7 +5568,7 @@ if active_items:
                             "#### Diagnostic visuel"
                         )
                     )
-                    st.write(diagnostico_visual)
+                    st.write(tr_diag_texto(diagnostico_visual))
 
                 causas = item.get("causas_probables", []) or []
 
@@ -5515,7 +5581,7 @@ if active_items:
                     )
 
                     for causa in causas:
-                        st.markdown(f"- {causa}")
+                        st.markdown(f"- {tr_diag_texto(causa)}")
 
                 explicacion_nutrientes = str(
                     item.get("explicacion_nutrientes", "") or ""
@@ -5528,7 +5594,7 @@ if active_items:
                             "#### Sol et nutriments"
                         )
                     )
-                    st.write(explicacion_nutrientes)
+                    st.write(tr_diag_texto(explicacion_nutrientes))
 
                 recomendaciones = item.get(
                     "recomendaciones_iniciales",
@@ -5544,14 +5610,14 @@ if active_items:
                     )
 
                     for recomendacion in recomendaciones:
-                        st.markdown(f"- {recomendacion}")
+                        st.markdown(f"- {tr_diag_texto(recomendacion)}")
 
                 nota = str(
                     item.get("nota_diagnostico", "") or ""
                 ).strip()
 
                 if nota:
-                    st.info(nota)
+                    st.info(tr_diag_texto(nota))
 
 
     # ========================================================
@@ -5587,8 +5653,8 @@ if active_items:
                     tr(
                         f"**Zona más afectada:** {item.get('zona_mas_afectada', '—')}  |  "
                         f"**Nivel visual:** {item.get('nivel_afectacion_visual', '—')}",
-                        f"**Zone la plus touchée :** {item.get('zona_mas_afectada', '—')}  |  "
-                        f"**Niveau visuel :** {item.get('nivel_afectacion_visual', '—')}"
+                        f"**Zone la plus touchée :** {tr_diag_texto(item.get('zona_mas_afectada', '—'))}  |  "
+                        f"**Niveau visuel :** {tr_diag_texto(item.get('nivel_afectacion_visual', '—'))}"
                     )
                 )
 
