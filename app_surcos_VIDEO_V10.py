@@ -804,6 +804,8 @@ def obtener_o_crear_subcarpeta_drive(nombre):
         spaces="drive",
         fields="files(id,name)",
         pageSize=10,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
     ).execute()
 
     files = response.get("files", [])
@@ -820,6 +822,7 @@ def obtener_o_crear_subcarpeta_drive(nombre):
     created = drive_service.files().create(
         body=metadata,
         fields="id",
+        supportsAllDrives=True,
     ).execute()
 
     return created["id"]
@@ -852,6 +855,7 @@ def subir_bytes_google_drive(
         body=metadata,
         media_body=media,
         fields="id,name",
+        supportsAllDrives=True,
     ).execute()
 
     return creado["id"]
@@ -861,7 +865,8 @@ def descargar_archivo_google_drive(file_id):
     drive_service, _ = obtener_google_clients()
 
     request = drive_service.files().get_media(
-        fileId=str(file_id)
+        fileId=str(file_id),
+        supportsAllDrives=True,
     )
 
     buffer = io.BytesIO()
