@@ -18,6 +18,9 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks, savgol_filter
 from scipy.interpolate import UnivariateSpline
 from openai import OpenAI
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 
 # ============================================================
@@ -639,6 +642,523 @@ def crear_mascara_exclusion_ia(datos_ia, width, height):
 
     return mask
 
+
+
+
+# ============================================================
+# HISTORIAL PERSISTENTE - GOOGLE DRIVE + GOOGLE SHEETS
+# ============================================================
+
+HISTORIAL_SHEET_NAME = "HistorialTerroCore"
+
+HISTORIAL_HEADERS = [
+    "ID",
+    "Fecha",
+    "Nombre",
+    "ImagenOriginalFileID",
+    "ImagenProcesadaFileID",
+    "Surcos",
+    "VerdePct",
+    "RojoPct",
+    "AmarilloPct",
+    "NivelVisual",
+    "ZonaMasAfectada",
+    "DiagnosticoVisual",
+    "CausasProbables",
+    "ExplicacionNutrientes",
+    "Recomendaciones",
+    "NotaDiagnostico",
+]
+
+
+def _secret_text(nombre, default=""):
+    try:
+        if nombre in st.secrets:
+            return str(st.secrets[nombre]).strip()
+    except Exception:
+        pass
+    return str(default).strip()
+
+
+def _service_account_info():
+    """
+    Acepta cualquiera de estas dos formas en Streamlit Secrets:
+
+    [gcp_service_account]
+    type="service_account"
+    ...
+
+    o
+
+    GCP_SERVICE_ACCOUNT_JSON='{"type":"service_account", ...}'
+    """
+    try:
+        if "gcp_service_account" in st.secrets:
+            return dict(st.secrets["gcp_service_account"])
+    except Exception:
+        pass
+
+    raw = _secret_text("GCP_SERVICE_ACCOUNT_JSON")
+
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception as exc:
+            raise RuntimeError(
+                f"GCP_SERVICE_ACCOUNT_JSON no contiene JSON válido: {exc}"
+            )
+
+    return {}
+
+
+def historial_google_configurado():
+    return bool(
+        _service_account_info()
+        and _secret_text("GDRIVE_PARENT_FOLDER_ID")
+        and _secret_text("GSHEET_ID")
+    )
+
+
+@st.cache_resource(show_spinner=False)
+def _google_clients_cached(service_account_json, parent_folder_id, sheet_id):
+    """
+    Crea los clientes una sola vez por sesión de Streamlit.
+    """
+    info = json.loads(service_account_json)
+
+    scopes = [
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/spreadsheets",
+    ]
+
+    credentials = service_account.Credentials.from_service_account_info(
+        info,
+        scopes=scopes,
+    )
+
+    drive_service = build(
+        "drive",
+        "v3",
+        credentials=credentials,
+        cache_discovery=False,
+    )
+
+    sheets_service = build(
+        "sheets",
+        "v4",
+        credentials=credentials,
+        cache_discovery=False,
+    )
+
+    return drive_service, sheets_service
+
+
+def obtener_google_clients():
+    info = _service_account_info()
+
+    if not info:
+        raise RuntimeError(
+            "Falta la cuenta de servicio de Google en Streamlit Secrets."
+        )
+
+    parent_folder_id = _secret_text("GDRIVE_PARENT_FOLDER_ID")
+    sheet_id = _secret_text("GSHEET_ID")
+
+    if not parent_folder_id:
+        raise RuntimeError(
+            "Falta GDRIVE_PARENT_FOLDER_ID en Streamlit Secrets."
+        )
+
+    if not sheet_id:
+        raise RuntimeError(
+            "Falta GSHEET_ID en Streamlit Secrets."
+        )
+
+    return _google_clients_cached(
+        json.dumps(info, sort_keys=True),
+        parent_folder_id,
+        sheet_id,
+    )
+
+
+def _escapar_query_drive(valor):
+    return str(valor).replace("\\", "\\\\").replace("'", "\\'")
+
+
+def obtener_o_crear_subcarpeta_drive(nombre):
+    drive_service, _ = obtener_google_clients()
+
+    parent_id = _secret_text("GDRIVE_PARENT_FOLDER_ID")
+
+    nombre_q = _escapar_query_drive(nombre)
+
+    query = (
+        f"name = '{nombre_q}' "
+        f"and '{parent_id}' in parents "
+        "and mimeType = 'application/vnd.google-apps.folder' "
+        "and trashed = false"
+    )
+
+    response = drive_service.files().list(
+        q=query,
+        spaces="drive",
+        fields="files(id,name)",
+        pageSize=10,
+    ).execute()
+
+    files = response.get("files", [])
+
+    if files:
+        return files[0]["id"]
+
+    metadata = {
+        "name": nombre,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [parent_id],
+    }
+
+    created = drive_service.files().create(
+        body=metadata,
+        fields="id",
+    ).execute()
+
+    return created["id"]
+
+
+def subir_bytes_google_drive(
+    contenido,
+    nombre_archivo,
+    mime_type,
+    subcarpeta,
+):
+    drive_service, _ = obtener_google_clients()
+
+    folder_id = obtener_o_crear_subcarpeta_drive(
+        subcarpeta
+    )
+
+    media = MediaIoBaseUpload(
+        io.BytesIO(contenido),
+        mimetype=mime_type or "application/octet-stream",
+        resumable=False,
+    )
+
+    metadata = {
+        "name": nombre_archivo,
+        "parents": [folder_id],
+    }
+
+    creado = drive_service.files().create(
+        body=metadata,
+        media_body=media,
+        fields="id,name",
+    ).execute()
+
+    return creado["id"]
+
+
+def descargar_archivo_google_drive(file_id):
+    drive_service, _ = obtener_google_clients()
+
+    request = drive_service.files().get_media(
+        fileId=str(file_id)
+    )
+
+    buffer = io.BytesIO()
+
+    downloader = MediaIoBaseDownload(
+        buffer,
+        request
+    )
+
+    done = False
+
+    while not done:
+        _, done = downloader.next_chunk()
+
+    buffer.seek(0)
+
+    return buffer.getvalue()
+
+
+def _asegurar_hoja_historial():
+    _, sheets_service = obtener_google_clients()
+
+    spreadsheet_id = _secret_text("GSHEET_ID")
+
+    meta = sheets_service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets.properties"
+    ).execute()
+
+    nombres = [
+        s.get("properties", {}).get("title", "")
+        for s in meta.get("sheets", [])
+    ]
+
+    if HISTORIAL_SHEET_NAME not in nombres:
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "requests": [
+                    {
+                        "addSheet": {
+                            "properties": {
+                                "title": HISTORIAL_SHEET_NAME
+                            }
+                        }
+                    }
+                ]
+            }
+        ).execute()
+
+    rango_header = f"{HISTORIAL_SHEET_NAME}!A1:P1"
+
+    actual = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=rango_header,
+    ).execute().get("values", [])
+
+    if not actual or actual[0] != HISTORIAL_HEADERS:
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=rango_header,
+            valueInputOption="RAW",
+            body={
+                "values": [HISTORIAL_HEADERS]
+            },
+        ).execute()
+
+
+def guardar_registro_google_sheets(registro):
+    _, sheets_service = obtener_google_clients()
+
+    _asegurar_hoja_historial()
+
+    spreadsheet_id = _secret_text("GSHEET_ID")
+
+    row = [[
+        registro.get("id", ""),
+        registro.get("fecha", ""),
+        registro.get("nombre", ""),
+        registro.get("imagen_original_file_id", ""),
+        registro.get("imagen_procesada_file_id", ""),
+        int(registro.get("surcos", 0) or 0),
+        float(registro.get("verde_pct", 0.0) or 0.0),
+        float(registro.get("rojo_pct", 0.0) or 0.0),
+        float(registro.get("amarillo_pct", 0.0) or 0.0),
+        registro.get("nivel_visual", ""),
+        registro.get("zona_mas_afectada", ""),
+        registro.get("diagnostico_visual", ""),
+        json.dumps(
+            registro.get("causas_probables", []),
+            ensure_ascii=False
+        ),
+        registro.get("explicacion_nutrientes", ""),
+        json.dumps(
+            registro.get("recomendaciones", []),
+            ensure_ascii=False
+        ),
+        registro.get("nota_diagnostico", ""),
+    ]]
+
+    sheets_service.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=f"{HISTORIAL_SHEET_NAME}!A:P",
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body={"values": row},
+    ).execute()
+
+
+def _parse_lista_historial(valor):
+    if isinstance(valor, list):
+        return valor
+
+    texto = str(valor or "").strip()
+
+    if not texto:
+        return []
+
+    try:
+        parsed = json.loads(texto)
+        return parsed if isinstance(parsed, list) else [texto]
+    except Exception:
+        return [texto]
+
+
+def obtener_historial_google(limite=100):
+    _, sheets_service = obtener_google_clients()
+
+    _asegurar_hoja_historial()
+
+    spreadsheet_id = _secret_text("GSHEET_ID")
+
+    rows = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{HISTORIAL_SHEET_NAME}!A2:P",
+    ).execute().get("values", [])
+
+    registros = []
+
+    for row in rows:
+        row = list(row) + [""] * (16 - len(row))
+
+        registros.append({
+            "id": row[0],
+            "fecha": row[1],
+            "nombre": row[2],
+            "imagen_original_file_id": row[3],
+            "imagen_procesada_file_id": row[4],
+            "surcos": int(float(row[5] or 0)),
+            "verde_pct": float(row[6] or 0.0),
+            "rojo_pct": float(row[7] or 0.0),
+            "amarillo_pct": float(row[8] or 0.0),
+            "nivel_visual": row[9],
+            "zona_mas_afectada": row[10],
+            "diagnostico_visual": row[11],
+            "causas_probables": _parse_lista_historial(row[12]),
+            "explicacion_nutrientes": row[13],
+            "recomendaciones": _parse_lista_historial(row[14]),
+            "nota_diagnostico": row[15],
+        })
+
+    registros.reverse()
+
+    return registros[:max(1, int(limite))]
+
+
+def guardar_analisis_en_google(
+    uploaded_image,
+    backend_result,
+):
+    """
+    Guarda automáticamente:
+    - original en Drive/Originales
+    - procesada en Drive/Procesadas
+    - datos en Google Sheets
+    """
+    if not historial_google_configurado():
+        return False, "Historial de Google no configurado."
+
+    original_bytes = uploaded_image.getvalue()
+
+    original_file_id = subir_bytes_google_drive(
+        original_bytes,
+        uploaded_image.name,
+        uploaded_image.type or "image/jpeg",
+        "Originales",
+    )
+
+    annotated = backend_result.get("annotated")
+
+    if annotated is None:
+        raise RuntimeError(
+            "No existe imagen procesada para guardar."
+        )
+
+    ok_png, encoded_png = cv2.imencode(
+        ".png",
+        annotated
+    )
+
+    if not ok_png:
+        raise RuntimeError(
+            "No se pudo convertir la imagen procesada a PNG."
+        )
+
+    nombre_procesada = (
+        f"{Path(uploaded_image.name).stem}_procesada.png"
+    )
+
+    processed_file_id = subir_bytes_google_drive(
+        encoded_png.tobytes(),
+        nombre_procesada,
+        "image/png",
+        "Procesadas",
+    )
+
+    backend_data = backend_result.get("backend") or {}
+    analisis = (
+        backend_data.get("analisis", {})
+        if isinstance(backend_data, dict)
+        else {}
+    ) or {}
+
+    amarillo_pct = float(
+        analisis.get("amarillo_pct")
+        or (
+            backend_data.get("amarillo_pct")
+            if isinstance(backend_data, dict)
+            else 0.0
+        )
+        or 0.0
+    )
+
+    import uuid
+    from datetime import datetime, timezone
+
+    registro = {
+        "id": str(uuid.uuid4()),
+        "fecha": datetime.now(timezone.utc).isoformat(),
+        "nombre": uploaded_image.name,
+        "imagen_original_file_id": original_file_id,
+        "imagen_procesada_file_id": processed_file_id,
+        "surcos": int(
+            backend_result.get("count", 0)
+        ),
+        "verde_pct": float(
+            backend_result.get("green_pct", 0.0)
+        ),
+        "rojo_pct": float(
+            backend_result.get("red_pct", 0.0)
+        ),
+        "amarillo_pct": amarillo_pct,
+        "nivel_visual": str(
+            backend_result.get(
+                "nivel_afectacion_visual",
+                "No determinado"
+            )
+        ),
+        "zona_mas_afectada": str(
+            backend_result.get(
+                "zona_mas_afectada",
+                "No determinada"
+            )
+        ),
+        "diagnostico_visual": str(
+            backend_result.get(
+                "diagnostico_visual",
+                ""
+            )
+        ),
+        "causas_probables": backend_result.get(
+            "causas_probables",
+            []
+        ),
+        "explicacion_nutrientes": str(
+            backend_result.get(
+                "explicacion_nutrientes",
+                ""
+            )
+        ),
+        "recomendaciones": backend_result.get(
+            "recomendaciones_iniciales",
+            []
+        ),
+        "nota_diagnostico": str(
+            backend_result.get(
+                "nota_diagnostico",
+                ""
+            )
+        ),
+    }
+
+    guardar_registro_google_sheets(
+        registro
+    )
+
+    return True, registro
 
 
 # DISEÑO - COLOR VINO #722F37
@@ -5129,6 +5649,23 @@ with side_col:
                     if not ok_backend:
                         raise RuntimeError(str(backend_result))
 
+                    # ====================================================
+                    # GUARDADO AUTOMÁTICO EN GOOGLE DRIVE + SHEETS
+                    # Si falla, NO detiene el análisis actual.
+                    # ====================================================
+                    historial_google_ok = False
+                    historial_google_info = ""
+
+                    try:
+                        historial_google_ok, historial_google_info = (
+                            guardar_analisis_en_google(
+                                uploaded_image,
+                                backend_result
+                            )
+                        )
+                    except Exception as historial_exc:
+                        historial_google_info = str(historial_exc)
+
                     analyzed_images.append({
                         "id": f"{index}_{uploaded_image.name}",
                         "name": uploaded_image.name,
@@ -5139,6 +5676,8 @@ with side_col:
                         "annotated": backend_result["annotated"],
                         "ia_scene": backend_result.get("backend"),
                         "result_url": backend_result.get("result_url"),
+                        "historial_google_guardado": historial_google_ok,
+                        "historial_google_info": historial_google_info,
 
                         # Diagnóstico agronómico
                         "zona_mas_afectada": backend_result.get(
@@ -5681,3 +6220,351 @@ if active_items:
                 )
 
                 st.rerun()
+
+
+
+# ============================================================
+# HISTORIAL DE ANÁLISIS - GOOGLE DRIVE
+# ============================================================
+
+st.markdown("---")
+
+with st.expander(
+    tr(
+        "📂 Historial de análisis",
+        "📂 Historique des analyses"
+    ),
+    expanded=False
+):
+
+    if not historial_google_configurado():
+
+        st.info(
+            tr(
+                "El historial de Google Drive aún no está configurado.",
+                "L’historique Google Drive n’est pas encore configuré."
+            )
+        )
+
+    else:
+
+        try:
+            registros_historial = obtener_historial_google(
+                limite=100
+            )
+
+            if not registros_historial:
+
+                st.info(
+                    tr(
+                        "Todavía no hay análisis guardados.",
+                        "Aucune analyse enregistrée pour le moment."
+                    )
+                )
+
+            else:
+
+                filas_historial = []
+
+                for registro in registros_historial:
+                    filas_historial.append({
+                        tr("Fecha", "Date"):
+                            registro.get("fecha", ""),
+                        tr("Imagen", "Image"):
+                            registro.get("nombre", ""),
+                        tr("Surcos", "Rangs"):
+                            registro.get("surcos", 0),
+                        tr("Verde %", "Vert %"):
+                            registro.get("verde_pct", 0.0),
+                        tr("Rojo %", "Rouge %"):
+                            registro.get("rojo_pct", 0.0),
+                        tr("Amarillo %", "Jaune %"):
+                            registro.get("amarillo_pct", 0.0),
+                        tr(
+                            "Zona más afectada",
+                            "Zone la plus touchée"
+                        ):
+                            tr_diag_texto(
+                                registro.get(
+                                    "zona_mas_afectada",
+                                    "No determinada"
+                                )
+                            ),
+                        tr(
+                            "Nivel visual",
+                            "Niveau visuel"
+                        ):
+                            tr_diag_texto(
+                                registro.get(
+                                    "nivel_visual",
+                                    "No determinado"
+                                )
+                            ),
+                    })
+
+                st.dataframe(
+                    pd.DataFrame(
+                        filas_historial
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                seleccionado = st.selectbox(
+                    tr(
+                        "Selecciona un análisis para revisarlo",
+                        "Sélectionnez une analyse à consulter"
+                    ),
+                    options=list(
+                        range(
+                            len(registros_historial)
+                        )
+                    ),
+                    format_func=lambda i: (
+                        f"{registros_historial[i].get('fecha', '')} — "
+                        f"{registros_historial[i].get('nombre', '')}"
+                    ),
+                    key="historial_google_select",
+                )
+
+                registro = registros_historial[
+                    int(seleccionado)
+                ]
+
+                st.markdown(
+                    f"### {registro.get('nombre', tr('Imagen', 'Image'))}"
+                )
+
+                img_col1, img_col2 = st.columns(2)
+
+                with img_col1:
+                    st.markdown(
+                        tr(
+                            "**Imagen original**",
+                            "**Image originale**"
+                        )
+                    )
+
+                    original_id = str(
+                        registro.get(
+                            "imagen_original_file_id",
+                            ""
+                        )
+                    ).strip()
+
+                    if original_id:
+                        try:
+                            original_bytes = (
+                                descargar_archivo_google_drive(
+                                    original_id
+                                )
+                            )
+
+                            st.image(
+                                original_bytes,
+                                use_container_width=True,
+                            )
+                        except Exception as exc:
+                            st.warning(
+                                tr(
+                                    f"No se pudo abrir la imagen original: {exc}",
+                                    f"Impossible d’ouvrir l’image originale : {exc}"
+                                )
+                            )
+
+                with img_col2:
+                    st.markdown(
+                        tr(
+                            "**Imagen procesada**",
+                            "**Image traitée**"
+                        )
+                    )
+
+                    processed_id = str(
+                        registro.get(
+                            "imagen_procesada_file_id",
+                            ""
+                        )
+                    ).strip()
+
+                    if processed_id:
+                        try:
+                            processed_bytes = (
+                                descargar_archivo_google_drive(
+                                    processed_id
+                                )
+                            )
+
+                            st.image(
+                                processed_bytes,
+                                use_container_width=True,
+                            )
+                        except Exception as exc:
+                            st.warning(
+                                tr(
+                                    f"No se pudo abrir la imagen procesada: {exc}",
+                                    f"Impossible d’ouvrir l’image traitée : {exc}"
+                                )
+                            )
+
+                hm1, hm2, hm3, hm4 = st.columns(4)
+
+                with hm1:
+                    st.metric(
+                        tr("Surcos", "Rangs"),
+                        registro.get("surcos", 0),
+                    )
+
+                with hm2:
+                    st.metric(
+                        tr("Verde", "Vert"),
+                        f"{float(registro.get('verde_pct', 0) or 0):.1f}%",
+                    )
+
+                with hm3:
+                    st.metric(
+                        tr("Rojo", "Rouge"),
+                        f"{float(registro.get('rojo_pct', 0) or 0):.1f}%",
+                    )
+
+                with hm4:
+                    st.metric(
+                        tr("Amarillo", "Jaune"),
+                        f"{float(registro.get('amarillo_pct', 0) or 0):.1f}%",
+                    )
+
+                st.markdown(
+                    tr(
+                        "**Zona más afectada:** ",
+                        "**Zone la plus touchée :** "
+                    )
+                    +
+                    tr_diag_texto(
+                        registro.get(
+                            "zona_mas_afectada",
+                            "No determinada"
+                        )
+                    ).capitalize()
+                )
+
+                st.markdown(
+                    tr(
+                        "**Nivel visual:** ",
+                        "**Niveau visuel :** "
+                    )
+                    +
+                    tr_diag_texto(
+                        registro.get(
+                            "nivel_visual",
+                            "No determinado"
+                        )
+                    ).capitalize()
+                )
+
+                diagnostico_hist = str(
+                    registro.get(
+                        "diagnostico_visual",
+                        ""
+                    )
+                    or ""
+                ).strip()
+
+                if diagnostico_hist:
+                    st.markdown(
+                        tr(
+                            "#### Diagnóstico visual",
+                            "#### Diagnostic visuel"
+                        )
+                    )
+                    st.write(
+                        tr_diag_texto(
+                            diagnostico_hist
+                        )
+                    )
+
+                causas_hist = registro.get(
+                    "causas_probables",
+                    []
+                ) or []
+
+                if causas_hist:
+                    st.markdown(
+                        tr(
+                            "#### Causas probables",
+                            "#### Causes probables"
+                        )
+                    )
+
+                    for causa in causas_hist:
+                        st.markdown(
+                            f"- {tr_diag_texto(causa)}"
+                        )
+
+                nutrientes_hist = str(
+                    registro.get(
+                        "explicacion_nutrientes",
+                        ""
+                    )
+                    or ""
+                ).strip()
+
+                if nutrientes_hist:
+                    st.markdown(
+                        tr(
+                            "#### Suelo y nutrientes",
+                            "#### Sol et nutriments"
+                        )
+                    )
+
+                    st.write(
+                        tr_diag_texto(
+                            nutrientes_hist
+                        )
+                    )
+
+                recomendaciones_hist = registro.get(
+                    "recomendaciones",
+                    []
+                ) or []
+
+                if recomendaciones_hist:
+                    st.markdown(
+                        tr(
+                            "#### Recomendaciones iniciales",
+                            "#### Recommandations initiales"
+                        )
+                    )
+
+                    for rec in recomendaciones_hist:
+                        st.markdown(
+                            f"- {tr_diag_texto(rec)}"
+                        )
+
+                nota_hist = str(
+                    registro.get(
+                        "nota_diagnostico",
+                        ""
+                    )
+                    or ""
+                ).strip()
+
+                if nota_hist:
+                    st.info(
+                        tr_diag_texto(
+                            nota_hist
+                        )
+                    )
+
+        except Exception as historial_exc:
+
+            st.error(
+                tr(
+                    "No se pudo cargar el historial de Google Drive.",
+                    "Impossible de charger l’historique Google Drive."
+                )
+            )
+
+            st.code(
+                str(historial_exc)
+            )
+
