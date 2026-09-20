@@ -10,3 +10,6 @@ requests
 python-dotenv
 google-api-python-client
 google-auth
+fastapi
+uvicorn[standard]
+python-multipart
