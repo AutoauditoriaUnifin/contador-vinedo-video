@@ -992,6 +992,32 @@ def _parse_lista_historial(valor):
         return [texto]
 
 
+
+def _float_historial(valor):
+    """
+    Convierte números del historial aunque Google Sheets los devuelva
+    con coma decimal, por ejemplo: '67,7' -> 67.7
+    """
+    if valor is None or valor == "":
+        return 0.0
+
+    if isinstance(valor, (int, float)):
+        return float(valor)
+
+    texto = str(valor).strip()
+    texto = texto.replace("%", "").replace(" ", "")
+
+    # Si viene en formato español: 67,7
+    if "," in texto and "." not in texto:
+        texto = texto.replace(",", ".")
+    # Si viniera 1.234,56
+    elif "," in texto and "." in texto:
+        if texto.rfind(",") > texto.rfind("."):
+            texto = texto.replace(".", "").replace(",", ".")
+
+    return float(texto)
+
+
 def obtener_historial_google(limite=100):
     _, sheets_service = obtener_google_clients()
 
@@ -1016,9 +1042,9 @@ def obtener_historial_google(limite=100):
             "imagen_original_file_id": row[3],
             "imagen_procesada_file_id": row[4],
             "surcos": int(float(row[5] or 0)),
-            "verde_pct": float(row[6] or 0.0),
-            "rojo_pct": float(row[7] or 0.0),
-            "amarillo_pct": float(row[8] or 0.0),
+            "verde_pct": _float_historial(row[6]),
+            "rojo_pct": _float_historial(row[7]),
+            "amarillo_pct": _float_historial(row[8]),
             "nivel_visual": row[9],
             "zona_mas_afectada": row[10],
             "diagnostico_visual": row[11],
