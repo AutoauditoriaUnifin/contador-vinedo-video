@@ -6309,8 +6309,6 @@ with st.expander(
                             registro.get("verde_pct", 0.0),
                         tr("Rojo %", "Rouge %"):
                             registro.get("rojo_pct", 0.0),
-                        tr("Amarillo %", "Jaune %"):
-                            registro.get("amarillo_pct", 0.0),
                         tr(
                             "Zona más afectada",
                             "Zone la plus touchée"
@@ -6438,7 +6436,7 @@ with st.expander(
                                 )
                             )
 
-                hm1, hm2, hm3, hm4 = st.columns(4)
+                hm1, hm2, hm3 = st.columns(3)
 
                 with hm1:
                     st.metric(
@@ -6456,12 +6454,6 @@ with st.expander(
                     st.metric(
                         tr("Rojo", "Rouge"),
                         f"{float(registro.get('rojo_pct', 0) or 0):.1f}%",
-                    )
-
-                with hm4:
-                    st.metric(
-                        tr("Amarillo", "Jaune"),
-                        f"{float(registro.get('amarillo_pct', 0) or 0):.1f}%",
                     )
 
                 st.markdown(
