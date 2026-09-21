@@ -1,7 +1,3 @@
-import cv2
-import numpy as np
-from scipy.ndimage import gaussian_filter1d
-from scipy.signal import find_peaks
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -49,7 +45,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI(
     title="TerraCore IA",
-    version="1.4.2",
+    version="1.4.0",
     description=(
         "Normaliza la imagen, dibuja líneas de surcos con GPT Image, "
         "cuenta los surcos y calcula porcentaje verde/rojo."
@@ -180,53 +176,35 @@ def normalizar_imagen(raw: bytes) -> Image.Image:
 def vineyard_prompt() -> str:
     return """
 Edit the provided aerial vineyard photo while preserving the original photograph,
-the same framing, camera angle, parcel layout, vineyard geometry, and visible roads.
+same framing, camera angle, lighting, vineyard geometry, and parcel boundaries.
 
 GOAL:
 Overlay guide lines that follow the REAL vineyard rows as accurately as possible.
 
-MAIN INSTRUCTIONS:
+INSTRUCTIONS:
 - Draw exactly ONE thin smooth guide line centered on EACH true vineyard row.
-- Each line must follow the real row shape from one end of the row to the other.
-- The line must stay on the row, not between rows.
-- Do not invent rows.
-- Do not duplicate rows.
-- Do not draw on roads, bare lanes, borders, roofs, vehicles, shadows, buildings,
-  patios, large trees, or non-vineyard areas.
-- Keep the original photograph unchanged except for the thin overlay lines.
+- Each line must follow the real row shape, including curves or small deviations.
+- Use BRIGHT GREEN on portions of a row where vegetation is visibly present.
+- Use BRIGHT RED only on portions of that SAME row where plants are visibly missing,
+  dry, interrupted, or absent.
+- Green and red portions belonging to the same physical row must remain aligned
+  as one continuous row path.
+- Do not create duplicate parallel lines on the same vineyard row.
+- Do not invent extra vineyard rows.
+- Do not draw lines in the spaces between rows.
+- Do not draw on roads, perimeter lanes, roofs, buildings, patios, large trees,
+  shadows, parking areas, or neighboring non-vineyard zones.
+- Keep the original photograph visible and unchanged except for the thin overlay lines.
 - Do not fill areas.
 - Do not add decorative elements.
-
-COLOR RULES:
-- Use BRIGHT GREEN only on row segments where vegetation is clearly present and active.
-- Use BRIGHT RED on row segments where vegetation is weak, sparse, interrupted,
-  dry, missing, or absent.
-- A single physical row may contain both green and red segments.
-- Green and red segments of the same row must stay aligned as one continuous row path.
-
-IMPORTANT RED RULES:
-Use RED more aggressively whenever the row segment shows one or more of these conditions:
-- visible brown or beige gaps
-- exposed soil in the row center
-- sparse vegetation
-- discontinuous or interrupted plants
-- missing plants
-- weak canopy
-- dry-looking sections
-- long or short empty gaps
-
-IMPORTANT DECISION RULE:
-- If a segment is doubtful between green and red, prefer RED.
-- Do NOT leave mostly dry or weak sections in green.
-- There should be noticeable red segments wherever the row is incomplete or dry.
+- DO NOT add labels, text, or numbers.
+- If a row is uncertain, omit it instead of inventing it.
 
 STYLE:
 - Thin clean overlay lines.
 - Bright saturated green and bright saturated red so the overlay is easy to measure.
 - Professional agronomic review style.
 - Preserve as much original image detail as possible.
-- Do NOT add labels, text, or numbers.
-- If a row is uncertain, omit it instead of inventing it.
 """
 
 
@@ -234,756 +212,84 @@ STYLE:
 # CONTEO DE SURCOS EN LA IMAGEN YA MARCADA
 # ============================================================
 
-def _v33_mascara_verde(bgr):
-    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
-    r = rgb[:, :, 0]
-    g = rgb[:, :, 1]
-    b = rgb[:, :, 2]
-
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    hh, ss, vv = cv2.split(hsv)
-
-    exg = 2.0 * g - r - b
-    ngrdi = (g - r) / (g + r + 1e-6)
-
-    mask = (
-        (exg > 7.0)
-        & (ngrdi > -0.015)
-        & (hh >= 21)
-        & (hh <= 108)
-        & (ss >= 16)
-        & (vv >= 22)
-        & (g >= r * 0.875)
-        & (g >= b * 0.875)
-    ).astype(np.uint8) * 255
-
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_OPEN,
-        np.ones((2, 2), np.uint8),
-        iterations=1,
-    )
-    return mask
-
-
-def _v33_angulo_surcos(mask):
-    h, w = mask.shape
-
-    x0, x1 = int(w * 0.12), int(w * 0.88)
-    y0, y1 = int(h * 0.12), int(h * 0.90)
-
-    roi = mask[y0:y1, x0:x1]
-    edges = cv2.Canny(roi, 30, 100)
-
-    lines = cv2.HoughLinesP(
-        edges,
-        1,
-        np.pi / 180,
-        threshold=45,
-        minLineLength=max(45, int(h * 0.08)),
-        maxLineGap=18,
-    )
-
-    if lines is None:
-        return 90.0
-
-    vals = []
-
-    for x1l, y1l, x2l, y2l in np.asarray(lines).reshape(-1, 4):
-        dx = float(x2l - x1l)
-        dy = float(y2l - y1l)
-        length = np.hypot(dx, dy)
-
-        if length < 35:
-            continue
-
-        angle = np.degrees(np.arctan2(dy, dx))
-
-        while angle < 0:
-            angle += 180
-        while angle >= 180:
-            angle -= 180
-
-        if 55 <= angle <= 125:
-            vals.append((angle, length))
-
-    if not vals:
-        return 90.0
-
-    angles = np.array([v[0] for v in vals])
-    weights = np.array([v[1] for v in vals])
-
-    bins = np.arange(55, 126, 2)
-    hist, edges_b = np.histogram(
-        angles,
-        bins=bins,
-        weights=weights,
-    )
-
-    i = int(np.argmax(hist))
-    lo = edges_b[i]
-    hi = edges_b[i + 1]
-
-    sel = (angles >= lo) & (angles < hi)
-
-    if np.any(sel):
-        return float(
-            np.average(
-                angles[sel],
-                weights=weights[sel],
-            )
-        )
-
-    return float(np.median(angles))
-
-
-def _v33_rotar(img, angle, interpolation=cv2.INTER_LINEAR):
-    h, w = img.shape[:2]
-    centro = (w / 2.0, h / 2.0)
-    rot_deg = 90.0 - angle
-
-    M = cv2.getRotationMatrix2D(
-        centro,
-        rot_deg,
-        1.0,
-    )
-
-    out = cv2.warpAffine(
-        img,
-        M,
-        (w, h),
-        flags=interpolation,
-        borderMode=(
-            cv2.BORDER_REFLECT
-            if interpolation != cv2.INTER_NEAREST
-            else cv2.BORDER_CONSTANT
-        ),
-    )
-
-    return out
-
-
-def _v33_limites_verticales(mask):
-    h, w = mask.shape
-
-    density = (
-        (mask > 0)
-        .mean(axis=1)
-        .astype(np.float32)
-    )
-
-    density = gaussian_filter1d(
-        density,
-        sigma=max(7, h / 100),
-    )
-
-    top_range = np.arange(
-        int(h * 0.05),
-        int(h * 0.48),
-    )
-
-    bottom_range = np.arange(
-        int(h * 0.55),
-        int(h * 0.95),
-    )
-
-    if len(top_range) == 0 or len(bottom_range) == 0:
-        return int(h * 0.14), int(h * 0.88)
-
-    y_top_road = int(
-        top_range[
-            np.argmin(density[top_range])
-        ]
-    )
-
-    y_bottom_road = int(
-        bottom_range[
-            np.argmin(density[bottom_range])
-        ]
-    )
-
-    inset = max(8, int(h * 0.01))
-
-    y0 = y_top_road + inset
-    y1 = y_bottom_road - inset
-
-    if y1 - y0 < h * 0.36:
-        y0 = int(h * 0.14)
-        y1 = int(h * 0.88)
-
-    return max(0, y0), min(h - 1, y1)
-
-
-def _v33_estimar_periodo(profile):
-    p = profile.astype(np.float64)
-    p -= np.mean(p)
-
-    if np.std(p) < 1e-7:
-        return 20.0
-
-    ac = np.correlate(
-        p,
-        p,
-        mode="full",
-    )
-
-    ac = ac[len(p) - 1:]
-
-    width = len(profile)
-    a = max(8, int(width * 0.006))
-    b = min(
-        int(width * 0.03),
-        len(ac) - 1,
-    )
-
-    if b <= a:
-        return 20.0
-
-    peaks, _ = find_peaks(
-        ac[a:b + 1]
-    )
-
-    if len(peaks) == 0:
-        return max(
-            16.0,
-            width / 70.0,
-        )
-
-    vals = ac[a:b + 1][peaks]
-
-    lag = float(
-        a + peaks[np.argmax(vals)]
-    )
-
-    if lag < width / 85.0:
-        lag *= 2.0
-
-    return float(
-        np.clip(
-            lag,
-            13.0,
-            35.0,
-        )
-    )
-
-
-def _v33_detectar_limites_laterales(mask, y0, y1):
-    h, w = mask.shape
-
-    zone = (
-        (mask[y0:y1] > 0)
-        .astype(np.float32)
-    )
-
-    density = zone.mean(axis=0)
-
-    density = gaussian_filter1d(
-        density,
-        sigma=max(3.0, w / 450.0),
-    )
-
-    p20 = float(
-        np.percentile(density, 20)
-    )
-
-    p65 = float(
-        np.percentile(density, 65)
-    )
-
-    threshold = (
-        p20
-        + 0.22 * max(
-            p65 - p20,
-            1e-6,
-        )
-    )
-
-    low = density < threshold
-
-    bands = []
-    i = 0
-
-    while i < w:
-        if not low[i]:
-            i += 1
-            continue
-
-        j = i + 1
-
-        while j < w and low[j]:
-            j += 1
-
-        width_band = j - i
-
-        if width_band >= max(
-            5,
-            int(w * 0.004),
-        ):
-            bands.append(
-                (i, j - 1, width_band)
-            )
-
-        i = j
-
-    center = w / 2.0
-
-    left_candidates = [
-        b
-        for b in bands
-        if b[1] < center
-        and b[1] > w * 0.03
-    ]
-
-    right_candidates = [
-        b
-        for b in bands
-        if b[0] > center
-        and b[0] < w * 0.97
-    ]
-
-    if left_candidates:
-        left_band = max(
-            left_candidates,
-            key=lambda b:
-                b[2] * 3.0
-                - abs(center - b[1]) * 0.012,
-        )
-        x0 = int(
-            left_band[1]
-            + max(3, w * 0.003)
-        )
-    else:
-        x0 = int(w * 0.08)
-
-    if right_candidates:
-        right_band = max(
-            right_candidates,
-            key=lambda b:
-                b[2] * 3.0
-                - abs(b[0] - center) * 0.012,
-        )
-        x1 = int(
-            right_band[0]
-            - max(3, w * 0.003)
-        )
-    else:
-        x1 = int(w * 0.92)
-
-    if x1 - x0 < w * 0.35:
-        x0 = int(w * 0.08)
-        x1 = int(w * 0.92)
-
-    return (
-        max(0, x0),
-        min(w - 1, x1),
-    )
-
-
-def _v33_semillas_surcos(mask, y0, y1):
-    """
-    Lógica V3.3 anterior:
-    estima el espaciado físico de las hileras usando varios
-    cortes horizontales y genera una sola semilla por surco.
-    """
-    x0, x1 = _v33_detectar_limites_laterales(
-        mask,
-        y0,
-        y1,
-    )
-
-    zone = (
-        (mask[y0:y1, x0:x1] > 0)
-        .astype(np.float32)
-    )
-
-    height, width = zone.shape
-
-    if width < 30 or height < 30:
-        return (
-            np.array([], dtype=np.int32),
-            20.0,
-            int(x0),
-            int(x1),
-        )
-
-    profiles = []
-    periods = []
-    contrasts = []
-
-    centers = np.linspace(
-        0.12,
-        0.88,
-        9,
-    )
-
-    band_h = max(
-        12,
-        int(height * 0.11),
-    )
-
-    for frac in centers:
-        yc = int(
-            round(
-                frac * (height - 1)
-            )
-        )
-
-        a = max(
-            0,
-            yc - band_h // 2,
-        )
-
-        b = min(
-            height,
-            yc + band_h // 2 + 1,
-        )
-
-        band = zone[a:b]
-
-        if band.size == 0:
-            continue
-
-        profile = band.mean(axis=0)
-
-        profile = gaussian_filter1d(
-            profile,
-            sigma=1.15,
-        )
-
-        period = _v33_estimar_periodo(
-            profile
-        )
-
-        period = float(
-            np.clip(
-                period,
-                9.0,
-                40.0,
-            )
-        )
-
-        profiles.append(profile)
-        periods.append(period)
-        contrasts.append(
-            float(np.std(profile))
-        )
-
-    if not profiles:
-        return (
-            np.array([], dtype=np.int32),
-            20.0,
-            int(x0),
-            int(x1),
-        )
-
-    spacing_candidates = []
-
-    for profile, p0 in zip(
-        profiles,
-        periods,
-    ):
-        peaks, _ = find_peaks(
-            profile,
-            distance=max(
-                5,
-                int(p0 * 0.45),
-            ),
-            prominence=max(
-                0.003,
-                float(profile.max()) * 0.01,
-            ),
-            height=max(
-                0.006,
-                float(profile.max()) * 0.018,
-            ),
-        )
-
-        if len(peaks) >= 5:
-            diffs = np.diff(
-                peaks.astype(np.float32)
-            )
-
-            good = diffs[
-                (diffs >= 8.0)
-                & (diffs <= 42.0)
-            ]
-
-            if len(good):
-                med = float(
-                    np.median(good)
-                )
-
-                near = good[
-                    (good > med * 0.62)
-                    & (good < med * 1.38)
-                ]
-
-                if len(near):
-                    spacing_candidates.extend(
-                        near.tolist()
-                    )
-
-    if spacing_candidates:
-        spacing = float(
-            np.median(
-                spacing_candidates
-            )
-        )
-    else:
-        spacing = float(
-            np.median(periods)
-        )
-
-    spacing = float(
-        np.clip(
-            spacing,
-            9.0,
-            36.0,
-        )
-    )
-
-    half = spacing / 2.0
-
-    if half >= 8.0:
-        score_full = 0.0
-        score_half = 0.0
-
-        for profile in profiles:
-            for candidate, bucket in [
-                (spacing, "full"),
-                (half, "half"),
-            ]:
-                best = -1.0
-
-                phase_steps = max(
-                    10,
-                    int(round(candidate * 1.5)),
-                )
-
-                for phase in np.linspace(
-                    0,
-                    candidate,
-                    phase_steps,
-                    endpoint=False,
-                ):
-                    xs = np.arange(
-                        phase,
-                        len(profile),
-                        candidate,
-                    )
-
-                    if len(xs) < 4:
-                        continue
-
-                    values = []
-
-                    for x in xs:
-                        xi = int(round(x))
-                        a = max(0, xi - 2)
-                        b = min(
-                            len(profile),
-                            xi + 3,
-                        )
-
-                        if b > a:
-                            values.append(
-                                float(
-                                    profile[a:b].mean()
-                                )
-                            )
-
-                    if values:
-                        best = max(
-                            best,
-                            float(np.mean(values)),
-                        )
-
-                if bucket == "full":
-                    score_full += max(best, 0.0)
-                else:
-                    score_half += max(best, 0.0)
-
-        # IMPORTANTE:
-        # El V3.3 original probaba el medio período.
-        # Para conteo físico evitamos dividir por 2 salvo que
-        # la evidencia sea claramente superior.
-        if score_half >= score_full * 1.10:
-            spacing = half
-
-    spacing = float(
-        np.clip(
-            spacing,
-            8.0,
-            36.0,
-        )
-    )
-
-    best_profile_index = int(
-        np.argmax(
-            np.asarray(
-                contrasts,
-                dtype=np.float32,
-            )
-        )
-    )
-
-    ref_profile = profiles[
-        best_profile_index
-    ]
-
-    best_phase = 0.0
-    best_score = -1e9
-
-    phase_steps = max(
-        18,
-        int(round(spacing * 3)),
-    )
-
-    for phase in np.linspace(
-        0,
-        spacing,
-        phase_steps,
-        endpoint=False,
-    ):
-        xs = np.arange(
-            phase,
-            width,
-            spacing,
-        )
-
-        if len(xs) < 4:
-            continue
-
-        values = []
-
-        for x in xs:
-            xi = int(round(x))
-            a = max(0, xi - 2)
-            b = min(
-                width,
-                xi + 3,
-            )
-
-            if b > a:
-                values.append(
-                    float(
-                        ref_profile[a:b].mean()
-                    )
-                )
-
-        if not values:
-            continue
-
-        score = float(
-            np.mean(values)
-        )
-
-        if score > best_score:
-            best_score = score
-            best_phase = float(phase)
-
-    local_seeds = np.arange(
-        best_phase,
-        width,
-        spacing,
-        dtype=np.float32,
-    )
-
-    edge_margin = max(
-        1.0,
-        spacing * 0.08,
-    )
-
-    local_seeds = local_seeds[
-        (local_seeds >= edge_margin)
-        & (
-            local_seeds
-            <= width - 1 - edge_margin
-        )
-    ]
-
-    return (
-        np.rint(
-            local_seeds + x0
-        ).astype(np.int32),
-        float(spacing),
-        int(x0),
-        int(x1),
-    )
-
-
 def contar_surcos_con_vision(image_bytes: bytes) -> dict:
     """
-    CONTEO V3.3 RESTAURADO.
-
-    Aunque conserva el nombre de la función para no cambiar
-    el resto del backend, ya NO usa otro modelo de IA para contar.
-
-    Cuenta la estructura periódica de las hileras físicas directamente
-    sobre la fotografía ORIGINAL.
+    Cuenta las trayectorias marcadas en la imagen final.
+    Un mismo surco puede contener tramos verdes y rojos.
     """
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+    data_url = f"data:image/png;base64,{image_b64}"
+
+    prompt = """
+Observa cuidadosamente esta imagen aérea de un viñedo YA MARCADA con líneas
+verdes y rojas.
+
+Tu tarea es contar únicamente los SURCOS MARCADOS.
+
+REGLAS:
+- Cuenta cada trayectoria o hilera física una sola vez.
+- Una hilera puede tener segmentos verdes y rojos.
+- Si los segmentos están alineados sobre la misma trayectoria, cuentan como UN solo surco.
+- NO cuentes segmentos individuales.
+- NO cuentes bordes de caminos, techos, árboles, sombras ni elementos originales de la foto.
+- NO cuentes dos veces una línea que representa la misma hilera.
+- Sigue visualmente cada trayectoria desde un extremo hasta el otro antes de sumar.
+- Si una línea se interrumpe por un tramo seco y continúa en la misma alineación,
+  sigue siendo el mismo surco.
+- Cuenta solamente las hileras que tienen una línea de guía visible.
+
+Devuelve SOLO JSON válido con exactamente esta estructura:
+
+{
+  "surcos_contados": 0,
+  "confianza": "alta",
+  "observacion": "breve explicación"
+}
+
+Para "confianza" usa solamente:
+"alta", "media" o "baja".
+"""
+
+    response = client.responses.create(
+        model="gpt-5.6-luna",
+        reasoning={"effort": "medium"},
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": prompt,
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": data_url,
+                        "detail": "high",
+                    },
+                ],
+            }
+        ],
+    )
+
+    data = limpiar_json(getattr(response, "output_text", "") or "")
+
     try:
-        pil = Image.open(
-            io.BytesIO(image_bytes)
-        ).convert("RGB")
+        surcos = int(data.get("surcos_contados", 0))
+    except Exception:
+        surcos = 0
 
-        bgr = cv2.cvtColor(
-            np.asarray(pil),
-            cv2.COLOR_RGB2BGR,
-        )
+    surcos = max(0, surcos)
 
-        mask0 = _v33_mascara_verde(
-            bgr
-        )
+    confianza = str(data.get("confianza", "media")).lower().strip()
 
-        angle = _v33_angulo_surcos(
-            mask0
-        )
+    if confianza not in {"alta", "media", "baja"}:
+        confianza = "media"
 
-        rot_mask = _v33_rotar(
-            mask0,
-            angle,
-            interpolation=cv2.INTER_NEAREST,
-        )
-
-        y0, y1 = _v33_limites_verticales(
-            rot_mask
-        )
-
-        seeds, spacing, x0, x1 = (
-            _v33_semillas_surcos(
-                rot_mask,
-                y0,
-                y1,
-            )
-        )
-
-        count = int(len(seeds))
-
-        if count < 3:
-            raise RuntimeError(
-                "No se detectaron suficientes hileras."
-            )
-
-        return {
-            "surcos_contados": count,
-            "confianza": "alta",
-            "observacion": (
-                f"Conteo V3.3 por espaciado físico. "
-                f"Separación media aproximada: {spacing:.1f}px. "
-                f"Ángulo aproximado: {angle:.1f}°."
-            ),
-        }
-
-    except Exception as exc:
-        return {
-            "surcos_contados": 0,
-            "confianza": "baja",
-            "observacion": (
-                "No se pudo completar el conteo V3.3: "
-                + str(exc)
-            ),
-        }
+    return {
+        "surcos_contados": surcos,
+        "confianza": confianza,
+        "observacion": str(data.get("observacion", "")).strip(),
+    }
 
 
 # ============================================================
@@ -1281,10 +587,10 @@ def root():
     return {
         "ok": True,
         "mensaje": "Backend TerraCore IA activo",
-        "version": "1.4.5-v33-count",
+        "version": "1.4.0",
         "normalizacion_imagen": "RGB PNG",
         "metodo_lineas": "gpt-image-2.5-sunburst",
-        "metodo_conteo": "V3.3 espaciado físico de hileras",
+        "metodo_conteo": "gpt-5.6-luna",
         "porcentajes": "píxeles brillantes del overlay verde/rojo",
         "docs": "/docs",
     }
@@ -1380,15 +686,12 @@ async def analyze_image(file: UploadFile = File(...)):
             )
 
         # --------------------------------------------------------
-        # 2. CONTAR SURCOS CON V3.3 SOBRE LA FOTO ORIGINAL
+        # 2. CONTAR SURCOS CON VISIÓN
         # --------------------------------------------------------
         conteo_error = None
 
         try:
-            original_bytes_conteo = input_path.read_bytes()
-            conteo = contar_surcos_con_vision(
-                original_bytes_conteo
-            )
+            conteo = contar_surcos_con_vision(image_bytes)
         except Exception as exc:
             conteo = {
                 "surcos_contados": 0,
