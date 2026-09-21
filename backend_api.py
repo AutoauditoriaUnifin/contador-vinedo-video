@@ -45,7 +45,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI(
     title="TerraCore IA",
-    version="1.4.0",
+    version="1.4.2-conteo-verificado",
     description=(
         "Normaliza la imagen, dibuja líneas de surcos con GPT Image, "
         "cuenta los surcos y calcula porcentaje verde/rojo."
@@ -176,35 +176,114 @@ def normalizar_imagen(raw: bytes) -> Image.Image:
 def vineyard_prompt() -> str:
     return """
 Edit the provided aerial vineyard photo while preserving the original photograph,
-same framing, camera angle, lighting, vineyard geometry, and parcel boundaries.
+the same framing, camera angle, lighting, vineyard geometry, and parcel boundaries.
 
 GOAL:
-Overlay guide lines that follow the REAL vineyard rows as accurately as possible.
+Overlay exactly ONE thin guide line centered on EACH true vineyard row.
 
-INSTRUCTIONS:
-- Draw exactly ONE thin smooth guide line centered on EACH true vineyard row.
-- Each line must follow the real row shape, including curves or small deviations.
-- Use BRIGHT GREEN on portions of a row where vegetation is visibly present.
-- Use BRIGHT RED only on portions of that SAME row where plants are visibly missing,
-  dry, interrupted, or absent.
-- Green and red portions belonging to the same physical row must remain aligned
-  as one continuous row path.
-- Do not create duplicate parallel lines on the same vineyard row.
-- Do not invent extra vineyard rows.
-- Do not draw lines in the spaces between rows.
-- Do not draw on roads, perimeter lanes, roofs, buildings, patios, large trees,
-  shadows, parking areas, or neighboring non-vineyard zones.
-- Keep the original photograph visible and unchanged except for the thin overlay lines.
-- Do not fill areas.
-- Do not add decorative elements.
-- DO NOT add labels, text, or numbers.
-- If a row is uncertain, omit it instead of inventing it.
+IMPORTANT:
+The row-counting logic will run AFTER this image is generated.
+Therefore, do NOT add extra lines, duplicate lines, decorative marks, points,
+arrows, labels, numbers, or any other overlay that could be mistaken for a vineyard row.
+
+ROW GEOMETRY:
+- Draw exactly ONE thin smooth guide trajectory for EACH true physical vineyard row.
+- Follow the real row from one end to the other.
+- Keep the line centered on the actual vineyard row.
+- Follow curves and small deviations in the real row.
+- Do not duplicate a row.
+- Do not invent rows.
+- Do not draw between rows.
+- Do not draw on roads, perimeter lanes, buildings, roofs, patios, vehicles,
+  shadows, large trees, or neighboring non-vineyard areas.
+- If a row passes through a dry or missing section, keep following the SAME row.
+- A dry gap does NOT mean the row stops.
+
+COLOR CLASSIFICATION — CRITICAL:
+
+GREEN means:
+CLEARLY LIVING VINE VEGETATION IS PRESENT ON THAT EXACT ROW SEGMENT.
+
+Use BRIGHT GREEN ONLY when:
+- vine canopy is visibly present,
+- vegetation is clearly alive,
+- vegetation is sufficiently continuous,
+- the segment is not mostly bare soil,
+- the segment is not predominantly brown, beige, dry, weak, or empty.
+
+RED means:
+THE PHYSICAL VINEYARD ROW EXISTS, BUT THAT SEGMENT IS DRY, MISSING, WEAK,
+INTERRUPTED, OR HAS LITTLE/NO LIVING VINE VEGETATION.
+
+Use BRIGHT RED when:
+- plants are missing,
+- there is a visible gap in the row,
+- exposed soil appears where vine canopy should be,
+- the row is mostly brown or beige,
+- the vegetation is sparse,
+- the vegetation is clearly weaker than neighboring healthy row segments,
+- the row is interrupted,
+- the segment looks dry or dead,
+- only isolated small green spots exist but the overall segment is bare or dry.
+
+VERY IMPORTANT COLOR RULE:
+DO NOT USE GREEN AS THE DEFAULT COLOR.
+
+Before coloring every segment, inspect the underlying original photograph.
+
+If the row position is known but vegetation is absent or doubtful:
+USE RED.
+
+If the segment is mostly bare, brown, beige, dry, interrupted, or missing:
+USE RED.
+
+GREEN is allowed ONLY when living vegetation is clearly visible.
+
+STRICT DECISION RULE:
+1. Clearly healthy living vegetation -> GREEN.
+2. Clearly dry / bare / missing vegetation -> RED.
+3. Mixed but mostly healthy -> GREEN.
+4. Mixed but mostly dry / sparse / exposed soil -> RED.
+5. Uncertain but row location is clear -> prefer RED.
+
+DO NOT:
+- paint bare soil GREEN,
+- paint missing plants GREEN,
+- paint dry gaps GREEN,
+- paint weak brown sections GREEN just to maintain visual continuity,
+- classify green weeds or grass BETWEEN rows as healthy vine canopy,
+- treat shadows as vegetation,
+- treat bare inter-row soil as a vineyard row.
+
+ROW CONTINUITY:
+A single physical row may look like:
+
+GREEN -> RED -> GREEN -> RED -> GREEN
+
+and it is still ONE vineyard row.
+
+The COLOR may change,
+but the TRAJECTORY must remain aligned as one continuous row.
+
+FINAL COLOR CHECK:
+Before returning the edited image, review every marked trajectory:
+
+- Is there actual living vine canopy under every GREEN section?
+- If not, change that GREEN section to RED.
+- Is there visible exposed soil or missing vegetation within an established row?
+- If yes, use RED.
+- Is a weak/dry section incorrectly green?
+- If yes, change it to RED.
+- Are there green weeds between rows?
+- Do not classify them as healthy vineyard vegetation.
 
 STYLE:
-- Thin clean overlay lines.
-- Bright saturated green and bright saturated red so the overlay is easy to measure.
-- Professional agronomic review style.
-- Preserve as much original image detail as possible.
+- Thin clean guide lines.
+- Bright saturated GREEN for healthy vegetation.
+- Bright saturated RED for missing/dry/weak vegetation.
+- Preserve the original image details.
+- Do not fill areas.
+- Do not add labels or numbers.
 """
 
 
@@ -214,8 +293,13 @@ STYLE:
 
 def contar_surcos_con_vision(image_bytes: bytes) -> dict:
     """
-    Cuenta las trayectorias marcadas en la imagen final.
-    Un mismo surco puede contener tramos verdes y rojos.
+    Conteo 100% con IA sobre la imagen FINAL ya marcada.
+
+    Objetivo:
+    - contar cada trayectoria física una sola vez;
+    - evitar duplicados;
+    - evitar contar fragmentos cortos o líneas de borde como surcos extra;
+    - verde + rojo alineados = un solo surco.
     """
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
     data_url = f"data:image/png;base64,{image_b64}"
@@ -224,23 +308,62 @@ def contar_surcos_con_vision(image_bytes: bytes) -> dict:
 Observa cuidadosamente esta imagen aérea de un viñedo YA MARCADA con líneas
 verdes y rojas.
 
-Tu tarea es contar únicamente los SURCOS MARCADOS.
+Tu única tarea es CONTAR LOS SURCOS MARCADOS.
 
-REGLAS:
-- Cuenta cada trayectoria o hilera física una sola vez.
-- Una hilera puede tener segmentos verdes y rojos.
-- Si los segmentos están alineados sobre la misma trayectoria, cuentan como UN solo surco.
-- NO cuentes segmentos individuales.
-- NO cuentes bordes de caminos, techos, árboles, sombras ni elementos originales de la foto.
-- NO cuentes dos veces una línea que representa la misma hilera.
-- Sigue visualmente cada trayectoria desde un extremo hasta el otro antes de sumar.
-- Si una línea se interrumpe por un tramo seco y continúa en la misma alineación,
-  sigue siendo el mismo surco.
-- Cuenta solamente las hileras que tienen una línea de guía visible.
+REGLA PRINCIPAL:
+Cada trayectoria física real del viñedo debe contarse UNA SOLA VEZ.
+
+MUY IMPORTANTE:
+- Una misma trayectoria puede tener segmentos VERDES y ROJOS.
+- Si esos segmentos están alineados sobre la misma hilera, cuentan como UN SOLO SURCO.
+- NO cuentes cada cambio de color como un surco diferente.
+- NO cuentes dos líneas superpuestas o casi paralelas sobre la misma hilera como dos surcos.
+- NO cuentes fragmentos cortos aislados que no representen una hilera completa.
+- NO cuentes líneas accidentales sobre caminos, bordes, árboles, sombras o elementos de la foto.
+- NO inventes surcos.
+- NO sumes una línea dos veces porque esté interrumpida.
+
+MÉTODO DE CONTEO OBLIGATORIO:
+
+PASO 1 — IDENTIFICAR EL PATRÓN
+- Determina la orientación principal de las hileras.
+- Observa la separación regular entre surcos reales.
+- Usa esa separación para detectar si dos líneas están duplicadas sobre la misma hilera.
+
+PASO 2 — PRIMER CONTEO
+- Recorre la imagen de IZQUIERDA A DERECHA.
+- Sigue cada trayectoria desde su inicio hasta su final.
+- Cuenta cada trayectoria física una sola vez.
+- Verde + rojo alineados = 1.
+
+PASO 3 — SEGUNDO CONTEO
+- Repite el conteo de DERECHA A IZQUIERDA.
+- Verifica especialmente los extremos izquierdo y derecho.
+- Revisa si existe alguna línea duplicada, parcial o de borde.
+
+PASO 4 — CONTROL DE DUPLICADOS
+Antes de dar el total final, busca específicamente:
+- dos líneas muy cercanas que sigan la misma hilera;
+- líneas que se monten sobre una misma trayectoria;
+- fragmentos que parezcan un surco nuevo pero en realidad sean continuación de otro;
+- líneas cortas en los extremos que no correspondan a una hilera completa.
+
+Si detectas uno de estos casos:
+NO lo cuentes como un surco adicional.
+
+PASO 5 — TOTAL FINAL
+- El total final debe ser el número de trayectorias físicas ÚNICAS.
+- Si el conteo izquierda→derecha y derecha→izquierda difieren,
+  revisa la zona donde aparece la diferencia y corrige antes de responder.
+- No promedies si puedes resolver visualmente cuál es el total correcto.
 
 Devuelve SOLO JSON válido con exactamente esta estructura:
 
 {
+  "conteo_izquierda_derecha": 0,
+  "conteo_derecha_izquierda": 0,
+  "duplicados_descartados": 0,
+  "fragmentos_descartados": 0,
   "surcos_contados": 0,
   "confianza": "alta",
   "observacion": "breve explicación"
@@ -252,7 +375,7 @@ Para "confianza" usa solamente:
 
     response = client.responses.create(
         model="gpt-5.6-luna",
-        reasoning={"effort": "medium"},
+        reasoning={"effort": "high"},
         input=[
             {
                 "role": "user",
@@ -271,24 +394,84 @@ Para "confianza" usa solamente:
         ],
     )
 
-    data = limpiar_json(getattr(response, "output_text", "") or "")
+    data = limpiar_json(
+        getattr(response, "output_text", "") or ""
+    )
 
-    try:
-        surcos = int(data.get("surcos_contados", 0))
-    except Exception:
-        surcos = 0
+    def _entero(valor):
+        try:
+            return max(0, int(round(float(valor))))
+        except Exception:
+            return 0
 
-    surcos = max(0, surcos)
+    izquierda_derecha = _entero(
+        data.get("conteo_izquierda_derecha", 0)
+    )
+    derecha_izquierda = _entero(
+        data.get("conteo_derecha_izquierda", 0)
+    )
+    duplicados = _entero(
+        data.get("duplicados_descartados", 0)
+    )
+    fragmentos = _entero(
+        data.get("fragmentos_descartados", 0)
+    )
+    final = _entero(
+        data.get("surcos_contados", 0)
+    )
 
-    confianza = str(data.get("confianza", "media")).lower().strip()
+    # Respaldo: si la IA no devuelve total final, usar consenso visual.
+    if final <= 0:
+        if izquierda_derecha > 0 and derecha_izquierda > 0:
+            if izquierda_derecha == derecha_izquierda:
+                final = izquierda_derecha
+            else:
+                final = min(
+                    izquierda_derecha,
+                    derecha_izquierda,
+                )
+        else:
+            final = max(
+                izquierda_derecha,
+                derecha_izquierda,
+                0,
+            )
+
+    confianza = str(
+        data.get("confianza", "media")
+    ).lower().strip()
 
     if confianza not in {"alta", "media", "baja"}:
         confianza = "media"
 
+    if izquierda_derecha > 0 and derecha_izquierda > 0:
+        diferencia = abs(
+            izquierda_derecha - derecha_izquierda
+        )
+
+        if diferencia >= 4:
+            confianza = "baja"
+        elif diferencia >= 2 and confianza == "alta":
+            confianza = "media"
+
     return {
-        "surcos_contados": surcos,
+        "surcos_contados": int(final),
         "confianza": confianza,
-        "observacion": str(data.get("observacion", "")).strip(),
+        "observacion": str(
+            data.get("observacion", "")
+        ).strip(),
+        "conteo_izquierda_derecha": int(
+            izquierda_derecha
+        ),
+        "conteo_derecha_izquierda": int(
+            derecha_izquierda
+        ),
+        "duplicados_descartados": int(
+            duplicados
+        ),
+        "fragmentos_descartados": int(
+            fragmentos
+        ),
     }
 
 
@@ -587,7 +770,7 @@ def root():
     return {
         "ok": True,
         "mensaje": "Backend TerraCore IA activo",
-        "version": "1.4.0",
+        "version": "1.4.2-conteo-verificado",
         "normalizacion_imagen": "RGB PNG",
         "metodo_lineas": "gpt-image-2.5-sunburst",
         "metodo_conteo": "gpt-5.6-luna",
