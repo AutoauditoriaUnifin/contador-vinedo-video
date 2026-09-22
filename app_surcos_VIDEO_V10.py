@@ -5760,9 +5760,11 @@ def _tc_metricas_tabla(df):
 
 
 # ============================================================
-# OPENAI VISION - PRECISION DE INVENTARIO Y SALUD
+# IA HIBRIDA - GEMINI FLASH-LITE + OPENAI DE RESPALDO
 # ============================================================
-# OpenAI identifica y clasifica. OpenCV solo recorta y dibuja.
+# Gemini 2.5 Flash-Lite es el motor principal para Inventario y Salud.
+# OpenAI se usa únicamente si Gemini falla, devuelve JSON incompleto
+# o presenta confianza demasiado baja. OpenCV solo recorta y dibuja.
 # El backend existente se conserva sin cambios.
 # ============================================================
 
@@ -5812,8 +5814,153 @@ def _tc_jpeg_bytes(pil_img, max_side=2200, quality=93):
     return buf.getvalue()
 
 
-def _tc_openai_json(images, prompt, detail="high", model=None, effort="medium"):
-    """Envía imagen(es) a OpenAI y exige JSON. Usa fallback al modelo económico."""
+def _tc_gemini_model():
+    """Modelo económico principal para Inventario y Salud."""
+    try:
+        value = str(st.secrets.get("GEMINI_VISION_MODEL", "")).strip()
+        if value:
+            return value
+    except Exception:
+        pass
+    value = str(os.getenv("GEMINI_VISION_MODEL", "")).strip()
+    return value or "gemini-2.5-flash-lite"
+
+
+def _tc_gemini_api_key():
+    try:
+        value = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+        if value:
+            return value
+    except Exception:
+        pass
+    return str(os.getenv("GEMINI_API_KEY", "")).strip()
+
+
+def _tc_gemini_json(images, prompt, detail="high"):
+    """
+    Motor principal económico. Usa la API REST oficial de Gemini para no
+    agregar dependencias nuevas a la app. Devuelve JSON parseado.
+    """
+    api_key = _tc_gemini_api_key()
+    if not api_key:
+        raise RuntimeError("Falta GEMINI_API_KEY en Streamlit Secrets o variables de entorno.")
+
+    parts = [{"text": str(prompt)}]
+    for img in images:
+        b = _tc_jpeg_bytes(img) if isinstance(img, Image.Image) else bytes(img)
+        parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": base64.b64encode(b).decode("utf-8"),
+            }
+        })
+
+    model_name = _tc_gemini_model()
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model_name}:generateContent"
+    )
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": parts,
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.05,
+            "maxOutputTokens": 16384,
+        },
+    }
+
+    response = requests.post(
+        url,
+        headers={
+            "x-goog-api-key": api_key,
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=240,
+    )
+
+    if response.status_code >= 400:
+        detail_text = response.text[:1200]
+        raise RuntimeError(
+            f"Gemini HTTP {response.status_code}: {detail_text}"
+        )
+
+    body = response.json()
+    candidates = body.get("candidates") or []
+    if not candidates:
+        feedback = body.get("promptFeedback") or {}
+        raise RuntimeError(
+            "Gemini no devolvió candidatos. "
+            + json.dumps(feedback, ensure_ascii=False)[:800]
+        )
+
+    content = candidates[0].get("content") or {}
+    response_parts = content.get("parts") or []
+    texts = [
+        str(part.get("text", ""))
+        for part in response_parts
+        if isinstance(part, dict) and part.get("text")
+    ]
+    if not texts:
+        raise RuntimeError("Gemini no devolvió texto JSON.")
+
+    data = limpiar_json_respuesta("\n".join(texts))
+    if not isinstance(data, dict):
+        raise RuntimeError("Gemini no devolvió un objeto JSON.")
+    return data
+
+
+def _tc_ai_result_useful(data, prompt):
+    """Valida lo mínimo antes de aceptar Gemini sin gastar en OpenAI."""
+    if not isinstance(data, dict) or not data:
+        return False, "respuesta vacía"
+
+    p = str(prompt or "").lower()
+    rows = data.get("rows")
+    if rows is None:
+        rows = data.get("surcos")
+
+    # Solo exigimos una lista de filas cuando el esquema de salida realmente la pide.
+    # Esto evita mandar diagnósticos válidos a OpenAI solo porque el texto menciona "surcos".
+    expects_rows = (
+        '"rows"' in p
+        or '"rows":' in p
+        or '"surcos":[' in p.replace(" ", "")
+    )
+
+    if expects_rows:
+        if not isinstance(rows, list) or len(rows) == 0:
+            return False, "no devolvió filas/surcos"
+
+        confidences = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            raw_conf = item.get("confidence", item.get("confianza"))
+            if raw_conf is not None:
+                try:
+                    confidences.append(float(raw_conf))
+                except Exception:
+                    pass
+
+        # Si todas las filas vienen con muy baja confianza, deja que OpenAI audite.
+        if confidences and max(confidences) < 0.42:
+            return False, "confianza demasiado baja"
+
+    if '"zona_mas_afectada"' in p and not str(data.get("zona_mas_afectada", "")).strip():
+        return False, "diagnóstico incompleto"
+
+    return True, "ok"
+
+
+def _tc_openai_json_fallback(images, prompt, detail="high", model=None, effort="medium"):
+    """OpenAI queda únicamente como respaldo cuando Gemini no alcanza calidad mínima."""
     content = [{"type": "input_text", "text": str(prompt)}]
     for img in images:
         b = _tc_jpeg_bytes(img) if isinstance(img, Image.Image) else bytes(img)
@@ -5834,24 +5981,62 @@ def _tc_openai_json(images, prompt, detail="high", model=None, effort="medium"):
             reasoning={"effort": effort},
             input=[{"role": "user", "content": content}],
         )
-        # JSON mode evita la mayoría de respuestas truncadas/mal formadas.
         try:
             response = client.responses.create(
                 **kwargs,
                 text={"format": {"type": "json_object"}},
             )
-        except Exception as first_exc:
+        except Exception:
             try:
                 response = client.responses.create(**kwargs)
             except Exception as second_exc:
                 errors.append(f"{model_name}: {second_exc}")
                 continue
         try:
-            return limpiar_json_respuesta(getattr(response, "output_text", "") or "")
+            data = limpiar_json_respuesta(getattr(response, "output_text", "") or "")
+            useful, reason = _tc_ai_result_useful(data, prompt)
+            if useful:
+                st.session_state.tc_last_ai_provider = f"OpenAI respaldo ({model_name})"
+                return data
+            errors.append(f"{model_name}: {reason}")
         except Exception as parse_exc:
             errors.append(f"{model_name}: {parse_exc}")
 
-    raise RuntimeError("OpenAI no devolvió JSON utilizable. " + " | ".join(errors[-2:]))
+    raise RuntimeError("OpenAI de respaldo no devolvió JSON utilizable. " + " | ".join(errors[-2:]))
+
+
+def _tc_openai_json(images, prompt, detail="high", model=None, effort="medium"):
+    """
+    Compatibilidad con el resto de la app:
+    1) Gemini 2.5 Flash-Lite primero.
+    2) OpenAI únicamente si Gemini falla o su resultado no pasa validación mínima.
+
+    Se conserva este nombre de función para no tocar la lógica ni el diseño existentes.
+    """
+    gemini_error = None
+
+    try:
+        data = _tc_gemini_json(images, prompt, detail=detail)
+        useful, reason = _tc_ai_result_useful(data, prompt)
+        if useful:
+            st.session_state.tc_last_ai_provider = f"Gemini ({_tc_gemini_model()})"
+            return data
+        gemini_error = f"Gemini: {reason}"
+    except Exception as exc:
+        gemini_error = f"Gemini: {exc}"
+
+    try:
+        return _tc_openai_json_fallback(
+            images,
+            prompt,
+            detail=detail,
+            model=model,
+            effort=effort,
+        )
+    except Exception as openai_exc:
+        raise RuntimeError(
+            f"{gemini_error} | OpenAI respaldo: {openai_exc}"
+        )
 
 def _tc_clamp01(value, default=0.0):
     try:
@@ -6352,7 +6537,7 @@ Devuelve SOLO JSON:
                     "slot_count": 0,
                     "occupancy": "",
                     "needs_review": True,
-                    "review_reason": f"R{rid:02d}: OpenAI no pudo validar slots después de varios intentos.",
+                    "review_reason": f"R{rid:02d}: la IA no pudo validar slots después de varios intentos.",
                 })
                 continue
 
@@ -6635,7 +6820,7 @@ def _tc_analyze_inventory_openai(uploaded_image, base=None):
         "confidence": float(np.mean([base.get("confidence",0), local_conf])),
         "coverage_score": base.get("coverage_score",0),
         "rows": refined,
-        "model": _tc_openai_model(),
+        "model": f"{_tc_gemini_model()} + OpenAI respaldo",
         "warnings": [r.get("review_reason") for r in refined if r.get("needs_review") and r.get("review_reason")],
         "debug": base.get("debug",{}),
     }
@@ -6935,9 +7120,9 @@ def _tc_analyze_health_openai(uploaded_image, rows):
         "nivel_afectacion_visual":diag.get("nivel_afectacion_visual","No determinado"),"diagnostico_visual":diag.get("diagnostico_visual",""),
         "causas_probables":diag.get("causas_probables",[]),"explicacion_nutrientes":diag.get("explicacion_nutrientes",""),
         "recomendaciones_iniciales":diag.get("recomendaciones_iniciales",[]),"nota_diagnostico":diag.get("nota_diagnostico","Diagnóstico visual preliminar."),
-        "detalle_zonas":{},"metodo":"openai-vision-segment-audit","confidence":float(visual.get("confidence",0)),
+        "detalle_zonas":{},"metodo":"gemini-flash-lite-openai-fallback","confidence":float(visual.get("confidence",0)),
     }
-    result["backend"]={"metodo":"openai-vision-segment-audit","analisis":{
+    result["backend"]={"metodo":"gemini-flash-lite-openai-fallback","analisis":{
         "surcos_estimados":result["count"],"verde_pct":result["green_pct"],"rojo_pct":result["red_pct"],
         "zona_mas_afectada":result["zona_mas_afectada"],"nivel_afectacion_visual":result["nivel_afectacion_visual"],
         "diagnostico_visual":result["diagnostico_visual"],"causas_probables":result["causas_probables"],
@@ -7200,8 +7385,8 @@ with main_col:
         st.subheader(tr("Inventario", "Inventaire"))
         st.caption(
             tr(
-                "Primera etapa: detectar surcos, numerarlos al inicio y al final y separar slots ocupados/vacíos.",
-                "Première étape : détecter les rangs, les numéroter au début et à la fin et séparer les emplacements occupés/vides."
+                "Primera etapa: detectar surcos, numerarlos al inicio y al final y separar slots ocupados/vacíos. El diagnóstico de salud permanece bloqueado.",
+                "Première étape : détecter les rangs, les numéroter au début et à la fin et séparer les emplacements occupés/vides. Le diagnostic de santé reste bloqué."
             )
         )
 
@@ -7226,8 +7411,8 @@ with main_col:
             progress = st.progress(
                 5,
                 text=tr(
-                    "OpenAI está revisando la parcela y cada surco...",
-                    "OpenAI examine la parcelle et chaque rang..."
+                    "Gemini Flash-Lite está revisando la parcela y cada surco...",
+                    "Gemini Flash-Lite examine la parcelle et chaque rang..."
                 )
             )
 
@@ -7238,8 +7423,8 @@ with main_col:
                 progress.progress(
                     92,
                     text=tr(
-                        "OpenAI está terminando slots ocupados y vacíos...",
-                        "OpenAI termine les emplacements occupés et vides..."
+                        "La IA está terminando slots ocupados y vacíos...",
+                        "L’IA termine les emplacements occupés et vides..."
                     )
                 )
 
@@ -7251,7 +7436,7 @@ with main_col:
                 st.session_state.tc_inventario_fuente = best_up.name
                 st.session_state.tc_inventario_confianza = float(inv.get("confidence", 0.0))
                 st.session_state.tc_inventario_rows_ai = inv.get("rows", [])
-                st.session_state.tc_inventario_modelo = inv.get("model", _tc_openai_model())
+                st.session_state.tc_inventario_modelo = inv.get("model", f"{_tc_gemini_model()} + OpenAI respaldo")
                 st.session_state.tc_inventario_debug = inv.get("debug", {})
                 st.session_state.tc_inventario_warnings = inv.get("warnings", [])
                 st.session_state.tc_inventario_procesado = True
@@ -7259,8 +7444,8 @@ with main_col:
                 progress.progress(100, text=tr("Inventario terminado.", "Inventaire terminé."))
                 st.success(
                     tr(
-                        "✅ Inventario terminado con OpenAI: surcos alineados + slots ocupados/vacíos.",
-                        "✅ Inventaire terminé avec OpenAI : rangs alignés + emplacements occupés/vides."
+                        "✅ Inventario terminado: Gemini primero + OpenAI solo si hizo falta como respaldo.",
+                        "✅ Inventaire terminé : Gemini en premier + OpenAI seulement en secours si nécessaire."
                     )
                 )
                 if errores_inventario:
@@ -7275,8 +7460,8 @@ with main_col:
                 st.session_state.tc_inventario_warnings = []
                 st.error(
                     tr(
-                        f"No se pudo terminar el Inventario con OpenAI: {exc}",
-                        f"Impossible de terminer l’inventaire avec OpenAI : {exc}"
+                        f"No se pudo terminar el Inventario con IA: {exc}",
+                        f"Impossible de terminer l’inventaire avec l’IA : {exc}"
                     )
                 )
 
@@ -7309,7 +7494,7 @@ with main_col:
         fuente_inv = st.session_state.tc_inventario_fuente or "—"
         st.caption(
             tr(
-                f"Inventario identificado por OpenAI Vision sobre la fotografía real. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
+                f"Inventario identificado con Gemini Flash-Lite y OpenAI solo como respaldo. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
                 f"Inventaire automatique calculé à partir de la présence visuelle, séparé du diagnostic de santé. Image de référence : {fuente_inv}. Confiance moyenne : {confianza_inv*100:.1f} %."
             )
         )
@@ -7317,8 +7502,8 @@ with main_col:
         warnings_inv = st.session_state.get("tc_inventario_warnings", []) or []
         if warnings_inv:
             st.warning(tr(
-                "OpenAI terminó la parcela, pero hay uno o más surcos que requieren revisión. No se canceló todo el Inventario.",
-                "OpenAI a terminé la parcelle, mais un ou plusieurs rangs nécessitent une vérification. L’inventaire complet n’a pas été annulé."
+                "La IA terminó la parcela, pero hay uno o más surcos que requieren revisión. No se canceló todo el Inventario.",
+                "L’IA a terminé la parcelle, mais un ou plusieurs rangs nécessitent une vérification. L’inventaire complet n’a pas été annulé."
             ))
             with st.expander(tr("Surcos a revisar", "Rangs à vérifier"), expanded=False):
                 for warning_msg in warnings_inv:
@@ -7352,8 +7537,8 @@ with main_col:
 
         st.markdown(tr("#### Tabla automática por surco", "#### Tableau automatique par rang"))
         st.caption(tr(
-            "OpenAI revisa cada hilera y llena Slots, Ocupados y Vacíos. Puedes corregir un valor antes de confirmar si la revisión visual lo requiere.",
-            "OpenAI examine chaque rang et remplit Emplacements, Occupés et Vides. Vous pouvez corriger une valeur avant confirmation si la vérification visuelle l’exige."
+            "Gemini revisa cada hilera y llena Slots, Ocupados y Vacíos; OpenAI entra solo si Gemini necesita respaldo. Puedes corregir un valor antes de confirmar si la revisión visual lo requiere.",
+            "Gemini examine chaque rang et remplit Emplacements, Occupés et Vides ; OpenAI intervient seulement en secours si nécessaire. Vous pouvez corriger une valeur avant confirmation."
         ))
 
         edited = st.data_editor(
@@ -7458,8 +7643,8 @@ with main_col:
                 progress_salud = st.progress(
                     5,
                     text=tr(
-                        "OpenAI está revisando cada surco por tramos y auditando falsos verdes...",
-                        "OpenAI examine chaque rang par sections et audite les faux verts..."
+                        "Gemini está revisando cada surco por tramos y auditando falsos verdes...",
+                        "Gemini examine chaque rang par sections et audite les faux verts..."
                     )
                 )
 
@@ -7529,8 +7714,8 @@ with main_col:
                 except Exception as exc:
                     st.error(
                         tr(
-                            f"No se pudo analizar Salud con OpenAI: {exc}",
-                            f"Impossible d’analyser la santé avec OpenAI : {exc}"
+                            f"No se pudo analizar Salud con IA: {exc}",
+                            f"Impossible d’analyser la santé avec l’IA : {exc}"
                         )
                     )
 
