@@ -6042,9 +6042,9 @@ Devuelve SOLO JSON válido:
         "estimated_row_count": first.get("estimated_row_count", len(first_rows)) if isinstance(first, dict) else len(first_rows),
         "rows": [{"id": r["id"], "points": r["points_norm"]} for r in first_rows],
     }
-    prompt_2 = f"""
+    prompt_2 = """
 Auditoría geométrica TerraCore sobre la MISMA foto.
-Propuesta inicial: {json.dumps(proposal, ensure_ascii=False, separators=(',',':'))}
+Propuesta inicial: __PROPOSAL_JSON__
 
 Corrige toda la propuesta:
 1. elimina duplicados;
@@ -6060,7 +6060,10 @@ No analices slots ni Salud.
 Devuelve SOLO JSON válido:
 {"coverage_score":0.0,"confidence":0.0,"estimated_row_count":0,
  "rows":[{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y],[x,y]]}],"audit_notes":""}
-"""
+""".replace(
+        "__PROPOSAL_JSON__",
+        json.dumps(proposal, ensure_ascii=False, separators=(",", ":"))
+    )
     audit = _tc_openai_json([pil], prompt_2, detail="high", model=_tc_openai_precision_model(), effort="high")
     rows = _tc_sanitize_rows(audit) or first_rows
     rows = _tc_remove_duplicate_rows_ai(rows, w, h)
@@ -6070,10 +6073,10 @@ Devuelve SOLO JSON válido:
     # detectar huecos, duplicados y líneas que cayeron entre dos hileras.
     guide = _tc_render_row_guide_ai(pil, rows)
     proposal3 = [{"id": int(r["id"]), "points": r["points_norm"]} for r in rows]
-    prompt_3 = f"""
+    prompt_3 = """
 AUDITORÍA FINAL DE SURCOS TERRACORE.
 Imagen 1 = fotografía ORIGINAL. Imagen 2 = la misma foto con la propuesta de líneas cian Rxx.
-Propuesta: {json.dumps(proposal3, ensure_ascii=False, separators=(',',':'))}
+Propuesta: __PROPOSAL_JSON__
 
 Inspecciona fila por fila y devuelve la geometría FINAL.
 - Cada línea debe estar encima del centro de UNA hilera real, nunca en el espacio entre hileras.
@@ -6087,7 +6090,10 @@ Inspecciona fila por fila y devuelve la geometría FINAL.
 Devuelve SOLO JSON válido:
 {"coverage_score":0.0,"confidence":0.0,"estimated_row_count":0,
  "rows":[{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y],[x,y]]}],"audit_notes":""}
-"""
+""".replace(
+        "__PROPOSAL_JSON__",
+        json.dumps(proposal3, ensure_ascii=False, separators=(",", ":"))
+    )
     try:
         final_audit = _tc_openai_json([pil, guide], prompt_3, detail="high", model=_tc_openai_precision_model(), effort="high")
         final_rows = _tc_sanitize_rows(final_audit)
