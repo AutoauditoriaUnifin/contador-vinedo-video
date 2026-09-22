@@ -6729,78 +6729,142 @@ def _tc_inventory_consistency_ai(pil, rows):
 
 
 def _tc_draw_inventory_ai(pil, rows):
-    bgr = cv2.cvtColor(np.asarray(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
-    h, w = bgr.shape[:2]
-    line_th = max(1, int(round(min(w,h)/850)))
-    radius = max(2, int(round(min(w,h)/500)))
+    """
+    INVENTARIO LIMPIO PARA TERRACORE.
+
+    La IA sigue calculando:
+    - surcos
+    - slots
+    - ocupados
+    - vacíos
+
+    Pero en la imagen SOLO se dibuja:
+    - una línea fina por surco
+    - número 01..N únicamente ARRIBA
+
+    No se dibujan números abajo.
+    Los círculos azules y las X naranjas tampoco se dibujan.
+    """
+    original = cv2.cvtColor(np.asarray(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
+    h, w = original.shape[:2]
+
+    # Una sola banda exclusiva arriba para numeración.
+    band_h = max(46, int(round(h * 0.075)))
+    wine_bgr = (55, 47, 114)  # #722F37
+
+    canvas = np.full((h + band_h, w, 3), wine_bgr, dtype=np.uint8)
+    canvas[band_h:band_h + h, :, :] = original
+
+    line_th = max(1, int(round(min(w, h) / 950)))
     table = []
     confs = []
 
-    # tamaño de etiqueta derivado del espacio real entre hileras.
-    mids=[]
+    # Calcular separación aproximada entre hileras para adaptar el tamaño del texto.
+    mids = []
     for r in rows:
-        p=_tc_norm_to_px(r.get("points_norm",[]),w,h)
-        if len(p)>=2: mids.append(_tc_point_on_polyline(p,0.5))
-    spacing=30.0
-    if len(mids)>2:
-        d=np.linalg.norm(np.diff(np.asarray(mids),axis=0),axis=1)
-        d=d[d>2]
-        if len(d): spacing=float(np.median(d))
-    font=float(np.clip(spacing/42.0,0.38,0.68))
+        p = _tc_norm_to_px(r.get("points_norm", []), w, h)
+        if len(p) >= 2:
+            mids.append(_tc_point_on_polyline(p, 0.5))
+
+    spacing = 24.0
+    if len(mids) > 2:
+        mm = np.asarray(mids, dtype=np.float32)
+        mm = mm[np.argsort(mm[:, 0])]
+        d = np.linalg.norm(np.diff(mm, axis=0), axis=1)
+        d = d[d > 2]
+        if len(d):
+            spacing = float(np.median(d))
+
+    font = float(np.clip(spacing / 38.0, 0.26, 0.46))
+    font_th = 1
+
+    # Dos carriles SOLO arriba para evitar que números vecinos se monten.
+    lane_y_top = [max(14, int(band_h * 0.34)), max(30, int(band_h * 0.72))]
 
     for i, row in enumerate(rows, 1):
         row["id"] = i
         pts = _tc_norm_to_px(row.get("points_norm", []), w, h)
         if len(pts) < 2:
             continue
+
         ip = np.rint(pts).astype(np.int32)
-        cv2.polylines(bgr, [ip], False, (245,245,245), line_th, cv2.LINE_AA)
+
+        # Línea fina para saber exactamente a qué hilera pertenece el número.
+        ip_canvas = ip.copy()
+        ip_canvas[:, 1] += band_h
+        cv2.polylines(
+            canvas,
+            [ip_canvas],
+            False,
+            (235, 235, 235),
+            line_th,
+            cv2.LINE_AA,
+        )
+
         label = f"{i:02d}"
 
-        # Siempre etiquetar el extremo visual superior e inferior.
-        endpoints=[ip[int(np.argmin(ip[:,1]))], ip[int(np.argmax(ip[:,1]))]]
-        for k, endpoint in enumerate(endpoints):
-            x,y=int(endpoint[0]),int(endpoint[1])
-            ts,base=cv2.getTextSize(label,cv2.FONT_HERSHEY_SIMPLEX,font,2)
-            tw,th=ts
-            tx=int(np.clip(x-tw/2,2,max(2,w-tw-3)))
-            # Alternancia leve evita que etiquetas vecinas se monten.
-            offset=6+(i%2)*max(4,int(th*0.65))
-            ty=int(np.clip(y-offset if k==0 else y+th+offset,th+4,h-4))
-            pad=3
-            cv2.rectangle(bgr,(max(0,tx-pad),max(0,ty-th-pad)),(min(w-1,tx+tw+pad),min(h-1,ty+base+pad)),(45,18,28),-1)
-            cv2.putText(bgr,label,(tx,ty),cv2.FONT_HERSHEY_SIMPLEX,font,(255,255,255),2,cv2.LINE_AA)
+        # ÚNICAMENTE el extremo visual superior de la hilera.
+        top_pt = ip[int(np.argmin(ip[:, 1]))]
+        lane = (i - 1) % 2
+        x = int(top_pt[0])
+        ty = lane_y_top[lane]
 
-        positions = _tc_slot_positions_px_ai(row, (w,h))
+        (tw, th), base = cv2.getTextSize(
+            label,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font,
+            font_th,
+        )
+        tx = int(np.clip(x - tw / 2, 1, max(1, w - tw - 2)))
+        ty2 = int(np.clip(ty, th + 2, band_h - base - 2))
+
+        cv2.putText(
+            canvas,
+            label,
+            (tx, ty2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font,
+            (15, 15, 15),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            canvas,
+            label,
+            (tx, ty2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Los slots se siguen calculando para la tabla, pero NO se dibujan.
+        positions = _tc_slot_positions_px_ai(row, (w, h))
         occ = _tc_clean_occupancy_ai(row.get("occupancy", ""), len(positions))
         row["occupancy"] = occ
-        occupied = empty = 0
-        for p, state in zip(positions, occ):
-            x, y = int(round(p[0])), int(round(p[1]))
-            if state == "V":
-                empty += 1
-                rr = radius+1
-                cv2.line(bgr,(x-rr,y-rr),(x+rr,y+rr),(0,150,255),max(1,line_th+1),cv2.LINE_AA)
-                cv2.line(bgr,(x-rr,y+rr),(x+rr,y-rr),(0,150,255),max(1,line_th+1),cv2.LINE_AA)
-            else:
-                occupied += 1
-                cv2.circle(bgr,(x,y),radius,(255,170,20),max(1,line_th),cv2.LINE_AA)
-        conf = _tc_clamp01(row.get("confidence",0),0)
+        occupied = sum(1 for state in occ if state != "V")
+        empty = sum(1 for state in occ if state == "V")
+
+        conf = _tc_clamp01(row.get("confidence", 0), 0)
         confs.append(conf)
+
         status = tr("Validado por IA", "Validé par IA")
         if row.get("needs_review"):
             status = tr("Revisar", "À vérifier")
         elif row.get("consistency_adjusted"):
             status = tr("Ajustado por consistencia", "Ajusté par cohérence")
+
         table.append({
-            tr("Surco","Rang"): label,
-            tr("Slots","Emplacements"): len(positions),
-            tr("Ocupados","Occupés"): occupied,
-            tr("Vacíos","Vides"): empty,
-            tr("Confianza","Confiance"): round(conf*100,1),
-            tr("Estado","État"): status,
+            tr("Surco", "Rang"): label,
+            tr("Slots", "Emplacements"): len(positions),
+            tr("Ocupados", "Occupés"): occupied,
+            tr("Vacíos", "Vides"): empty,
+            tr("Confianza", "Confiance"): round(conf * 100, 1),
+            tr("Estado", "État"): status,
         })
-    return bgr, pd.DataFrame(table), float(np.mean(confs)) if confs else 0.0, rows
+
+    return canvas, pd.DataFrame(table), float(np.mean(confs)) if confs else 0.0, rows
 
 def _tc_analyze_inventory_openai(uploaded_image, base=None):
     base = base or _tc_detect_rows_openai(uploaded_image)
@@ -7071,15 +7135,15 @@ def _tc_draw_health_ai_v4(pil, rows, ranges_map):
             else:
                 total_g+=seglen
 
-        # etiquetas arriba/abajo como Inventario
+        # etiqueta SOLO ARRIBA, igual que Inventario
         ip=np.rint(pts).astype(np.int32); label=f"{rid:02d}"
-        for k,ep in enumerate((ip[int(np.argmin(ip[:,1]))],ip[int(np.argmax(ip[:,1]))])):
-            x,y=int(ep[0]),int(ep[1]); font=0.44
-            (tw,th),base=cv2.getTextSize(label,cv2.FONT_HERSHEY_SIMPLEX,font,2)
-            tx=int(np.clip(x-tw/2,2,max(2,w-tw-3))); off=6+(rid%2)*5
-            ty=int(np.clip(y-off if k==0 else y+th+off,th+4,h-4))
-            cv2.rectangle(bgr,(max(0,tx-3),max(0,ty-th-3)),(min(w-1,tx+tw+3),min(h-1,ty+base+3)),(35,20,25),-1)
-            cv2.putText(bgr,label,(tx,ty),cv2.FONT_HERSHEY_SIMPLEX,font,(255,255,255),2,cv2.LINE_AA)
+        ep=ip[int(np.argmin(ip[:,1]))]
+        x,y=int(ep[0]),int(ep[1]); font=0.44
+        (tw,th),base=cv2.getTextSize(label,cv2.FONT_HERSHEY_SIMPLEX,font,2)
+        tx=int(np.clip(x-tw/2,2,max(2,w-tw-3))); off=6+(rid%2)*5
+        ty=int(np.clip(y-off,th+4,h-4))
+        cv2.rectangle(bgr,(max(0,tx-3),max(0,ty-th-3)),(min(w-1,tx+tw+3),min(h-1,ty+base+3)),(35,20,25),-1)
+        cv2.putText(bgr,label,(tx,ty),cv2.FONT_HERSHEY_SIMPLEX,font,(255,255,255),2,cv2.LINE_AA)
 
     total=max(1e-6,total_g+total_r)
     return {"annotated":bgr,"green_pct":100.0*total_g/total,"red_pct":100.0*total_r/total,
@@ -7385,7 +7449,7 @@ with main_col:
         st.subheader(tr("Inventario", "Inventaire"))
         st.caption(
             tr(
-                "Primera etapa: detectar surcos, numerarlos al inicio y al final y separar slots ocupados/vacíos. El diagnóstico de salud permanece bloqueado.",
+                "Primera etapa: detectar surcos, numerarlos únicamente arriba y separar slots ocupados/vacíos. El diagnóstico de salud permanece bloqueado.",
                 "Première étape : détecter les rangs, les numéroter au début et à la fin et séparer les emplacements occupés/vides. Le diagnostic de santé reste bloqué."
             )
         )
@@ -7518,8 +7582,8 @@ with main_col:
                 ))
                 st.markdown(
                     tr(
-                        "🔵 **Círculo azul = slot ocupado** &nbsp;&nbsp; 🟠 **X naranja = slot vacío**. Los números 01…N aparecen al inicio y al final de cada surco.",
-                        "🔵 **Cercle bleu = emplacement occupé** &nbsp;&nbsp; 🟠 **X orange = emplacement vide**. Les numéros 01…N apparaissent au début et à la fin de chaque rang."
+                        "**Inventario limpio:** los números 01…N aparecen únicamente arriba de cada surco. No se muestran números abajo. Los slots se calculan en la tabla, pero no se dibujan sobre la fotografía.",
+                        "**Inventaire épuré :** les numéros 01…N apparaissent uniquement en haut et en bas de chaque rang. Les emplacements sont calculés dans le tableau sans être dessinés sur la photo."
                     ),
                     unsafe_allow_html=True
                 )
