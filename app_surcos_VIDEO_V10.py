@@ -5767,6 +5767,7 @@ def _tc_metricas_tabla(df):
 # ============================================================
 
 def _tc_openai_model():
+    """Modelo económico usado para tareas repetitivas."""
     try:
         value = str(st.secrets.get("OPENAI_VISION_MODEL", "")).strip()
         if value:
@@ -5774,6 +5775,17 @@ def _tc_openai_model():
     except Exception:
         pass
     return "gpt-5.6-luna"
+
+
+def _tc_openai_precision_model():
+    """Modelo para auditorías donde la geometría/Salud importa más que el costo."""
+    try:
+        value = str(st.secrets.get("OPENAI_PRECISION_MODEL", "")).strip()
+        if value:
+            return value
+    except Exception:
+        pass
+    return "gpt-5.6-terra"
 
 
 def _tc_openai_client():
@@ -5786,7 +5798,7 @@ def _tc_openai_client():
     return OpenAI(api_key=api_key)
 
 
-def _tc_jpeg_bytes(pil_img, max_side=1900, quality=91):
+def _tc_jpeg_bytes(pil_img, max_side=2200, quality=93):
     img = pil_img.convert("RGB")
     w, h = img.size
     scale = min(1.0, float(max_side) / float(max(w, h)))
@@ -5800,18 +5812,46 @@ def _tc_jpeg_bytes(pil_img, max_side=1900, quality=91):
     return buf.getvalue()
 
 
-def _tc_openai_json(images, prompt, detail="high"):
+def _tc_openai_json(images, prompt, detail="high", model=None, effort="medium"):
+    """Envía imagen(es) a OpenAI y exige JSON. Usa fallback al modelo económico."""
     content = [{"type": "input_text", "text": str(prompt)}]
     for img in images:
         b = _tc_jpeg_bytes(img) if isinstance(img, Image.Image) else bytes(img)
         data_url = "data:image/jpeg;base64," + base64.b64encode(b).decode("utf-8")
         content.append({"type": "input_image", "image_url": data_url, "detail": detail})
-    response = _tc_openai_client().responses.create(
-        model=_tc_openai_model(),
-        input=[{"role": "user", "content": content}],
-    )
-    return limpiar_json_respuesta(getattr(response, "output_text", "") or "")
 
+    client = _tc_openai_client()
+    requested = str(model or _tc_openai_model()).strip()
+    models = [requested]
+    fallback = _tc_openai_model()
+    if fallback not in models:
+        models.append(fallback)
+
+    errors = []
+    for model_name in models:
+        kwargs = dict(
+            model=model_name,
+            reasoning={"effort": effort},
+            input=[{"role": "user", "content": content}],
+        )
+        # JSON mode evita la mayoría de respuestas truncadas/mal formadas.
+        try:
+            response = client.responses.create(
+                **kwargs,
+                text={"format": {"type": "json_object"}},
+            )
+        except Exception as first_exc:
+            try:
+                response = client.responses.create(**kwargs)
+            except Exception as second_exc:
+                errors.append(f"{model_name}: {second_exc}")
+                continue
+        try:
+            return limpiar_json_respuesta(getattr(response, "output_text", "") or "")
+        except Exception as parse_exc:
+            errors.append(f"{model_name}: {parse_exc}")
+
+    raise RuntimeError("OpenAI no devolvió JSON utilizable. " + " | ".join(errors[-2:]))
 
 def _tc_clamp01(value, default=0.0):
     try:
@@ -5952,36 +5992,48 @@ def _tc_remove_duplicate_rows_ai(rows, w, h):
     return _tc_sort_rows_ai(kept, w, h)
 
 
+def _tc_render_row_guide_ai(pil, rows):
+    """Guía visual para que OpenAI audite omisiones/duplicados de surcos."""
+    bgr = cv2.cvtColor(np.asarray(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
+    h, w = bgr.shape[:2]
+    for row in rows:
+        rid = int(row.get("id", 0) or 0)
+        pts = _tc_norm_to_px(row.get("points_norm", []), w, h)
+        if len(pts) < 2:
+            continue
+        ip = np.rint(pts).astype(np.int32)
+        cv2.polylines(bgr, [ip], False, (255, 255, 0), max(1, int(round(min(w,h)/900))), cv2.LINE_AA)
+        mid = _tc_point_on_polyline(pts, 0.5)
+        cv2.putText(bgr, f"R{rid:02d}", (int(mid[0])+2, int(mid[1])-2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (20,20,20), 3, cv2.LINE_AA)
+        cv2.putText(bgr, f"R{rid:02d}", (int(mid[0])+2, int(mid[1])-2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255,255,255), 1, cv2.LINE_AA)
+    return Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+
+
 def _tc_detect_rows_openai(uploaded_image):
     pil = Image.open(io.BytesIO(uploaded_image.getvalue())).convert("RGB")
     w, h = pil.size
 
     prompt_1 = """
-Eres el módulo de visión agrícola de TerraCore. Analiza SOLO esta fotografía.
-Localiza TODAS las hileras/surcos físicos reales del viñedo. No cuentes plantas todavía y no hagas Salud.
+Eres el módulo de visión agrícola de TerraCore. Analiza SOLO esta fotografía aérea.
+Localiza TODAS las hileras físicas reales del viñedo. No cuentes plantas y no hagas Salud.
 
-Reglas obligatorias:
-- Una hilera física = una trayectoria continua aunque tenga huecos secos o plantas faltantes.
-- No fragmentes una hilera y no unas dos hileras vecinas.
-- No traces caminos, suelo entre hileras, árboles laterales, techos, postes ni sombras.
-- Sigue el CENTRO de cada hilera desde el inicio visible hasta el final visible.
-- Respeta inclinación, perspectiva y curvas reales. No fuerces líneas verticales/paralelas.
-- Incluye hileras débiles o parcialmente secas si pertenecen al patrón.
-- Revisa con cuidado la primera y la última hilera de la parcela.
-- Cada trayectoria debe tener de 5 a 9 puntos.
-- Coordenadas [x,y] normalizadas 0..1000 sobre la imagen completa.
+REGLAS:
+- Una hilera física = UNA trayectoria continua aunque tenga huecos secos.
+- Sigue el eje CENTRAL de cada hilera desde el inicio visible al final visible.
+- No fragmentes una hilera, no unas dos vecinas y no dibujes entre hileras.
+- Excluye caminos, cabeceras, bordes, árboles, postes, construcciones, sombras y maleza entre hileras.
+- Incluye hileras débiles/secas si claramente forman parte del patrón de la parcela.
+- Revisa especialmente primera/última hilera y zonas de perspectiva.
+- Cada trayectoria: 6 a 12 puntos, coordenadas [x,y] normalizadas 0..1000.
+- Antes de responder, recorre visualmente la parcela de izquierda a derecha (o perpendicular a las hileras) y verifica que no hayas saltado ninguna separación regular.
 
 Devuelve SOLO JSON válido:
-{
- "coverage_score":0.0,
- "confidence":0.0,
- "estimated_row_count":0,
- "rows":[{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y]]}],
- "notes":""
-}
-Devuelve TODAS las hileras visibles, no una muestra.
+{"coverage_score":0.0,"confidence":0.0,"estimated_row_count":0,
+ "rows":[{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y],[x,y]]}],"notes":""}
 """
-    first = _tc_openai_json([pil], prompt_1, detail="high")
+    first = _tc_openai_json([pil], prompt_1, detail="high", model=_tc_openai_precision_model(), effort="high")
     first_rows = _tc_sanitize_rows(first)
     if not first_rows:
         raise RuntimeError("OpenAI no devolvió surcos en la primera revisión.")
@@ -5991,34 +6043,69 @@ Devuelve TODAS las hileras visibles, no una muestra.
         "rows": [{"id": r["id"], "points": r["points_norm"]} for r in first_rows],
     }
     prompt_2 = f"""
-Revisa nuevamente la MISMA fotografía como auditor de precisión TerraCore.
+Auditoría geométrica TerraCore sobre la MISMA foto.
 Propuesta inicial: {json.dumps(proposal, ensure_ascii=False, separators=(',',':'))}
 
-Corrige la propuesta completa:
-1) elimina cualquier duplicado;
-2) añade cualquier hilera real omitida, incluyendo extremos;
-3) mueve líneas que estén en el espacio entre hileras hacia el centro de la hilera correcta;
-4) evita cruces entre hileras;
-5) mantén la misma hilera continua a través de huecos;
-6) excluye caminos, árboles, construcciones y zonas ajenas;
-7) usa 5 a 9 puntos por hilera y coordenadas 0..1000.
-No analices slots ni salud.
+Corrige toda la propuesta:
+1. elimina duplicados;
+2. añade hileras reales omitidas, incluidos extremos;
+3. mueve líneas que estén en suelo entre hileras al centro de la hilera correcta;
+4. evita cruces y saltos de una hilera a otra;
+5. conserva continuidad a través de huecos;
+6. excluye caminos/árboles/edificios;
+7. conserva el orden físico de las hileras;
+8. usa 6 a 12 puntos por hilera, 0..1000.
+No analices slots ni Salud.
 
 Devuelve SOLO JSON válido:
-{{"coverage_score":0.0,"confidence":0.0,"estimated_row_count":0,
-"rows":[{{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y]]}}],"audit_notes":""}}
+{"coverage_score":0.0,"confidence":0.0,"estimated_row_count":0,
+ "rows":[{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y],[x,y]]}],"audit_notes":""}
 """
-    audit = _tc_openai_json([pil], prompt_2, detail="high")
+    audit = _tc_openai_json([pil], prompt_2, detail="high", model=_tc_openai_precision_model(), effort="high")
     rows = _tc_sanitize_rows(audit) or first_rows
     rows = _tc_remove_duplicate_rows_ai(rows, w, h)
+    rows = _tc_sort_rows_ai(rows, w, h)
+
+    # Tercera pasada: OpenAI ve la foto Y la guía dibujada. Es la mejor forma de
+    # detectar huecos, duplicados y líneas que cayeron entre dos hileras.
+    guide = _tc_render_row_guide_ai(pil, rows)
+    proposal3 = [{"id": int(r["id"]), "points": r["points_norm"]} for r in rows]
+    prompt_3 = f"""
+AUDITORÍA FINAL DE SURCOS TERRACORE.
+Imagen 1 = fotografía ORIGINAL. Imagen 2 = la misma foto con la propuesta de líneas cian Rxx.
+Propuesta: {json.dumps(proposal3, ensure_ascii=False, separators=(',',':'))}
+
+Inspecciona fila por fila y devuelve la geometría FINAL.
+- Cada línea debe estar encima del centro de UNA hilera real, nunca en el espacio entre hileras.
+- Si falta una hilera entre dos Rxx, agrégala.
+- Si dos Rxx pertenecen a la misma hilera, deja solo una.
+- Si una Rxx cambia a la hilera vecina a mitad de camino, corrígela para seguir siempre la misma hilera.
+- No marques vegetación ajena, caminos ni borde de parcela.
+- Mantén hileras secas si su eje físico es reconocible.
+- Usa 6 a 12 puntos por hilera, coordenadas 0..1000 de la imagen COMPLETA.
+
+Devuelve SOLO JSON válido:
+{"coverage_score":0.0,"confidence":0.0,"estimated_row_count":0,
+ "rows":[{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y],[x,y]]}],"audit_notes":""}
+"""
+    try:
+        final_audit = _tc_openai_json([pil, guide], prompt_3, detail="high", model=_tc_openai_precision_model(), effort="high")
+        final_rows = _tc_sanitize_rows(final_audit)
+        if final_rows:
+            rows = _tc_remove_duplicate_rows_ai(final_rows, w, h)
+            rows = _tc_sort_rows_ai(rows, w, h)
+        else:
+            final_audit = {}
+    except Exception:
+        final_audit = {}
+
     return {
         "pil": pil,
         "rows": rows,
-        "coverage_score": _tc_clamp01((audit or {}).get("coverage_score", (first or {}).get("coverage_score", 0.7)), 0.7),
-        "confidence": _tc_clamp01((audit or {}).get("confidence", (first or {}).get("confidence", 0.7)), 0.7),
-        "debug": {"first": first, "audit": audit},
+        "coverage_score": _tc_clamp01((final_audit or {}).get("coverage_score", (audit or {}).get("coverage_score", (first or {}).get("coverage_score", 0.7))), 0.7),
+        "confidence": _tc_clamp01((final_audit or {}).get("confidence", (audit or {}).get("confidence", (first or {}).get("confidence", 0.7))), 0.7),
+        "debug": {"first": first, "audit": audit, "final_audit": final_audit},
     }
-
 
 def _tc_crop_bbox_for_rows(pil, rows, margin_factor=1.5):
     w, h = pil.size
@@ -6394,15 +6481,82 @@ Devuelve exactamente todos los IDs de la propuesta.
     return audited
 
 
+def _tc_inventory_consistency_ai(pil, rows):
+    """Corrige solo outliers grandes de slot_count usando paso geométrico de hileras vecinas."""
+    if not rows:
+        return rows
+    w, h = pil.size
+    result = [dict(r) for r in rows]
+    pitch = []
+    lengths = []
+    for r in result:
+        pts = _tc_norm_to_px(r.get("points_norm", []), w, h)
+        count = int(r.get("slot_count", 0) or 0)
+        a = float(np.clip(float(r.get("start_t", 0) or 0)/1000.0, 0, 1))
+        b = float(np.clip(float(r.get("end_t", 1000) or 1000)/1000.0, 0, 1))
+        if b < a: a, b = b, a
+        length = 0.0
+        if len(pts) >= 2:
+            # longitud aproximada del tramo plantado
+            samples = np.asarray([_tc_point_on_polyline(pts, t) for t in np.linspace(a,b,40)], dtype=np.float32)
+            length = float(np.sum(np.linalg.norm(np.diff(samples,axis=0),axis=1))) if len(samples)>1 else 0.0
+        lengths.append(length)
+        pitch.append(length/max(1,count-1) if count>2 and length>5 else np.nan)
+
+    p = np.asarray(pitch,dtype=float)
+    for i,r in enumerate(result):
+        old = int(r.get("slot_count",0) or 0)
+        if old <= 2 or not np.isfinite(p[i]):
+            continue
+        lo=max(0,i-3); hi=min(len(result),i+4)
+        neigh=p[lo:hi]
+        neigh=neigh[np.isfinite(neigh)]
+        if len(neigh)<3:
+            continue
+        med=float(np.median(neigh))
+        if med<=1:
+            continue
+        ratio=p[i]/med
+        # solo corregir outliers claros, no pequeñas diferencias reales.
+        if 0.68 <= ratio <= 1.47:
+            continue
+        new=max(2,int(round(lengths[i]/med))+1)
+        if new<2 or new>500:
+            continue
+        old_vac=_tc_clean_index_list_ai(r.get("vacant_indices",[]),old)
+        mapped=[]
+        for idx in old_vac:
+            q=0.0 if old<=1 else (idx-1)/float(old-1)
+            mapped.append(1+int(round(q*(new-1))))
+        mapped=_tc_clean_index_list_ai(mapped,new)
+        r["slot_count"]=new
+        r["vacant_indices"]=mapped
+        r["occupancy"]="".join("V" if j in set(mapped) else "O" for j in range(1,new+1))
+        r["confidence"]=min(float(r.get("confidence",0.7)),0.78)
+        r["consistency_adjusted"]=True
+    return result
+
+
 def _tc_draw_inventory_ai(pil, rows):
     bgr = cv2.cvtColor(np.asarray(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
     h, w = bgr.shape[:2]
-    line_th = max(1, int(round(min(w,h)/900)))
-    radius = max(2, int(round(min(w,h)/520)))
-    # Más grande para que 01..N se lea claramente arriba y abajo.
-    font = max(0.46, min(0.78, min(w,h)/1250))
+    line_th = max(1, int(round(min(w,h)/850)))
+    radius = max(2, int(round(min(w,h)/500)))
     table = []
     confs = []
+
+    # tamaño de etiqueta derivado del espacio real entre hileras.
+    mids=[]
+    for r in rows:
+        p=_tc_norm_to_px(r.get("points_norm",[]),w,h)
+        if len(p)>=2: mids.append(_tc_point_on_polyline(p,0.5))
+    spacing=30.0
+    if len(mids)>2:
+        d=np.linalg.norm(np.diff(np.asarray(mids),axis=0),axis=1)
+        d=d[d>2]
+        if len(d): spacing=float(np.median(d))
+    font=float(np.clip(spacing/42.0,0.38,0.68))
+
     for i, row in enumerate(rows, 1):
         row["id"] = i
         pts = _tc_norm_to_px(row.get("points_norm", []), w, h)
@@ -6412,25 +6566,19 @@ def _tc_draw_inventory_ai(pil, rows):
         cv2.polylines(bgr, [ip], False, (245,245,245), line_th, cv2.LINE_AA)
         label = f"{i:02d}"
 
-        # NUMERACIÓN ARRIBA / ABAJO: usar los puntos extremos verticales reales,
-        # no simplemente el primer/último punto que entregue la IA.
-        top_idx = int(np.argmin(ip[:, 1]))
-        bottom_idx = int(np.argmax(ip[:, 1]))
-        label_points = [ip[top_idx], ip[bottom_idx]]
-        text_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font, 2)
-        tw, th_txt = text_size
-        for pos_idx, endpoint in enumerate(label_points):
-            x, y = int(endpoint[0]), int(endpoint[1])
-            tx = int(np.clip(x - tw/2, 2, max(2, w - tw - 3)))
-            if pos_idx == 0:
-                ty = int(np.clip(y - 7, th_txt + 4, h - 4))
-            else:
-                ty = int(np.clip(y + th_txt + 7, th_txt + 4, h - 4))
-            # Fondo oscuro translúcido simulado con rectángulo sólido para legibilidad.
-            x0 = max(0, tx - 3); y0 = max(0, ty - th_txt - 4)
-            x1 = min(w - 1, tx + tw + 3); y1 = min(h - 1, ty + baseline + 3)
-            cv2.rectangle(bgr, (x0, y0), (x1, y1), (35, 20, 25), -1)
-            cv2.putText(bgr, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, font, (255,255,255), 2, cv2.LINE_AA)
+        # Siempre etiquetar el extremo visual superior e inferior.
+        endpoints=[ip[int(np.argmin(ip[:,1]))], ip[int(np.argmax(ip[:,1]))]]
+        for k, endpoint in enumerate(endpoints):
+            x,y=int(endpoint[0]),int(endpoint[1])
+            ts,base=cv2.getTextSize(label,cv2.FONT_HERSHEY_SIMPLEX,font,2)
+            tw,th=ts
+            tx=int(np.clip(x-tw/2,2,max(2,w-tw-3)))
+            # Alternancia leve evita que etiquetas vecinas se monten.
+            offset=6+(i%2)*max(4,int(th*0.65))
+            ty=int(np.clip(y-offset if k==0 else y+th+offset,th+4,h-4))
+            pad=3
+            cv2.rectangle(bgr,(max(0,tx-pad),max(0,ty-th-pad)),(min(w-1,tx+tw+pad),min(h-1,ty+base+pad)),(45,18,28),-1)
+            cv2.putText(bgr,label,(tx,ty),cv2.FONT_HERSHEY_SIMPLEX,font,(255,255,255),2,cv2.LINE_AA)
 
         positions = _tc_slot_positions_px_ai(row, (w,h))
         occ = _tc_clean_occupancy_ai(row.get("occupancy", ""), len(positions))
@@ -6440,24 +6588,28 @@ def _tc_draw_inventory_ai(pil, rows):
             x, y = int(round(p[0])), int(round(p[1]))
             if state == "V":
                 empty += 1
-                r = radius+1
-                cv2.line(bgr,(x-r,y-r),(x+r,y+r),(0,150,255),max(1,line_th+1),cv2.LINE_AA)
-                cv2.line(bgr,(x-r,y+r),(x+r,y-r),(0,150,255),max(1,line_th+1),cv2.LINE_AA)
+                rr = radius+1
+                cv2.line(bgr,(x-rr,y-rr),(x+rr,y+rr),(0,150,255),max(1,line_th+1),cv2.LINE_AA)
+                cv2.line(bgr,(x-rr,y+rr),(x+rr,y-rr),(0,150,255),max(1,line_th+1),cv2.LINE_AA)
             else:
                 occupied += 1
                 cv2.circle(bgr,(x,y),radius,(255,170,20),max(1,line_th),cv2.LINE_AA)
         conf = _tc_clamp01(row.get("confidence",0),0)
         confs.append(conf)
+        status = tr("Validado por IA", "Validé par IA")
+        if row.get("needs_review"):
+            status = tr("Revisar", "À vérifier")
+        elif row.get("consistency_adjusted"):
+            status = tr("Ajustado por consistencia", "Ajusté par cohérence")
         table.append({
             tr("Surco","Rang"): label,
             tr("Slots","Emplacements"): len(positions),
             tr("Ocupados","Occupés"): occupied,
             tr("Vacíos","Vides"): empty,
             tr("Confianza","Confiance"): round(conf*100,1),
-            tr("Estado","État"): tr("Revisar", "À vérifier") if row.get("needs_review") else tr("Validado por IA", "Validé par IA"),
+            tr("Estado","État"): status,
         })
     return bgr, pd.DataFrame(table), float(np.mean(confs)) if confs else 0.0, rows
-
 
 def _tc_analyze_inventory_openai(uploaded_image, base=None):
     base = base or _tc_detect_rows_openai(uploaded_image)
@@ -6466,6 +6618,7 @@ def _tc_analyze_inventory_openai(uploaded_image, base=None):
         raise RuntimeError("OpenAI no devolvió un Inventario refinado.")
     # Segunda lectura IA: confirma conteo y vacíos sin redibujar surcos.
     refined = _tc_audit_inventory_openai(base["pil"], refined, batch_size=8)
+    refined = _tc_inventory_consistency_ai(base["pil"], refined)
     image, table, local_conf, refined = _tc_draw_inventory_ai(base["pil"], refined)
     if table.empty:
         raise RuntimeError("OpenAI no pudo construir la tabla de Inventario.")
@@ -6500,251 +6653,246 @@ def _tc_select_best_capture_openai(uploaded_images):
     return up, _tc_analyze_inventory_openai(up, base=base), errors
 
 
-def _tc_clean_health_ai(value, count, occupancy):
-    s = "".join(c for c in str(value or "").upper() if c in "GR")[:max(0, int(count or 0))]
-    occ = _tc_clean_occupancy_ai(occupancy, count)
-    chars = list(s)
-    for i, c in enumerate(occ):
-        if i < len(chars) and c == "V":
-            chars[i] = "R"
-    return "".join(chars)
-
-
-def _tc_health_from_red_indices_ai(red_indices, count, occupancy):
-    count = max(0, int(count or 0))
-    if count <= 0:
-        return ""
-    red = set(_tc_clean_index_list_ai(red_indices, count))
-    occ = _tc_clean_occupancy_ai(occupancy, count)
-    for i, c in enumerate(occ, 1):
-        if c == "V":
-            red.add(i)
-    return "".join("R" if i in red else "G" for i in range(1, count + 1))
-
-
-def _tc_health_batches_openai(pil, rows, batch_size=8):
-    health = {}
-    rows_to_process = [r for r in rows if int(r.get("slot_count", 0) or 0) > 0]
-
-    for start in range(0, len(rows_to_process), batch_size):
-        group = rows_to_process[start:start + batch_size]
-        bbox = _tc_crop_bbox_for_rows(pil, group, 1.45)
-        original = pil.crop(bbox).convert("RGB")
-        guide = _tc_reference_crop_ai(pil, group, bbox, slots=True)
-        spec = [{
-            "id": int(r["id"]),
-            "slot_count": int(r.get("slot_count", 0) or 0),
-            "vacant_indices": [i + 1 for i, c in enumerate(_tc_clean_occupancy_ai(r.get("occupancy", ""), int(r.get("slot_count", 0) or 0))) if c == "V"],
-        } for r in group]
-
-        prompt = f"""
-TerraCore Salud. Imagen 1 es el recorte ORIGINAL. Imagen 2 muestra cada hilera Rxx y sus slots confirmados.
-Inventario confirmado: {json.dumps(spec, ensure_ascii=False, separators=(',', ':'))}
-
-Para cada Rxx NO devuelvas una cadena G/R larga.
-Devuelve solamente red_indices = índices 1-based de slots que NO muestran una planta claramente vigorosa/saludable.
-
-CRITERIO VISUAL ESTRICTO:
-- Los vacant_indices del Inventario DEBEN estar incluidos en red_indices.
-- ROJO si el slot está vacío, seco, marrón, amarillento, muy ralo, con poca cobertura, interrumpido o claramente más débil que plantas vecinas comparables.
-- VERDE solo cuando se observa vegetación viva clara, suficiente y razonablemente continua en ESA posición.
-- Si existe planta pero su vigor es claramente bajo, sigue siendo OCUPADO en Inventario pero debe ser ROJO en Salud.
-- Si hay duda real entre verde y rojo, compara con los slots vecinos de esa misma hilera y prefiere ROJO cuando la cobertura sea visiblemente inferior.
-- NO marques rojo solo por sombra, suelo entre hileras, poste o cambio de iluminación.
-- No cambies cantidad ni posición de slots.
-- No clasifiques maleza ENTRE hileras como salud de la vid.
-
-Devuelve SOLO JSON válido:
-{{"rows":[{{"id":1,"confidence":0.0,"red_indices":[7,8,19]}}]}}
-"""
+def _tc_clean_red_ranges_ai(value):
+    """Normaliza intervalos rojos 0..1000 a lista ordenada sin solapamientos."""
+    ranges=[]
+    if isinstance(value, dict):
+        value=value.get("red_ranges", value.get("ranges", []))
+    if not isinstance(value,(list,tuple)):
+        return []
+    for item in value:
+        if isinstance(item,dict):
+            a=item.get("start",item.get("start_t",0)); b=item.get("end",item.get("end_t",0))
+        elif isinstance(item,(list,tuple)) and len(item)>=2:
+            a,b=item[0],item[1]
+        else:
+            continue
         try:
-            data = _tc_openai_json([original, guide], prompt, detail="high")
-        except Exception:
-            data = {}
-
-        returned = data.get("rows", []) if isinstance(data, dict) else []
-        by_id = {}
-        for item in returned:
-            if isinstance(item, dict):
-                try:
-                    by_id[int(item.get("id"))] = item
-                except Exception:
-                    pass
-
-        for row in group:
-            rid = int(row["id"])
-            count = int(row.get("slot_count", 0) or 0)
-            occ = _tc_clean_occupancy_ai(row.get("occupancy", ""), count)
-            item = by_id.get(rid)
-
-            if isinstance(item, dict) and "red_indices" in item:
-                health[rid] = {
-                    "health": _tc_health_from_red_indices_ai(item.get("red_indices", []), count, occ),
-                    "confidence": _tc_clamp01(item.get("confidence", 0.72), 0.72),
-                }
-                continue
-
-            # Reintento puntual solo para esa hilera.
-            single_bbox = _tc_crop_bbox_for_rows(pil, [row], 2.15)
-            single_original = pil.crop(single_bbox).convert("RGB")
-            single_guide = _tc_reference_crop_ai(pil, [row], single_bbox, slots=True)
-            vac = [i + 1 for i, c in enumerate(occ) if c == "V"]
-            retry = f"""
-Revisa SOLO R{rid:02d}. Tiene {count} slots. Faltantes confirmados por Inventario: {vac}.
-Devuelve SOLO JSON:
-{{"id":{rid},"confidence":0.0,"red_indices":[1,2]}}
-red_indices son los índices 1-based de slots secos/muy débiles/faltantes. Incluye obligatoriamente {vac}.
-"""
-            try:
-                d = _tc_openai_json([single_original, single_guide], retry, detail="high")
-            except Exception:
-                d = {}
-
-            if isinstance(d, dict) and "red_indices" in d:
-                health[rid] = {
-                    "health": _tc_health_from_red_indices_ai(d.get("red_indices", []), count, occ),
-                    "confidence": _tc_clamp01(d.get("confidence", 0.62), 0.62),
-                }
-            else:
-                # No inventamos diagnóstico: solo respetamos faltantes confirmados,
-                # y dejamos el resto verde con confianza muy baja para que la app continúe.
-                health[rid] = {
-                    "health": _tc_health_from_red_indices_ai(vac, count, occ),
-                    "confidence": 0.20,
-                    "needs_review": True,
-                }
-
-    return health
-
-
-def _tc_health_audit_openai(pil, rows, health_map, batch_size=7):
-    """Segunda revisión OpenAI para reducir falsos verdes en Salud."""
-    final_map = {int(k): dict(v) for k, v in (health_map or {}).items()}
-    rows_to_process = [r for r in rows if int(r.get("slot_count", 0) or 0) > 0]
-
-    for start in range(0, len(rows_to_process), batch_size):
-        group = rows_to_process[start:start + batch_size]
-        bbox = _tc_crop_bbox_for_rows(pil, group, 1.65)
-        original = pil.crop(bbox).convert("RGB")
-        guide = _tc_reference_crop_ai(pil, group, bbox, slots=True)
-
-        spec = []
-        for r in group:
-            rid = int(r["id"])
-            count = int(r.get("slot_count", 0) or 0)
-            occ = _tc_clean_occupancy_ai(r.get("occupancy", ""), count)
-            initial = final_map.get(rid, {})
-            states = _tc_clean_health_ai(initial.get("health", ""), count, occ)
-            spec.append({
-                "id": rid,
-                "slot_count": count,
-                "vacant_indices": [i + 1 for i, c in enumerate(occ) if c == "V"],
-                "initial_red_indices": [i + 1 for i, c in enumerate(states) if c == "R"],
-            })
-
-        prompt = f"""
-TerraCore SALUD - SEGUNDA AUDITORÍA VISUAL.
-Imagen 1 es el ORIGINAL y la Imagen 2 es la guía exacta de los mismos surcos/slots.
-Primera clasificación: {json.dumps(spec, ensure_ascii=False, separators=(',', ':'))}
-
-Revisa TODOS los slots otra vez. La primera clasificación está dejando demasiado verde, así que NO la aceptes automáticamente.
-
-REGLA PRINCIPAL:
-VERDE significa vegetación de vid CLARAMENTE viva, suficiente y comparable en vigor/cobertura con plantas sanas cercanas.
-ROJO significa vacío confirmado O planta presente pero visualmente seca, marrón, amarillenta, rala, interrumpida, con poca cobertura o claramente debilitada.
-
-IMPORTANTE:
-- Una planta débil sigue siendo OCUPADA para Inventario, pero en Salud puede y debe ser ROJA.
-- Incluye siempre vacant_indices en red_indices.
-- Compara cada slot con los inmediatamente anteriores/posteriores y con hileras vecinas bajo iluminación similar.
-- Si la cobertura es claramente menor que la referencia local sana, marca ROJO.
-- No marques VERDE solo porque exista un pequeño punto verde.
-- No marques ROJO por sombra, poste o suelo entre hileras.
-- No cambies posiciones ni cantidad de slots.
-
-Devuelve SOLO JSON válido:
-{{"rows":[{{"id":1,"confidence":0.0,"red_indices":[2,5,8]}}]}}
-Debes devolver exactamente todos los IDs indicados.
-"""
-        try:
-            data = _tc_openai_json([original, guide], prompt, detail="high")
+            a=float(np.clip(float(a),0,1000)); b=float(np.clip(float(b),0,1000))
         except Exception:
             continue
+        if b<a: a,b=b,a
+        if b-a<4: continue
+        ranges.append([a,b])
+    ranges.sort(key=lambda z:z[0])
+    merged=[]
+    for a,b in ranges:
+        if merged and a<=merged[-1][1]+8:
+            merged[-1][1]=max(merged[-1][1],b)
+        else:
+            merged.append([a,b])
+    return merged
 
-        returned = data.get("rows", []) if isinstance(data, dict) else []
-        by_id = {}
-        for item in returned:
-            if isinstance(item, dict):
-                try:
-                    by_id[int(item.get("id"))] = item
-                except Exception:
-                    pass
 
+def _tc_health_segment_guide_ai(pil, rows, bbox):
+    """Guía limpia: línea Rxx con marcas 0/25/50/75/100 para localizar tramos."""
+    x0,y0,x1,y1=bbox
+    crop=pil.crop(bbox).convert("RGB")
+    bgr=cv2.cvtColor(np.asarray(crop),cv2.COLOR_RGB2BGR)
+    fw,fh=pil.size; cw,ch=crop.size
+    for r in rows:
+        rid=int(r.get("id",0))
+        pts=_tc_norm_to_px(r.get("points_norm",[]),fw,fh)
+        if len(pts)<2: continue
+        pts[:,0]-=x0; pts[:,1]-=y0
+        ip=np.rint(pts).astype(np.int32)
+        cv2.polylines(bgr,[ip],False,(255,0,255),1,cv2.LINE_AA)
+        for frac,label in ((0.0,"0"),(0.25,"25"),(0.5,"50"),(0.75,"75"),(1.0,"100")):
+            p=_tc_point_on_polyline(pts,frac)
+            xx,yy=int(p[0]),int(p[1])
+            if 0<=xx<cw and 0<=yy<ch:
+                cv2.circle(bgr,(xx,yy),2,(0,255,255),-1,cv2.LINE_AA)
+                if frac in (0.0,0.5,1.0):
+                    cv2.putText(bgr,f"R{rid:02d}:{label}",(xx+2,yy-2),cv2.FONT_HERSHEY_SIMPLEX,0.33,(20,20,20),3,cv2.LINE_AA)
+                    cv2.putText(bgr,f"R{rid:02d}:{label}",(xx+2,yy-2),cv2.FONT_HERSHEY_SIMPLEX,0.33,(255,255,255),1,cv2.LINE_AA)
+    return Image.fromarray(cv2.cvtColor(bgr,cv2.COLOR_BGR2RGB))
+
+
+def _tc_health_ranges_openai(pil, rows, batch_size=4):
+    """OpenAI devuelve TRAMOS rojos continuos, no un color por slot."""
+    result={}
+    valid=[r for r in rows if len(r.get("points_norm",[]))>=2]
+    for start in range(0,len(valid),batch_size):
+        group=valid[start:start+batch_size]
+        bbox=_tc_crop_bbox_for_rows(pil,group,1.85)
+        original=pil.crop(bbox).convert("RGB")
+        guide=_tc_health_segment_guide_ai(pil,group,bbox)
+        spec=[{"id":int(r["id"]),"vacant_indices":_tc_clean_index_list_ai(r.get("vacant_indices",[]),int(r.get("slot_count",0) or 0))} for r in group]
+        prompt=f"""
+TerraCore SALUD — CLASIFICACIÓN POR TRAMOS.
+Imagen 1 = recorte ORIGINAL de alta resolución.
+Imagen 2 = guía magenta; cada hilera Rxx lleva referencias 0,25,50,75,100 desde un extremo al otro.
+Hileras: {json.dumps(spec,ensure_ascii=False,separators=(',',':'))}
+
+Devuelve para cada Rxx únicamente los TRAMOS que deben ser ROJOS como red_ranges en escala 0..1000 sobre la longitud total de la hilera.
+Ejemplo: [120,260] significa rojo aproximadamente del 12% al 26% de esa hilera.
+
+CRITERIO ESTRICTO (NO SOBREESTIMES VERDE):
+- VERDE solo si se ve copa/vegetación de vid claramente viva, densa y continua, comparable con las zonas vigorosas cercanas bajo iluminación similar.
+- ROJO si el tramo está vacío, con suelo expuesto donde debería existir vid, seco, marrón/beige, amarillento, muy ralo, interrumpido o con cobertura claramente inferior al patrón sano local.
+- Una vid físicamente presente pero débil sigue siendo OCUPADA en Inventario, pero aquí el tramo debe ser ROJO.
+- Un punto pequeño de verde NO convierte un tramo ralo/seco en verde.
+- No confundas maleza entre hileras con copa de vid.
+- No marques rojo únicamente por sombra fuerte; compara con la continuidad de la hilera.
+- Sigue la MISMA hilera; no saltes a una vecina.
+- Si dudas entre verde y rojo por baja cobertura, usa ROJO.
+- Une zonas rojas cercanas separadas por un hueco verde muy corto.
+
+Devuelve SOLO JSON válido:
+{{"rows":[{{"id":1,"confidence":0.0,"red_ranges":[[120,260],[610,740]]}}]}}
+Devuelve exactamente todos los IDs.
+"""
+        try:
+            data=_tc_openai_json([original,guide],prompt,detail="high",model=_tc_openai_precision_model(),effort="high")
+        except Exception:
+            data={}
+        by={}
+        for item in (data.get("rows",[]) if isinstance(data,dict) else []):
+            if isinstance(item,dict):
+                try: by[int(item.get("id"))]=item
+                except Exception: pass
         for r in group:
-            rid = int(r["id"])
-            count = int(r.get("slot_count", 0) or 0)
-            occ = _tc_clean_occupancy_ai(r.get("occupancy", ""), count)
-            item = by_id.get(rid)
-            if not isinstance(item, dict) or "red_indices" not in item:
-                continue
-            final_map[rid] = {
-                "health": _tc_health_from_red_indices_ai(item.get("red_indices", []), count, occ),
-                "confidence": _tc_clamp01(item.get("confidence", 0.75), 0.75),
-                "audited": True,
+            rid=int(r["id"]); item=by.get(rid,{})
+            result[rid]={
+                "red_ranges":_tc_clean_red_ranges_ai(item.get("red_ranges",[])),
+                "confidence":_tc_clamp01(item.get("confidence",0.65),0.65),
             }
+    return result
 
-    return final_map
+
+def _tc_health_ranges_audit_openai(pil, rows, ranges_map, batch_size=4):
+    """Segunda auditoría orientada a encontrar falsos verdes, no a borrar rojos."""
+    final={int(k):dict(v) for k,v in (ranges_map or {}).items()}
+    valid=[r for r in rows if len(r.get("points_norm",[]))>=2]
+    for start in range(0,len(valid),batch_size):
+        group=valid[start:start+batch_size]
+        bbox=_tc_crop_bbox_for_rows(pil,group,2.0)
+        original=pil.crop(bbox).convert("RGB")
+        guide=_tc_health_segment_guide_ai(pil,group,bbox)
+        spec=[]
+        for r in group:
+            rid=int(r["id"])
+            spec.append({"id":rid,"initial_red_ranges":final.get(rid,{}).get("red_ranges",[])})
+        prompt=f"""
+AUDITORÍA FINAL TERRACORE SALUD.
+Imagen 1 ORIGINAL, imagen 2 guía de las mismas hileras. Clasificación inicial: {json.dumps(spec,ensure_ascii=False,separators=(',',':'))}
+
+Busca especialmente FALSOS VERDES. Para cada Rxx devuelve la lista FINAL de red_ranges 0..1000.
+- Conserva rojo donde hay suelo expuesto, hueco, sequedad, color marrón/beige/amarillo, copa muy rala o vigor claramente menor.
+- Verde exige vegetación de vid visible, suficiente, continua y comparable con referencia sana local.
+- No basta un pequeño punto verde aislado.
+- Si una zona inicial verde parece dudosa o claramente más débil que sus vecinas, conviértela a rojo.
+- No conviertas a rojo una zona sana solo por sombra uniforme.
+- No cambies la geometría de las hileras.
+
+Devuelve SOLO JSON válido:
+{{"rows":[{{"id":1,"confidence":0.0,"red_ranges":[[100,250],[600,800]]}}]}}
+"""
+        try:
+            data=_tc_openai_json([original,guide],prompt,detail="high",model=_tc_openai_precision_model(),effort="high")
+        except Exception:
+            continue
+        for item in (data.get("rows",[]) if isinstance(data,dict) else []):
+            if not isinstance(item,dict): continue
+            try: rid=int(item.get("id"))
+            except Exception: continue
+            if rid not in [int(r["id"]) for r in group]: continue
+            rr=_tc_clean_red_ranges_ai(item.get("red_ranges",[]))
+            final[rid]={"red_ranges":rr,"confidence":_tc_clamp01(item.get("confidence",0.72),0.72),"audited":True}
+    return final
 
 
-def _tc_draw_health_ai(pil, rows, health_map):
-    bgr = cv2.cvtColor(np.asarray(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
-    h, w = bgr.shape[:2]
-    thick = max(2, int(round(min(w,h)/650)))
-    font = max(0.30, min(0.50, min(w,h)/1700))
-    green, red = (45,210,50), (35,35,245)
-    total_g = total_r = 0
-    red_points = []
-    confs = []
+def _tc_row_vegetation_scores_ai(pil, row, samples=120):
+    """Chequeo conservador de evidencia verde real alrededor del eje de la hilera."""
+    rgb=np.asarray(pil.convert("RGB"))
+    bgr=cv2.cvtColor(rgb,cv2.COLOR_RGB2BGR)
+    h,w=bgr.shape[:2]
+    pts=_tc_norm_to_px(row.get("points_norm",[]),w,h)
+    if len(pts)<2: return np.zeros(samples,dtype=np.float32)
+    scores=[]
+    patch=max(3,int(round(min(w,h)*0.006)))
+    for t in np.linspace(0,1,samples):
+        p=_tc_point_on_polyline(pts,float(t)); x=int(round(p[0])); y=int(round(p[1]))
+        x0=max(0,x-patch); x1=min(w,x+patch+1); y0=max(0,y-patch); y1=min(h,y+patch+1)
+        crop=bgr[y0:y1,x0:x1]
+        if crop.size==0: scores.append(0.0); continue
+        arr=cv2.cvtColor(crop,cv2.COLOR_BGR2RGB).astype(np.float32)
+        r,g,b=arr[:,:,0],arr[:,:,1],arr[:,:,2]
+        exg=2*g-r-b
+        ngr=(g-r)/(g+r+1e-6)
+        hsv=cv2.cvtColor(crop,cv2.COLOR_BGR2HSV)
+        hh,ss,vv=cv2.split(hsv)
+        mask=(exg>5)&(ngr>-0.02)&(hh>=18)&(hh<=115)&(ss>=12)&(vv>=20)&(g>=r*0.86)&(g>=b*0.86)
+        scores.append(float(np.mean(mask)))
+    return np.asarray(scores,dtype=np.float32)
+
+
+def _tc_draw_health_ai_v4(pil, rows, ranges_map):
+    bgr=cv2.cvtColor(np.asarray(pil.convert("RGB")),cv2.COLOR_RGB2BGR)
+    h,w=bgr.shape[:2]
+    thick=max(2,int(round(min(w,h)/620)))
+    green,red=(45,210,50),(35,35,245)
+    total_g=total_r=0.0; red_points=[]; confs=[]
+
     for row in rows:
-        rid = int(row["id"])
-        pts = _tc_norm_to_px(row.get("points_norm",[]),w,h)
-        positions = _tc_slot_positions_px_ai(row,(w,h))
-        info = health_map.get(rid,{})
-        states = _tc_clean_health_ai(info.get("health",""),len(positions),row.get("occupancy",""))
+        rid=int(row["id"])
+        pts=_tc_norm_to_px(row.get("points_norm",[]),w,h)
+        if len(pts)<2: continue
+        info=ranges_map.get(rid,{})
+        ranges=_tc_clean_red_ranges_ai(info.get("red_ranges",[]))
         confs.append(_tc_clamp01(info.get("confidence",0),0))
-        for i in range(max(0,len(positions)-1)):
-            p0,p1 = positions[i],positions[i+1]
-            s0 = states[i] if i < len(states) else "G"
-            s1 = states[i+1] if i+1 < len(states) else s0
-            color = green if s0=="G" and s1=="G" else red
+
+        n=140
+        ts=np.linspace(0.0,1.0,n)
+        pp=np.asarray([_tc_point_on_polyline(pts,float(t)) for t in ts],dtype=np.float32)
+        veg=_tc_row_vegetation_scores_ai(pil,row,samples=n)
+        positive=veg[veg>0]
+        # Solo fuerza rojo cuando prácticamente no existe evidencia vegetal.
+        low_floor=max(0.018,float(np.percentile(positive,18))*0.42) if len(positive)>=10 else 0.022
+        states=[]
+        for j,t in enumerate(ts):
+            tn=t*1000.0
+            red_ai=any(a<=tn<=b for a,b in ranges)
+            red_low=bool(veg[j]<low_floor)
+            states.append("R" if (red_ai or red_low) else "G")
+
+        # suavizado 1D conservador: verde solo si forma una corrida real.
+        s=states[:]
+        for j in range(1,n-1):
+            if states[j]=="G" and states[j-1]=="R" and states[j+1]=="R": s[j]="R"
+        states=s
+        # expande 1 muestra los tramos rojos: evita cortes verdes microscópicos.
+        red_idx={j for j,v in enumerate(states) if v=="R"}
+        expanded=set(red_idx)
+        for j in red_idx:
+            if j>0: expanded.add(j-1)
+            if j<n-1: expanded.add(j+1)
+        states=["R" if j in expanded else "G" for j in range(n)]
+
+        for j in range(n-1):
+            p0,p1=pp[j],pp[j+1]
+            seglen=float(np.linalg.norm(p1-p0))
+            is_red=(states[j]=="R" or states[j+1]=="R")
+            color=red if is_red else green
             cv2.line(bgr,(int(round(p0[0])),int(round(p0[1]))),(int(round(p1[0])),int(round(p1[1]))),color,thick,cv2.LINE_AA)
-        for p,state in zip(positions,states):
-            if state=="R":
-                total_r += 1
-                red_points.append((float(p[0]),float(p[1])))
+            if is_red:
+                total_r+=seglen; red_points.append((float((p0[0]+p1[0])/2),float((p0[1]+p1[1])/2)))
             else:
-                total_g += 1
-        if len(pts)>=2:
-            label=f"{rid:02d}"
-            ip=np.rint(pts).astype(np.int32)
-            top_ep=ip[int(np.argmin(ip[:,1]))]
-            bottom_ep=ip[int(np.argmax(ip[:,1]))]
-            for pos_idx, ep in enumerate((top_ep,bottom_ep)):
-                x,y=int(ep[0]),int(ep[1])
-                text_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, max(font,0.46), 2)
-                tw, th_txt = text_size
-                tx=int(np.clip(x-tw/2,2,max(2,w-tw-3)))
-                ty=int(np.clip(y-7 if pos_idx==0 else y+th_txt+7, th_txt+4, h-4))
-                cv2.rectangle(bgr,(max(0,tx-3),max(0,ty-th_txt-4)),(min(w-1,tx+tw+3),min(h-1,ty+baseline+3)),(35,20,25),-1)
-                cv2.putText(bgr,label,(tx,ty),cv2.FONT_HERSHEY_SIMPLEX,max(font,0.46),(255,255,255),2,cv2.LINE_AA)
-    total=max(1,total_g+total_r)
-    return {
-        "annotated":bgr,
-        "green_pct":100.0*total_g/total,
-        "red_pct":100.0*total_r/total,
-        "red_points":red_points,
-        "confidence":float(np.mean(confs)) if confs else 0.0,
-    }
+                total_g+=seglen
+
+        # etiquetas arriba/abajo como Inventario
+        ip=np.rint(pts).astype(np.int32); label=f"{rid:02d}"
+        for k,ep in enumerate((ip[int(np.argmin(ip[:,1]))],ip[int(np.argmax(ip[:,1]))])):
+            x,y=int(ep[0]),int(ep[1]); font=0.44
+            (tw,th),base=cv2.getTextSize(label,cv2.FONT_HERSHEY_SIMPLEX,font,2)
+            tx=int(np.clip(x-tw/2,2,max(2,w-tw-3))); off=6+(rid%2)*5
+            ty=int(np.clip(y-off if k==0 else y+th+off,th+4,h-4))
+            cv2.rectangle(bgr,(max(0,tx-3),max(0,ty-th-3)),(min(w-1,tx+tw+3),min(h-1,ty+base+3)),(35,20,25),-1)
+            cv2.putText(bgr,label,(tx,ty),cv2.FONT_HERSHEY_SIMPLEX,font,(255,255,255),2,cv2.LINE_AA)
+
+    total=max(1e-6,total_g+total_r)
+    return {"annotated":bgr,"green_pct":100.0*total_g/total,"red_pct":100.0*total_r/total,
+            "red_points":red_points,"confidence":float(np.mean(confs)) if confs else 0.0}
 
 
 def _tc_health_diagnosis_openai(pil, visual, row_count):
@@ -6755,13 +6903,13 @@ def _tc_health_diagnosis_openai(pil, visual, row_count):
         distribution["top" if y<h/3 else "middle" if y<2*h/3 else "bottom"] += 1
     prompt=f"""
 TerraCore. Haz un diagnóstico VISUAL PRELIMINAR de esta fotografía.
-Resultados OpenAI por hilera: surcos={row_count}, vigor verde={visual.get('green_pct',0):.1f}%, afectación roja={visual.get('red_pct',0):.1f}%, distribución R={json.dumps(distribution)}.
-No afirmes una enfermedad ni un nutriente específico solo por la foto.
+Resultado por tramos: surcos={row_count}, verde={visual.get('green_pct',0):.1f}%, rojo={visual.get('red_pct',0):.1f}%, distribución roja={json.dumps(distribution)}.
+No afirmes enfermedad ni nutriente específico solo por la foto.
 Devuelve SOLO JSON válido:
 {{"zona_mas_afectada":"texto corto","nivel_afectacion_visual":"bajo|medio|alto","diagnostico_visual":"1 a 3 frases","causas_probables":["..."],"explicacion_nutrientes":"texto breve","recomendaciones_iniciales":["..."],"nota_diagnostico":"Diagnóstico visual preliminar..."}}
 """
     try:
-        data=_tc_openai_json([pil],prompt,detail="high")
+        data=_tc_openai_json([pil],prompt,detail="high",model=_tc_openai_precision_model(),effort="medium")
         return data if isinstance(data,dict) else {}
     except Exception:
         return {}
@@ -6771,10 +6919,9 @@ def _tc_analyze_health_openai(uploaded_image, rows):
     pil=Image.open(io.BytesIO(uploaded_image.getvalue())).convert("RGB")
     if not rows:
         raise RuntimeError("No hay geometría de Inventario confirmada.")
-    health_map=_tc_health_batches_openai(pil,rows,batch_size=7)
-    # Segunda revisión visual OpenAI: corrige falsos verdes sin mover surcos/slots.
-    health_map=_tc_health_audit_openai(pil,rows,health_map,batch_size=7)
-    visual=_tc_draw_health_ai(pil,rows,health_map)
+    ranges=_tc_health_ranges_openai(pil,rows,batch_size=4)
+    ranges=_tc_health_ranges_audit_openai(pil,rows,ranges,batch_size=4)
+    visual=_tc_draw_health_ai_v4(pil,rows,ranges)
     diag=_tc_health_diagnosis_openai(pil,visual,len(rows))
     result={
         "count":len(rows),"green_pct":float(visual["green_pct"]),"red_pct":float(visual["red_pct"]),"angle":0.0,
@@ -6782,9 +6929,9 @@ def _tc_analyze_health_openai(uploaded_image, rows):
         "nivel_afectacion_visual":diag.get("nivel_afectacion_visual","No determinado"),"diagnostico_visual":diag.get("diagnostico_visual",""),
         "causas_probables":diag.get("causas_probables",[]),"explicacion_nutrientes":diag.get("explicacion_nutrientes",""),
         "recomendaciones_iniciales":diag.get("recomendaciones_iniciales",[]),"nota_diagnostico":diag.get("nota_diagnostico","Diagnóstico visual preliminar."),
-        "detalle_zonas":{},"metodo":"openai-vision-direct","confidence":float(visual.get("confidence",0)),
+        "detalle_zonas":{},"metodo":"openai-vision-segment-audit","confidence":float(visual.get("confidence",0)),
     }
-    result["backend"]={"metodo":"openai-vision-direct","analisis":{
+    result["backend"]={"metodo":"openai-vision-segment-audit","analisis":{
         "surcos_estimados":result["count"],"verde_pct":result["green_pct"],"rojo_pct":result["red_pct"],
         "zona_mas_afectada":result["zona_mas_afectada"],"nivel_afectacion_visual":result["nivel_afectacion_visual"],
         "diagnostico_visual":result["diagnostico_visual"],"causas_probables":result["causas_probables"],
@@ -6848,6 +6995,18 @@ st.markdown(
     @media (max-width:900px){
         .tc-flow-wrap{grid-template-columns:1fr 1fr;}
     }
+    /* Móvil: los controles de parcela/captura aparecen primero porque side_col
+       es ahora la primera columna del DOM. También reducimos ruido del toolbar. */
+    @media (max-width:700px){
+        .tc-flow-wrap{grid-template-columns:1fr 1fr !important;gap:6px !important;}
+        .tc-flow-step{padding:9px 5px !important;font-size:.78rem !important;letter-spacing:.03em !important;}
+        [data-testid="stToolbar"]{display:none !important;}
+        .block-container{padding-left:.65rem !important;padding-right:.65rem !important;}
+        h1{font-size:2rem !important;}
+        h2{font-size:1.55rem !important;}
+        h3{font-size:1.25rem !important;}
+    }
+
     </style>
     """,
     unsafe_allow_html=True
@@ -6870,10 +7029,10 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-main_col, side_col = st.columns([2.15, 1.0], gap="medium")
+side_col, main_col = st.columns([1.0, 2.15], gap="medium")
 
 # ============================================================
-# PANEL DERECHO - PARCELA + CAPTURA BASE
+# PANEL DE CONFIGURACIÓN - PRIMERO EN MÓVIL
 # ============================================================
 with side_col:
     idioma_es_col, idioma_fr_col = st.columns(2, gap="medium")
@@ -6993,7 +7152,7 @@ with side_col:
 
 
 # ============================================================
-# PANEL IZQUIERDO - CAPTURA / INVENTARIO / SALUD
+# PANEL PRINCIPAL - CAPTURA / INVENTARIO / SALUD
 # ============================================================
 with main_col:
     # --------------------------------------------------------
@@ -7293,8 +7452,8 @@ with main_col:
                 progress_salud = st.progress(
                     5,
                     text=tr(
-                        "OpenAI está revisando la salud por cada surco y slot...",
-                        "OpenAI examine la santé pour chaque rang et emplacement..."
+                        "OpenAI está revisando cada surco por tramos y auditando falsos verdes...",
+                        "OpenAI examine chaque rang par sections et audite les faux verts..."
                     )
                 )
 
