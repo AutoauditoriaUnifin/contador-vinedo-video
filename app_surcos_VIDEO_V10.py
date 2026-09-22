@@ -5917,7 +5917,7 @@ def _tc_gemini_json(images, prompt, detail="high"):
 
 
 def _tc_ai_result_useful(data, prompt):
-    """Valida lo mínimo antes de aceptar Gemini sin gastar en OpenAI."""
+    """Valida ESTRUCTURA mínima. La baja confianza ya NO obliga a usar OpenAI."""
     if not isinstance(data, dict) or not data:
         return False, "respuesta vacía"
 
@@ -5926,8 +5926,6 @@ def _tc_ai_result_useful(data, prompt):
     if rows is None:
         rows = data.get("surcos")
 
-    # Solo exigimos una lista de filas cuando el esquema de salida realmente la pide.
-    # Esto evita mandar diagnósticos válidos a OpenAI solo porque el texto menciona "surcos".
     expects_rows = (
         '"rows"' in p
         or '"rows":' in p
@@ -5938,6 +5936,39 @@ def _tc_ai_result_useful(data, prompt):
         if not isinstance(rows, list) or len(rows) == 0:
             return False, "no devolvió filas/surcos"
 
+        # Cuando el prompt pide geometría, exigimos al menos una fila con 2 puntos.
+        expects_points = (
+            '"points"' in p
+            or '"puntos"' in p
+            or 'trayectoria' in p
+        )
+        if expects_points:
+            valid_geometry = 0
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                pts = item.get("points") or item.get("puntos") or item.get("trayectoria") or []
+                if isinstance(pts, list) and len(pts) >= 2:
+                    valid_geometry += 1
+            if valid_geometry == 0:
+                return False, "no devolvió geometría utilizable"
+
+    # En Salud, si falta la zona no cancelamos; se marca como advertencia.
+    return True, "ok"
+
+
+def _tc_ai_quality_warning(data, prompt):
+    """Devuelve una advertencia de calidad sin tumbar el análisis ni llamar OpenAI."""
+    if not isinstance(data, dict):
+        return ""
+
+    p = str(prompt or "").lower()
+    rows = data.get("rows")
+    if rows is None:
+        rows = data.get("surcos")
+
+    warnings = []
+    if isinstance(rows, list) and rows:
         confidences = []
         for item in rows:
             if not isinstance(item, dict):
@@ -5948,15 +5979,28 @@ def _tc_ai_result_useful(data, prompt):
                     confidences.append(float(raw_conf))
                 except Exception:
                     pass
-
-        # Si todas las filas vienen con muy baja confianza, deja que OpenAI audite.
-        if confidences and max(confidences) < 0.42:
-            return False, "confianza demasiado baja"
+        if confidences:
+            avg = sum(confidences) / max(1, len(confidences))
+            if max(confidences) < 0.42:
+                warnings.append("Gemini devolvió confianza baja; el resultado se conserva y queda marcado para revisión.")
+            elif avg < 0.52:
+                warnings.append("Gemini devolvió confianza media-baja en parte del análisis; revisa visualmente esas hileras.")
 
     if '"zona_mas_afectada"' in p and not str(data.get("zona_mas_afectada", "")).strip():
-        return False, "diagnóstico incompleto"
+        warnings.append("Gemini no definió la zona más afectada; el diagnóstico continúa sin cancelar Salud.")
 
-    return True, "ok"
+    return " ".join(warnings).strip()
+
+
+def _tc_push_ai_warning(message):
+    message = str(message or "").strip()
+    if not message:
+        return
+    current = st.session_state.get("tc_ai_warnings_runtime", []) or []
+    current = list(current)
+    if message not in current:
+        current.append(message)
+    st.session_state.tc_ai_warnings_runtime = current
 
 
 def _tc_openai_json_fallback(images, prompt, detail="high", model=None, effort="medium"):
@@ -6007,24 +6051,36 @@ def _tc_openai_json_fallback(images, prompt, detail="high", model=None, effort="
 
 def _tc_openai_json(images, prompt, detail="high", model=None, effort="medium"):
     """
-    Compatibilidad con el resto de la app:
-    1) Gemini 2.5 Flash-Lite primero.
-    2) OpenAI únicamente si Gemini falla o su resultado no pasa validación mínima.
-
-    Se conserva este nombre de función para no tocar la lógica ni el diseño existentes.
+    Motor híbrido robusto:
+    1) Gemini 2.5 Flash-Lite SIEMPRE primero.
+    2) Si Gemini devuelve estructura utilizable, se acepta aunque la confianza sea baja.
+       La baja confianza solo genera una advertencia; NO gasta OpenAI.
+    3) OpenAI se intenta únicamente si Gemini falla por completo o no devuelve estructura útil.
+    4) Si OpenAI no tiene saldo, eso no afecta un resultado válido de Gemini.
     """
     gemini_error = None
+    gemini_partial = None
 
     try:
         data = _tc_gemini_json(images, prompt, detail=detail)
+        gemini_partial = data if isinstance(data, dict) else None
         useful, reason = _tc_ai_result_useful(data, prompt)
         if useful:
+            warning = _tc_ai_quality_warning(data, prompt)
             st.session_state.tc_last_ai_provider = f"Gemini ({_tc_gemini_model()})"
+            st.session_state.tc_last_ai_warning = warning
+            if warning:
+                _tc_push_ai_warning(warning)
+                # Metadatos internos; las funciones existentes pueden ignorarlos.
+                data = dict(data)
+                data["_tc_review_required"] = True
+                data["_tc_review_reason"] = warning
             return data
         gemini_error = f"Gemini: {reason}"
     except Exception as exc:
         gemini_error = f"Gemini: {exc}"
 
+    # Solo llegamos aquí cuando Gemini NO produjo una estructura utilizable.
     try:
         return _tc_openai_json_fallback(
             images,
@@ -6034,9 +6090,28 @@ def _tc_openai_json(images, prompt, detail="high", model=None, effort="medium"):
             effort=effort,
         )
     except Exception as openai_exc:
-        raise RuntimeError(
-            f"{gemini_error} | OpenAI respaldo: {openai_exc}"
-        )
+        # Si Gemini dejó algún JSON parcial, preferimos devolverlo marcado para revisión
+        # antes que perder todo por falta de saldo en OpenAI, siempre que contenga datos.
+        if isinstance(gemini_partial, dict) and gemini_partial:
+            warning = (
+                f"Gemini devolvió un resultado parcial ({gemini_error}). "
+                "OpenAI de respaldo no está disponible; se conserva lo recuperable para revisión."
+            )
+            _tc_push_ai_warning(warning)
+            partial = dict(gemini_partial)
+            partial["_tc_review_required"] = True
+            partial["_tc_review_reason"] = warning
+            st.session_state.tc_last_ai_provider = f"Gemini parcial ({_tc_gemini_model()})"
+            return partial
+
+        msg = str(openai_exc)
+        if "insufficient_quota" in msg or "credit_balance_exhausted" in msg or "no credits remaining" in msg.lower():
+            raise RuntimeError(
+                f"{gemini_error}. OpenAI de respaldo no tiene saldo. "
+                "Configura GEMINI_API_KEY en Streamlit Secrets para que Gemini pueda trabajar sin depender de OpenAI."
+            )
+        raise RuntimeError(f"{gemini_error} | OpenAI respaldo: {openai_exc}")
+
 
 def _tc_clamp01(value, default=0.0):
     try:
@@ -6884,13 +6959,19 @@ def _tc_analyze_inventory_openai(uploaded_image, base=None):
         "confidence": float(np.mean([base.get("confidence",0), local_conf])),
         "coverage_score": base.get("coverage_score",0),
         "rows": refined,
-        "model": f"{_tc_gemini_model()} + OpenAI respaldo",
-        "warnings": [r.get("review_reason") for r in refined if r.get("needs_review") and r.get("review_reason")],
+        "model": st.session_state.get("tc_last_ai_provider", f"Gemini ({_tc_gemini_model()})"),
+        "warnings": (
+            [r.get("review_reason") for r in refined if r.get("needs_review") and r.get("review_reason")]
+            + list(st.session_state.get("tc_ai_warnings_runtime", []) or [])
+        ),
         "debug": base.get("debug",{}),
     }
 
 
 def _tc_select_best_capture_openai(uploaded_images):
+    # Advertencias nuevas para esta ejecución. No arrastrar mensajes de una parcela anterior.
+    st.session_state.tc_ai_warnings_runtime = []
+    st.session_state.tc_last_ai_warning = ""
     candidates = []
     errors = []
     for up in uploaded_images:
@@ -6902,7 +6983,7 @@ def _tc_select_best_capture_openai(uploaded_images):
         except Exception as exc:
             errors.append(f"{up.name}: {exc}")
     if not candidates:
-        raise RuntimeError(" | ".join(errors) if errors else "No se pudo analizar la captura con OpenAI.")
+        raise RuntimeError(" | ".join(errors) if errors else "No se pudo analizar la captura con IA.")
     candidates.sort(key=lambda item:item[0], reverse=True)
     _, up, base = candidates[0]
     return up, _tc_analyze_inventory_openai(up, base=base), errors
@@ -7558,7 +7639,7 @@ with main_col:
         fuente_inv = st.session_state.tc_inventario_fuente or "—"
         st.caption(
             tr(
-                f"Inventario identificado con Gemini Flash-Lite y OpenAI solo como respaldo. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
+                f"Inventario identificado principalmente con Gemini Flash-Lite. OpenAI es respaldo opcional y su falta de saldo no cancela un resultado válido de Gemini. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
                 f"Inventaire automatique calculé à partir de la présence visuelle, séparé du diagnostic de santé. Image de référence : {fuente_inv}. Confiance moyenne : {confianza_inv*100:.1f} %."
             )
         )
