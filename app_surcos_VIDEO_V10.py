@@ -7200,8 +7200,8 @@ with main_col:
         st.subheader(tr("Inventario", "Inventaire"))
         st.caption(
             tr(
-                "Primera etapa: detectar surcos, numerarlos al inicio y al final y separar slots ocupados/vacíos. El diagnóstico de salud permanece bloqueado.",
-                "Première étape : détecter les rangs, les numéroter au début et à la fin et séparer les emplacements occupés/vides. Le diagnostic de santé reste bloqué."
+                "Primera etapa: detectar surcos, numerarlos al inicio y al final y separar slots ocupados/vacíos.",
+                "Première étape : détecter les rangs, les numéroter au début et à la fin et séparer les emplacements occupés/vides."
             )
         )
 
