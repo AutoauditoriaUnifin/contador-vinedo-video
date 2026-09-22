@@ -56,56 +56,6 @@ st.set_page_config(
     layout="wide"
 )
 
-
-# ============================================================
-# DIAGNÓSTICO DE CONFIGURACIÓN GEMINI
-# ============================================================
-# No muestra ni imprime la clave. Solo confirma si Streamlit Cloud
-# puede leerla. También acepta una sección opcional [gemini].
-def _tc_gemini_secret_status():
-    value = ""
-    source = ""
-
-    try:
-        value = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
-        if value:
-            source = "Streamlit Secrets"
-    except Exception:
-        value = ""
-
-    if not value:
-        try:
-            gemini_section = st.secrets.get("gemini", {})
-            if gemini_section:
-                value = str(
-                    gemini_section.get("GEMINI_API_KEY", "")
-                    or gemini_section.get("api_key", "")
-                ).strip()
-                if value:
-                    source = "Streamlit Secrets [gemini]"
-        except Exception:
-            value = ""
-
-    if not value:
-        value = str(os.getenv("GEMINI_API_KEY", "")).strip()
-        if value:
-            source = "variable de entorno"
-
-    return bool(value), source
-
-
-_tc_gemini_ok_inicio, _tc_gemini_source_inicio = _tc_gemini_secret_status()
-
-if _tc_gemini_ok_inicio:
-    st.success(
-        f"✅ Gemini API detectada correctamente ({_tc_gemini_source_inicio})."
-    )
-else:
-    st.error(
-        "❌ Gemini API NO detectada. En Streamlit Cloud abre "
-        "Manage app → Settings → Secrets, guarda GEMINI_API_KEY y después haz Reboot app."
-    )
-
 # ============================================================
 # IDIOMA ES / FR
 # ============================================================
@@ -5865,56 +5815,48 @@ def _tc_jpeg_bytes(pil_img, max_side=2200, quality=93):
 
 
 def _tc_gemini_model():
-    """Modelo económico principal para Inventario y Salud."""
+    """Modelo principal económico para Inventario y Salud."""
+    value = ""
     try:
         value = str(st.secrets.get("GEMINI_VISION_MODEL", "")).strip()
-        if value:
-            return value
     except Exception:
         pass
-    value = str(os.getenv("GEMINI_VISION_MODEL", "")).strip()
-    return value or "gemini-2.5-flash-lite"
+    if not value:
+        value = str(os.getenv("GEMINI_VISION_MODEL", "")).strip()
+
+    # Gemini 2.5 Flash-Lite ya no está disponible para cuentas nuevas.
+    # Si quedó guardado el nombre anterior en Secrets, migrarlo sin romper la app.
+    if value in {
+        "gemini-2.5-flash-lite",
+        "models/gemini-2.5-flash-lite",
+    }:
+        value = "gemini-3.5-flash-lite"
+
+    if value.startswith("models/"):
+        value = value.split("/", 1)[1]
+
+    return value or "gemini-3.5-flash-lite"
+
 
 
 def _tc_gemini_api_key():
-    """
-    Obtiene la clave de Gemini sin exponerla.
-
-    Orden de búsqueda:
-    1) GEMINI_API_KEY en Streamlit Secrets (raíz).
-    2) [gemini] GEMINI_API_KEY o api_key.
-    3) Variable de entorno GEMINI_API_KEY.
-    """
     try:
         value = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
         if value:
             return value
     except Exception:
         pass
-
-    try:
-        gemini_section = st.secrets.get("gemini", {})
-        if gemini_section:
-            value = str(
-                gemini_section.get("GEMINI_API_KEY", "")
-                or gemini_section.get("api_key", "")
-            ).strip()
-            if value:
-                return value
-    except Exception:
-        pass
-
     return str(os.getenv("GEMINI_API_KEY", "")).strip()
 
 
 def _tc_gemini_json(images, prompt, detail="high"):
     """
-    Motor principal económico. Usa la API REST oficial de Gemini para no
-    agregar dependencias nuevas a la app. Devuelve JSON parseado.
+    Motor principal Gemini por REST. Si Google retira el modelo configurado y
+    devuelve un 404 con un modelo sustituto, la app lo detecta y reintenta sola.
     """
     api_key = _tc_gemini_api_key()
     if not api_key:
-        raise RuntimeError("Falta GEMINI_API_KEY. En Streamlit Cloud: Manage app → Settings → Secrets → guarda la clave → Reboot app.")
+        raise RuntimeError("Falta GEMINI_API_KEY en Streamlit Secrets o variables de entorno.")
 
     parts = [{"text": str(prompt)}]
     for img in images:
@@ -5926,19 +5868,8 @@ def _tc_gemini_json(images, prompt, detail="high"):
             }
         })
 
-    model_name = _tc_gemini_model()
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model_name}:generateContent"
-    )
-
     payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": parts,
-            }
-        ],
+        "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "responseMimeType": "application/json",
             "temperature": 0.05,
@@ -5946,45 +5877,79 @@ def _tc_gemini_json(images, prompt, detail="high"):
         },
     }
 
-    response = requests.post(
-        url,
-        headers={
-            "x-goog-api-key": api_key,
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=240,
-    )
+    configured = _tc_gemini_model()
+    models_to_try = [configured]
+    if "gemini-3.5-flash-lite" not in models_to_try:
+        models_to_try.append("gemini-3.5-flash-lite")
 
-    if response.status_code >= 400:
-        detail_text = response.text[:1200]
-        raise RuntimeError(
-            f"Gemini HTTP {response.status_code}: {detail_text}"
+    errors = []
+    attempted = set()
+    while models_to_try:
+        model_name = str(models_to_try.pop(0)).strip()
+        if not model_name or model_name in attempted:
+            continue
+        attempted.add(model_name)
+        if model_name.startswith("models/"):
+            model_name = model_name.split("/", 1)[1]
+
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model_name}:generateContent"
+        )
+        response = requests.post(
+            url,
+            headers={
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=240,
         )
 
-    body = response.json()
-    candidates = body.get("candidates") or []
-    if not candidates:
-        feedback = body.get("promptFeedback") or {}
-        raise RuntimeError(
-            "Gemini no devolvió candidatos. "
-            + json.dumps(feedback, ensure_ascii=False)[:800]
-        )
+        if response.status_code >= 400:
+            detail_text = response.text[:1600]
+            errors.append(f"{model_name}: HTTP {response.status_code}: {detail_text}")
 
-    content = candidates[0].get("content") or {}
-    response_parts = content.get("parts") or []
-    texts = [
-        str(part.get("text", ""))
-        for part in response_parts
-        if isinstance(part, dict) and part.get("text")
-    ]
-    if not texts:
-        raise RuntimeError("Gemini no devolvió texto JSON.")
+            # Google suele incluir el modelo nuevo en el propio mensaje de 404.
+            if response.status_code == 404:
+                import re as _re
+                suggested = _re.findall(r"models/(gemini-[A-Za-z0-9._-]+)", detail_text)
+                for candidate in suggested:
+                    if candidate not in attempted and candidate not in models_to_try:
+                        models_to_try.insert(0, candidate)
+            continue
 
-    data = limpiar_json_respuesta("\n".join(texts))
-    if not isinstance(data, dict):
-        raise RuntimeError("Gemini no devolvió un objeto JSON.")
-    return data
+        body = response.json()
+        candidates = body.get("candidates") or []
+        if not candidates:
+            feedback = body.get("promptFeedback") or {}
+            errors.append(
+                f"{model_name}: sin candidatos: "
+                + json.dumps(feedback, ensure_ascii=False)[:800]
+            )
+            continue
+
+        content = candidates[0].get("content") or {}
+        response_parts = content.get("parts") or []
+        texts = [
+            str(part.get("text", ""))
+            for part in response_parts
+            if isinstance(part, dict) and part.get("text")
+        ]
+        if not texts:
+            errors.append(f"{model_name}: no devolvió texto JSON")
+            continue
+
+        data = limpiar_json_respuesta("\n".join(texts))
+        if not isinstance(data, dict):
+            errors.append(f"{model_name}: no devolvió un objeto JSON")
+            continue
+
+        st.session_state.tc_last_ai_provider = f"Gemini ({model_name})"
+        return data
+
+    raise RuntimeError("Gemini no pudo completar la solicitud. " + " | ".join(errors[-3:]))
+
 
 
 def _tc_ai_result_useful(data, prompt):
@@ -6342,107 +6307,363 @@ def _tc_render_row_guide_ai(pil, rows):
     return Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
 
 
+
+
+def _tc_resample_polyline_px(points, n=9):
+    pts = np.asarray(points, dtype=np.float32)
+    if len(pts) < 2:
+        return pts
+    return np.asarray([
+        _tc_point_on_polyline(pts, float(t))
+        for t in np.linspace(0.0, 1.0, max(2, int(n)))
+    ], dtype=np.float32)
+
+
+def _tc_px_points_to_norm(points, w, h):
+    pts = np.asarray(points, dtype=np.float32)
+    if len(pts) == 0:
+        return []
+    out = []
+    for x, y in pts:
+        out.append([
+            float(np.clip(float(x) / max(1, w - 1) * 1000.0, 0.0, 1000.0)),
+            float(np.clip(float(y) / max(1, h - 1) * 1000.0, 0.0, 1000.0)),
+        ])
+    return out
+
+
+def _tc_angle_diff_pi(a, b):
+    d = abs(float(a) - float(b)) % np.pi
+    return min(d, np.pi - d)
+
+
+def _tc_rows_from_local_geometry(pil):
+    """
+    Obtiene la geometría de surcos con el detector estructural local V12.
+
+    La IA ya NO inventa la rejilla desde cero. El detector local sigue la
+    orientación/curva real de la fotografía; Gemini se usa después como auditor.
+    """
+    w, h = pil.size
+    try:
+        local = analizar(pil)
+    except Exception as exc:
+        return [], {"error": str(exc), "source": "local-v12"}
+
+    track_records = local.get("tracks", []) if isinstance(local, dict) else []
+    candidates = []
+    for rec in track_records:
+        try:
+            pts = np.asarray(rec.get("points", []), dtype=np.float32)
+        except Exception:
+            continue
+        if len(pts) < 2:
+            continue
+
+        length = float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
+        if length < max(18.0, min(w, h) * 0.08):
+            continue
+
+        vec = pts[-1] - pts[0]
+        ang = float(np.arctan2(float(vec[1]), float(vec[0])) % np.pi)
+
+        states = np.asarray(rec.get("states", []), dtype=bool)
+        green_scores = np.asarray(rec.get("green_scores", []), dtype=np.float32)
+        continuity = float(np.mean(states)) if states.size else 0.65
+        visual = float(np.mean(green_scores)) if green_scores.size else 0.15
+        conf = float(np.clip(0.55 + 0.25 * continuity + 0.20 * min(1.0, visual / 0.20), 0.50, 0.94))
+
+        sampled = _tc_resample_polyline_px(pts, n=9)
+        sampled[:, 0] = np.clip(sampled[:, 0], 0, max(0, w - 1))
+        sampled[:, 1] = np.clip(sampled[:, 1], 0, max(0, h - 1))
+        candidates.append({
+            "points_px": sampled,
+            "angle": ang,
+            "length": length,
+            "confidence": conf,
+        })
+
+    if len(candidates) < 4:
+        return [], {
+            "source": "local-v12",
+            "count": len(candidates),
+            "local_count": int(local.get("count", 0) or 0) if isinstance(local, dict) else 0,
+        }
+
+    # Mantener la orientación dominante. Esto evita tomar surcos de una parcela
+    # vecina con otra dirección, uno de los errores que aparecía en pruebas previas.
+    z = 0j
+    for c in candidates:
+        z += max(1.0, c["length"]) * np.exp(1j * 2.0 * c["angle"])
+    dominant = float((np.angle(z) / 2.0) % np.pi) if abs(z) > 1e-9 else candidates[0]["angle"]
+    angle_limit = np.deg2rad(24.0)
+    oriented = [c for c in candidates if _tc_angle_diff_pi(c["angle"], dominant) <= angle_limit]
+    if len(oriented) >= max(4, int(round(len(candidates) * 0.55))):
+        candidates = oriented
+
+    # Filtrar fragmentos muy cortos con respecto a la parcela real.
+    lengths = np.asarray([c["length"] for c in candidates], dtype=np.float32)
+    med_len = float(np.median(lengths)) if len(lengths) else 0.0
+    if med_len > 0:
+        filtered = [c for c in candidates if c["length"] >= med_len * 0.48]
+        if len(filtered) >= 4:
+            candidates = filtered
+
+    rows = []
+    for i, c in enumerate(candidates, 1):
+        rows.append({
+            "id": i,
+            "points_norm": _tc_px_points_to_norm(c["points_px"], w, h),
+            "confidence": c["confidence"],
+        })
+
+    rows = _tc_sort_rows_ai(rows, w, h)
+    rows = _tc_remove_duplicate_rows_ai(rows, w, h)
+
+    # Segunda eliminación de duplicados con umbral más estricto basado en la
+    # separación transversal de las hileras ya ordenadas.
+    if len(rows) >= 4:
+        mids = np.asarray([
+            _tc_point_on_polyline(_tc_norm_to_px(r["points_norm"], w, h), 0.5)
+            for r in rows
+        ], dtype=np.float32)
+        gaps = np.linalg.norm(np.diff(mids, axis=0), axis=1)
+        good = gaps[gaps > 2.0]
+        if len(good):
+            med_gap = float(np.median(good))
+            kept = [rows[0]]
+            last_mid = mids[0]
+            for idx in range(1, len(rows)):
+                cur_mid = mids[idx]
+                if float(np.linalg.norm(cur_mid - last_mid)) < med_gap * 0.52:
+                    # Conservar el candidato de mayor confianza.
+                    if rows[idx].get("confidence", 0.0) > kept[-1].get("confidence", 0.0):
+                        kept[-1] = rows[idx]
+                        last_mid = cur_mid
+                    continue
+                kept.append(rows[idx])
+                last_mid = cur_mid
+            rows = _tc_sort_rows_ai(kept, w, h)
+
+    return rows, {
+        "source": "local-v12",
+        "count": len(rows),
+        "local_count": int(local.get("count", 0) or 0) if isinstance(local, dict) else len(rows),
+        "dominant_angle_deg": float(np.degrees(dominant)),
+    }
+
+
+def _tc_rows_transverse_axis(rows, w, h):
+    directions = []
+    prepared = []
+    for r in rows:
+        pts = _tc_norm_to_px(r.get("points_norm", []), w, h)
+        if len(pts) < 2:
+            continue
+        v = pts[-1] - pts[0]
+        nv = float(np.linalg.norm(v))
+        if nv > 1e-6:
+            v = v / nv
+            # Dirección sin signo para poder promediar.
+            if v[1] < 0 or (abs(v[1]) < abs(v[0]) and v[0] < 0):
+                v = -v
+            directions.append(v)
+        prepared.append((r, pts))
+    if not prepared:
+        return np.asarray([1.0, 0.0], dtype=np.float32), []
+    d = np.mean(np.asarray(directions), axis=0) if directions else np.asarray([0.0, 1.0], dtype=np.float32)
+    nd = float(np.linalg.norm(d))
+    d = d / nd if nd > 1e-6 else np.asarray([0.0, 1.0], dtype=np.float32)
+    normal = np.asarray([d[1], -d[0]], dtype=np.float32)
+    if abs(d[1]) >= abs(d[0]) and normal[0] < 0:
+        normal = -normal
+    elif abs(d[0]) > abs(d[1]) and normal[1] < 0:
+        normal = -normal
+    us = []
+    for r, pts in prepared:
+        mid = _tc_point_on_polyline(pts, 0.5)
+        us.append(float(np.dot(mid, normal)))
+    return normal, us
+
+
+def _tc_merge_ai_geometry_with_local(local_rows, ai_rows, w, h):
+    """
+    Gemini puede mover suavemente una línea hacia el centro de la hilera,
+    pero NO puede sustituir la rejilla geométrica por decenas de líneas nuevas.
+    """
+    local_rows = _tc_sort_rows_ai(local_rows, w, h)
+    ai_rows = _tc_sort_rows_ai(ai_rows, w, h)
+    if not local_rows or not ai_rows:
+        return local_rows or ai_rows
+
+    ratio = len(ai_rows) / float(max(1, len(local_rows)))
+    if ratio < 0.80 or ratio > 1.20:
+        return local_rows
+
+    normal, local_u = _tc_rows_transverse_axis(local_rows, w, h)
+    _, ai_u = _tc_rows_transverse_axis(ai_rows, w, h)
+    if len(local_u) != len(local_rows) or len(ai_u) != len(ai_rows):
+        return local_rows
+
+    gaps = np.diff(np.asarray(local_u, dtype=np.float32))
+    gaps = np.abs(gaps[gaps != 0])
+    spacing = float(np.median(gaps)) if len(gaps) else max(8.0, min(w, h) * 0.02)
+    max_match = max(5.0, spacing * 0.48)
+
+    used = set()
+    merged = []
+    for i, lr in enumerate(local_rows):
+        candidates = [
+            (abs(float(ai_u[j]) - float(local_u[i])), j)
+            for j in range(len(ai_rows))
+            if j not in used
+        ]
+        candidates.sort(key=lambda z: z[0])
+        if not candidates or candidates[0][0] > max_match:
+            merged.append(dict(lr))
+            continue
+
+        _, j = candidates[0]
+        used.add(j)
+        ar = ai_rows[j]
+        lp = _tc_resample_polyline_px(_tc_norm_to_px(lr.get("points_norm", []), w, h), n=9)
+        ap = _tc_resample_polyline_px(_tc_norm_to_px(ar.get("points_norm", []), w, h), n=9)
+        if len(lp) != len(ap) or len(lp) < 2:
+            merged.append(dict(lr))
+            continue
+
+        # 75% geometría local + 25% corrección visual de Gemini.
+        blend = lp * 0.75 + ap * 0.25
+        rr = dict(lr)
+        rr["points_norm"] = _tc_px_points_to_norm(blend, w, h)
+        rr["confidence"] = max(
+            _tc_clamp01(lr.get("confidence", 0.65), 0.65),
+            min(0.92, _tc_clamp01(ar.get("confidence", 0.65), 0.65)),
+        )
+        rr["geometry_audited"] = True
+        merged.append(rr)
+
+    return _tc_sort_rows_ai(merged, w, h)
+
 def _tc_detect_rows_openai(uploaded_image):
+    """
+    Geometría híbrida corregida:
+    1) OpenCV/V12 encuentra y sigue físicamente las hileras.
+    2) Gemini ve la foto + esa guía y solo audita el centro de cada hilera.
+    3) La rejilla local manda; Gemini no puede inflar el número de surcos.
+    """
     pil = Image.open(io.BytesIO(uploaded_image.getvalue())).convert("RGB")
     w, h = pil.size
 
-    prompt_1 = """
-Eres el módulo de visión agrícola de TerraCore. Analiza SOLO esta fotografía aérea.
-Localiza TODAS las hileras físicas reales del viñedo. No cuentes plantas y no hagas Salud.
+    local_rows, local_debug = _tc_rows_from_local_geometry(pil)
+
+    # Si el detector geométrico local encontró una rejilla suficiente, usarla
+    # como autoridad. Esta es la ruta normal para fotografías aéreas.
+    if len(local_rows) >= 4:
+        guide = _tc_render_row_guide_ai(pil, local_rows)
+        proposal = [
+            {"id": int(r["id"]), "points": r["points_norm"]}
+            for r in local_rows
+        ]
+        prompt = """
+AUDITORÍA DE GEOMETRÍA TERRACORE.
+Imagen 1 = fotografía ORIGINAL.
+Imagen 2 = propuesta geométrica calculada por visión local.
+Propuesta: __PROPOSAL__
+
+IMPORTANTE: NO vuelvas a contar la parcela desde cero.
+La propuesta geométrica es la rejilla principal. Revisa cada Rxx y corrige
+solo pequeños desplazamientos para que la línea quede en el CENTRO de la
+misma hilera física.
 
 REGLAS:
-- Una hilera física = UNA trayectoria continua aunque tenga huecos secos.
-- Sigue el eje CENTRAL de cada hilera desde el inicio visible al final visible.
-- No fragmentes una hilera, no unas dos vecinas y no dibujes entre hileras.
-- Excluye caminos, cabeceras, bordes, árboles, postes, construcciones, sombras y maleza entre hileras.
-- Incluye hileras débiles/secas si claramente forman parte del patrón de la parcela.
-- Revisa especialmente primera/última hilera y zonas de perspectiva.
-- Cada trayectoria: 6 a 12 puntos, coordenadas [x,y] normalizadas 0..1000.
-- Antes de responder, recorre visualmente la parcela de izquierda a derecha (o perpendicular a las hileras) y verifica que no hayas saltado ninguna separación regular.
+- Devuelve las mismas hileras físicas, en el mismo orden.
+- No inventes líneas adicionales entre dos hileras.
+- No dupliques una hilera por sus dos bordes.
+- No conviertas suelo entre hileras en una hilera nueva.
+- Sigue la forma/curva real de cada hilera y conserva continuidad en huecos secos.
+- Excluye caminos, bordes, árboles, postes y vegetación ajena.
+- Usa 6 a 10 puntos por hilera, coordenadas 0..1000 de la imagen COMPLETA.
+- Si una línea ya está correcta, consérvala prácticamente igual.
 
 Devuelve SOLO JSON válido:
-{"coverage_score":0.0,"confidence":0.0,"estimated_row_count":0,
- "rows":[{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y],[x,y]]}],"notes":""}
-"""
-    first = _tc_openai_json([pil], prompt_1, detail="high", model=_tc_openai_precision_model(), effort="high")
-    first_rows = _tc_sanitize_rows(first)
-    if not first_rows:
-        raise RuntimeError("OpenAI no devolvió surcos en la primera revisión.")
-
-    proposal = {
-        "estimated_row_count": first.get("estimated_row_count", len(first_rows)) if isinstance(first, dict) else len(first_rows),
-        "rows": [{"id": r["id"], "points": r["points_norm"]} for r in first_rows],
-    }
-    prompt_2 = """
-Auditoría geométrica TerraCore sobre la MISMA foto.
-Propuesta inicial: __PROPOSAL_JSON__
-
-Corrige toda la propuesta:
-1. elimina duplicados;
-2. añade hileras reales omitidas, incluidos extremos;
-3. mueve líneas que estén en suelo entre hileras al centro de la hilera correcta;
-4. evita cruces y saltos de una hilera a otra;
-5. conserva continuidad a través de huecos;
-6. excluye caminos/árboles/edificios;
-7. conserva el orden físico de las hileras;
-8. usa 6 a 12 puntos por hilera, 0..1000.
-No analices slots ni Salud.
-
-Devuelve SOLO JSON válido:
-{"coverage_score":0.0,"confidence":0.0,"estimated_row_count":0,
- "rows":[{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y],[x,y]]}],"audit_notes":""}
+{"coverage_score":0.0,"confidence":0.0,
+ "rows":[{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y],[x,y]]}],
+ "audit_notes":""}
 """.replace(
-        "__PROPOSAL_JSON__",
-        json.dumps(proposal, ensure_ascii=False, separators=(",", ":"))
+            "__PROPOSAL__",
+            json.dumps(proposal, ensure_ascii=False, separators=(",", ":"))
+        )
+
+        audit = {}
+        ai_rows = []
+        try:
+            audit = _tc_openai_json(
+                [pil, guide],
+                prompt,
+                detail="high",
+                model=_tc_openai_precision_model(),
+                effort="high",
+            )
+            ai_rows = _tc_sanitize_rows(audit)
+        except Exception as exc:
+            _tc_push_ai_warning(
+                f"La geometría local se conservó porque la auditoría Gemini no estuvo disponible: {exc}"
+            )
+
+        rows = _tc_merge_ai_geometry_with_local(local_rows, ai_rows, w, h)
+        rows = _tc_remove_duplicate_rows_ai(rows, w, h)
+        rows = _tc_sort_rows_ai(rows, w, h)
+        confidence_values = [float(r.get("confidence", 0.65)) for r in rows]
+        return {
+            "pil": pil,
+            "rows": rows,
+            "coverage_score": _tc_clamp01((audit or {}).get("coverage_score", 0.82), 0.82),
+            "confidence": float(np.mean(confidence_values)) if confidence_values else 0.70,
+            "debug": {
+                "geometry": local_debug,
+                "gemini_audit": audit,
+                "geometry_mode": "local-v12 + gemini-audit",
+            },
+        }
+
+    # Respaldo: si no hubo geometría local suficiente, Gemini sí puede localizar
+    # la parcela completa. Esta ruta evita cancelar fotos difíciles.
+    prompt = """
+TerraCore: localiza las hileras físicas reales de ESTA parcela.
+No cuentes plantas ni hagas Salud.
+
+REGLAS ESTRICTAS:
+- Una hilera física = UNA trayectoria continua.
+- Sigue el eje CENTRAL, nunca los bordes de la vegetación.
+- No dibujes en el espacio de suelo entre hileras.
+- No dupliques una misma hilera.
+- Mantén hileras secas si su eje físico es reconocible.
+- Excluye caminos, árboles, postes y construcciones.
+- Recorre la parcela perpendicularmente a las hileras y conserva la separación regular.
+- 6 a 10 puntos por hilera, coordenadas 0..1000.
+
+Devuelve SOLO JSON válido:
+{"coverage_score":0.0,"confidence":0.0,"estimated_row_count":0,
+ "rows":[{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y],[x,y]]}]}
+"""
+    data = _tc_openai_json(
+        [pil], prompt, detail="high",
+        model=_tc_openai_precision_model(), effort="high"
     )
-    audit = _tc_openai_json([pil], prompt_2, detail="high", model=_tc_openai_precision_model(), effort="high")
-    rows = _tc_sanitize_rows(audit) or first_rows
+    rows = _tc_sanitize_rows(data)
     rows = _tc_remove_duplicate_rows_ai(rows, w, h)
     rows = _tc_sort_rows_ai(rows, w, h)
-
-    # Tercera pasada: OpenAI ve la foto Y la guía dibujada. Es la mejor forma de
-    # detectar huecos, duplicados y líneas que cayeron entre dos hileras.
-    guide = _tc_render_row_guide_ai(pil, rows)
-    proposal3 = [{"id": int(r["id"]), "points": r["points_norm"]} for r in rows]
-    prompt_3 = """
-AUDITORÍA FINAL DE SURCOS TERRACORE.
-Imagen 1 = fotografía ORIGINAL. Imagen 2 = la misma foto con la propuesta de líneas cian Rxx.
-Propuesta: __PROPOSAL_JSON__
-
-Inspecciona fila por fila y devuelve la geometría FINAL.
-- Cada línea debe estar encima del centro de UNA hilera real, nunca en el espacio entre hileras.
-- Si falta una hilera entre dos Rxx, agrégala.
-- Si dos Rxx pertenecen a la misma hilera, deja solo una.
-- Si una Rxx cambia a la hilera vecina a mitad de camino, corrígela para seguir siempre la misma hilera.
-- No marques vegetación ajena, caminos ni borde de parcela.
-- Mantén hileras secas si su eje físico es reconocible.
-- Usa 6 a 12 puntos por hilera, coordenadas 0..1000 de la imagen COMPLETA.
-
-Devuelve SOLO JSON válido:
-{"coverage_score":0.0,"confidence":0.0,"estimated_row_count":0,
- "rows":[{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y],[x,y]]}],"audit_notes":""}
-""".replace(
-        "__PROPOSAL_JSON__",
-        json.dumps(proposal3, ensure_ascii=False, separators=(",", ":"))
-    )
-    try:
-        final_audit = _tc_openai_json([pil, guide], prompt_3, detail="high", model=_tc_openai_precision_model(), effort="high")
-        final_rows = _tc_sanitize_rows(final_audit)
-        if final_rows:
-            rows = _tc_remove_duplicate_rows_ai(final_rows, w, h)
-            rows = _tc_sort_rows_ai(rows, w, h)
-        else:
-            final_audit = {}
-    except Exception:
-        final_audit = {}
-
+    if len(rows) < 2:
+        raise RuntimeError("No se pudo construir una geometría confiable de surcos.")
     return {
         "pil": pil,
         "rows": rows,
-        "coverage_score": _tc_clamp01((final_audit or {}).get("coverage_score", (audit or {}).get("coverage_score", (first or {}).get("coverage_score", 0.7))), 0.7),
-        "confidence": _tc_clamp01((final_audit or {}).get("confidence", (audit or {}).get("confidence", (first or {}).get("confidence", 0.7))), 0.7),
-        "debug": {"first": first, "audit": audit, "final_audit": final_audit},
+        "coverage_score": _tc_clamp01(data.get("coverage_score", 0.60), 0.60),
+        "confidence": _tc_clamp01(data.get("confidence", 0.60), 0.60),
+        "debug": {"geometry": local_debug, "gemini_fallback": data, "geometry_mode": "gemini-fallback"},
     }
+
 
 def _tc_crop_bbox_for_rows(pil, rows, margin_factor=1.5):
     w, h = pil.size
@@ -7322,33 +7543,510 @@ Devuelve SOLO JSON válido:
         return {}
 
 
-def _tc_analyze_health_openai(uploaded_image, rows):
-    pil=Image.open(io.BytesIO(uploaded_image.getvalue())).convert("RGB")
-    if not rows:
-        raise RuntimeError("No hay geometría de Inventario confirmada.")
-    ranges=_tc_health_ranges_openai(pil,rows,batch_size=4)
-    ranges=_tc_health_ranges_audit_openai(pil,rows,ranges,batch_size=4)
-    visual=_tc_draw_health_ai_v4(pil,rows,ranges)
-    diag=_tc_health_diagnosis_openai(pil,visual,len(rows))
-    result={
-        "count":len(rows),"green_pct":float(visual["green_pct"]),"red_pct":float(visual["red_pct"]),"angle":0.0,
-        "annotated":visual["annotated"],"result_url":"","zona_mas_afectada":diag.get("zona_mas_afectada","No determinada"),
-        "nivel_afectacion_visual":diag.get("nivel_afectacion_visual","No determinado"),"diagnostico_visual":diag.get("diagnostico_visual",""),
-        "causas_probables":diag.get("causas_probables",[]),"explicacion_nutrientes":diag.get("explicacion_nutrientes",""),
-        "recomendaciones_iniciales":diag.get("recomendaciones_iniciales",[]),"nota_diagnostico":diag.get("nota_diagnostico","Diagnóstico visual preliminar."),
-        "detalle_zonas":{},"metodo":"gemini-flash-lite-openai-fallback","confidence":float(visual.get("confidence",0)),
-    }
-    result["backend"]={"metodo":"gemini-flash-lite-openai-fallback","analisis":{
-        "surcos_estimados":result["count"],"verde_pct":result["green_pct"],"rojo_pct":result["red_pct"],
-        "zona_mas_afectada":result["zona_mas_afectada"],"nivel_afectacion_visual":result["nivel_afectacion_visual"],
-        "diagnostico_visual":result["diagnostico_visual"],"causas_probables":result["causas_probables"],
-        "explicacion_nutrientes":result["explicacion_nutrientes"],"recomendaciones_iniciales":result["recomendaciones_iniciales"],
-        "nota_diagnostico":result["nota_diagnostico"],
-    }}
+
+
+def _tc_median_row_spacing_px(rows, w, h):
+    mids = []
+    for r in rows:
+        pts = _tc_norm_to_px(r.get("points_norm", []), w, h)
+        if len(pts) >= 2:
+            mids.append(_tc_point_on_polyline(pts, 0.5))
+    if len(mids) < 2:
+        return max(8.0, min(w, h) * 0.02)
+    mm = np.asarray(mids, dtype=np.float32)
+    d = np.linalg.norm(np.diff(mm, axis=0), axis=1)
+    d = d[d > 2.0]
+    return float(np.median(d)) if len(d) else max(8.0, min(w, h) * 0.02)
+
+
+def _tc_slot_green_scores_ai(pil, row, row_spacing=None):
+    """Fracción de vegetación alrededor de cada slot. Se usa como control local, no como diagnóstico único."""
+    arr = np.asarray(pil.convert("RGB"))
+    bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    h, w = bgr.shape[:2]
+    positions = _tc_slot_positions_px_ai(row, (w, h))
+    if not positions:
+        return np.asarray([], dtype=np.float32)
+
+    rgb = arr.astype(np.float32)
+    rr, gg, bb = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    hh, ss, vv = cv2.split(hsv)
+    exg = 2.0 * gg - rr - bb
+    ngr = (gg - rr) / (gg + rr + 1e-6)
+    veg_mask = (
+        (exg > 5.0) & (ngr > -0.02) &
+        (hh >= 18) & (hh <= 115) &
+        (ss >= 12) & (vv >= 20) &
+        (gg >= rr * 0.86) & (gg >= bb * 0.86)
+    ).astype(np.uint8)
+
+    pos = np.asarray(positions, dtype=np.float32)
+    if len(pos) > 1:
+        slot_pitch = float(np.median(np.linalg.norm(np.diff(pos, axis=0), axis=1)))
+    else:
+        slot_pitch = max(6.0, min(w, h) * 0.01)
+    row_spacing = float(row_spacing or max(8.0, slot_pitch * 2.0))
+    radius = int(round(max(3.0, min(14.0, slot_pitch * 0.38, row_spacing * 0.28))))
+
+    scores = []
+    for p in pos:
+        x = int(np.clip(round(float(p[0])), 0, w - 1))
+        y = int(np.clip(round(float(p[1])), 0, h - 1))
+        x0, x1 = max(0, x - radius), min(w, x + radius + 1)
+        y0, y1 = max(0, y - radius), min(h, y + radius + 1)
+        patch = veg_mask[y0:y1, x0:x1]
+        scores.append(float(np.mean(patch)) if patch.size else 0.0)
+    return np.asarray(scores, dtype=np.float32)
+
+
+def _tc_health_slot_guide_ai(pil, rows, bbox):
+    """Guía temporal para Gemini: puntos de slot y referencias cada 5 posiciones."""
+    x0, y0, x1, y1 = bbox
+    crop = pil.crop(bbox).convert("RGB")
+    bgr = cv2.cvtColor(np.asarray(crop), cv2.COLOR_RGB2BGR)
+    fw, fh = pil.size
+    cw, ch = crop.size
+
+    for r in rows:
+        rid = int(r.get("id", 0) or 0)
+        pts = _tc_norm_to_px(r.get("points_norm", []), fw, fh)
+        if len(pts) < 2:
+            continue
+        local_pts = pts.copy()
+        local_pts[:, 0] -= x0
+        local_pts[:, 1] -= y0
+        ip = np.rint(local_pts).astype(np.int32)
+        cv2.polylines(bgr, [ip], False, (255, 0, 255), 1, cv2.LINE_AA)
+
+        positions = _tc_slot_positions_px_ai(r, (fw, fh))
+        for idx, p in enumerate(positions, 1):
+            xx = int(round(float(p[0]) - x0))
+            yy = int(round(float(p[1]) - y0))
+            if not (0 <= xx < cw and 0 <= yy < ch):
+                continue
+            cv2.circle(bgr, (xx, yy), 2, (0, 235, 235), -1, cv2.LINE_AA)
+            if idx == 1 or idx == len(positions) or idx % 5 == 0:
+                label = f"{rid}:{idx}"
+                cv2.putText(bgr, label, (xx + 2, yy - 2), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.27, (15, 15, 15), 2, cv2.LINE_AA)
+                cv2.putText(bgr, label, (xx + 2, yy - 2), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.27, (255, 255, 255), 1, cv2.LINE_AA)
+
+    return Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+
+
+def _tc_health_slots_gemini(pil, rows, batch_size=3):
+    """Gemini clasifica Salud por posición de planta, no por porcentajes de longitud."""
+    result = {}
+    valid = [
+        r for r in rows
+        if len(r.get("points_norm", [])) >= 2 and int(r.get("slot_count", 0) or 0) > 0
+    ]
+
+    for start in range(0, len(valid), batch_size):
+        group = valid[start:start + batch_size]
+        bbox = _tc_crop_bbox_for_rows(pil, group, 1.70)
+        original = pil.crop(bbox).convert("RGB")
+        guide = _tc_health_slot_guide_ai(pil, group, bbox)
+        spec = []
+        for r in group:
+            count = int(r.get("slot_count", 0) or 0)
+            vacant = _tc_clean_index_list_ai(r.get("vacant_indices", []), count)
+            spec.append({
+                "id": int(r["id"]),
+                "slot_count": count,
+                "vacant_indices": vacant,
+            })
+
+        prompt = f"""
+TerraCore SALUD POR SLOTS.
+Imagen 1 = fotografía ORIGINAL de alta resolución.
+Imagen 2 = guía: línea magenta de cada Rxx, puntos cian = posiciones de planta.
+Las etiquetas R:5, R:10, etc. sirven para ubicar el índice del slot.
+Inventario confirmado: {json.dumps(spec, ensure_ascii=False, separators=(',', ':'))}
+
+Para cada hilera devuelve red_indices: índices 1-based que deben clasificarse ROJO.
+El porcentaje final NO lo calculas tú; lo calculará el programa contando slots.
+
+CRITERIO:
+- vacant_indices SIEMPRE son ROJO porque falta la planta.
+- Planta presente, claramente viva, con follaje suficiente y comparable con la zona sana local = VERDE.
+- Planta presente pero seca, marrón/beige, amarillenta, muy rala, muy débil o con cobertura claramente deficiente = ROJO.
+- No confundas maleza entre hileras con vid.
+- No marques rojo solo por sombra; compara continuidad y estructura con los slots vecinos.
+- Un punto verde aislado no convierte una planta muy rala/seca en verde.
+- No inventes índices fuera de 1..slot_count.
+- Revisa visualmente todos los slots; no devuelvas porcentajes ni red_ranges.
+
+Devuelve SOLO JSON válido:
+{{"rows":[{{"id":1,"confidence":0.0,"red_indices":[7,8,19]}}]}}
+Devuelve exactamente todos los IDs del grupo.
+"""
+        try:
+            data = _tc_openai_json(
+                [original, guide],
+                prompt,
+                detail="high",
+                model=_tc_openai_precision_model(),
+                effort="high",
+            )
+        except Exception as exc:
+            _tc_push_ai_warning(f"Salud por slots: Gemini no pudo revisar un bloque; se usó control visual local. {exc}")
+            data = {}
+
+        by_id = {}
+        for item in (data.get("rows", []) if isinstance(data, dict) else []):
+            if not isinstance(item, dict):
+                continue
+            try:
+                by_id[int(item.get("id"))] = item
+            except Exception:
+                pass
+
+        for r in group:
+            rid = int(r["id"])
+            count = int(r.get("slot_count", 0) or 0)
+            item = by_id.get(rid, {})
+            red_indices = _tc_clean_index_list_ai(
+                item.get("red_indices", item.get("rojo_indices", [])),
+                count,
+            )
+            vacant = _tc_clean_index_list_ai(r.get("vacant_indices", []), count)
+            red_indices = sorted(set(red_indices) | set(vacant))
+            result[rid] = {
+                "red_indices": red_indices,
+                "confidence": _tc_clamp01(item.get("confidence", 0.58), 0.58),
+                "source": "gemini" if item else "local-fallback",
+            }
     return result
 
 
+def _tc_fuse_slot_health_ai(pil, rows, ai_map):
+    """Combina Gemini con evidencia local y deja una decisión por cada slot."""
+    w, h = pil.size
+    row_spacing = _tc_median_row_spacing_px(rows, w, h)
+    out = []
+
+    for r in rows:
+        rr = dict(r)
+        rid = int(rr.get("id", 0) or 0)
+        count = int(rr.get("slot_count", 0) or 0)
+        if count <= 0:
+            rr["health_states"] = []
+            rr["health_red_indices"] = []
+            rr["health_confidence"] = 0.0
+            out.append(rr)
+            continue
+
+        vacant = set(_tc_clean_index_list_ai(rr.get("vacant_indices", []), count))
+        info = (ai_map or {}).get(rid, {})
+        ai_red = set(_tc_clean_index_list_ai(info.get("red_indices", []), count)) | vacant
+        ai_conf = _tc_clamp01(info.get("confidence", 0.55), 0.55)
+
+        scores = _tc_slot_green_scores_ai(pil, rr, row_spacing=row_spacing)
+        if len(scores) != count:
+            scores = np.resize(scores, count).astype(np.float32) if len(scores) else np.zeros(count, dtype=np.float32)
+
+        occupied_scores = np.asarray([
+            scores[i - 1] for i in range(1, count + 1) if i not in vacant
+        ], dtype=np.float32)
+        positive = occupied_scores[occupied_scores > 0.002]
+        if len(positive) >= 6:
+            healthy_ref = float(np.percentile(positive, 72))
+        elif len(positive):
+            healthy_ref = float(np.max(positive))
+        else:
+            healthy_ref = 0.06
+
+        low_thr = max(0.012, healthy_ref * 0.24)
+        very_low_thr = max(0.007, healthy_ref * 0.13)
+        strong_thr = max(0.035, healthy_ref * 0.78)
+
+        states = []
+        ai_origin = []
+        for idx in range(1, count + 1):
+            score = float(scores[idx - 1])
+            if idx in vacant:
+                states.append("R")
+                ai_origin.append(True)
+                continue
+
+            if idx in ai_red:
+                # Solo rescatar un rojo de baja confianza si la evidencia vegetal local
+                # es extremadamente fuerte. Esto reduce falsos rojos por sombra/guía.
+                if ai_conf < 0.52 and score >= strong_thr * 1.12:
+                    states.append("G")
+                    ai_origin.append(False)
+                else:
+                    states.append("R")
+                    ai_origin.append(True)
+            else:
+                # Si Gemini lo ve verde pero prácticamente no hay evidencia vegetal,
+                # forzar rojo para evitar falsos verdes.
+                states.append("R" if score < very_low_thr else "G")
+                ai_origin.append(False)
+
+        # Suavizar únicamente rojos LOCALES aislados. Nunca borrar vacíos ni rojos
+        # explícitos de Gemini de confianza razonable.
+        smoothed = list(states)
+        for j in range(1, count - 1):
+            idx = j + 1
+            if states[j] != "R" or idx in vacant or ai_origin[j]:
+                continue
+            if states[j - 1] == "G" and states[j + 1] == "G" and float(scores[j]) >= low_thr:
+                smoothed[j] = "G"
+        states = smoothed
+
+        red_indices = [i + 1 for i, s in enumerate(states) if s == "R"]
+        rr["health_states"] = states
+        rr["health_red_indices"] = red_indices
+        rr["health_scores"] = [float(x) for x in scores]
+        rr["health_confidence"] = ai_conf
+        out.append(rr)
+
+    return out
+
+
+def _tc_draw_health_slots_ai(pil, rows):
+    """Dibuja Salud por slot y calcula porcentajes contando slots, no longitud de líneas."""
+    original = cv2.cvtColor(np.asarray(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
+    h, w = original.shape[:2]
+    band_h = max(46, int(round(h * 0.075)))
+    wine_bgr = (55, 47, 114)
+    canvas = np.full((h + band_h, w, 3), wine_bgr, dtype=np.uint8)
+    canvas[band_h:band_h + h] = original
+
+    green = (45, 210, 50)
+    red = (35, 35, 245)
+    thick = max(2, int(round(min(w, h) / 620)))
+    total_g = 0
+    total_r = 0
+    red_points = []
+    confs = []
+
+    spacing = _tc_median_row_spacing_px(rows, w, h)
+    font = float(np.clip(spacing / 38.0, 0.26, 0.46))
+    lane_y = [max(14, int(band_h * 0.34)), max(30, int(band_h * 0.72))]
+
+    for row_idx, r in enumerate(rows, 1):
+        rid = int(r.get("id", row_idx) or row_idx)
+        positions = np.asarray(_tc_slot_positions_px_ai(r, (w, h)), dtype=np.float32)
+        states = list(r.get("health_states", []))
+        if len(positions) == 0 or len(states) != len(positions):
+            continue
+
+        # Longitud de la pequeña marca por slot.
+        if len(positions) > 1:
+            pitch = float(np.median(np.linalg.norm(np.diff(positions, axis=0), axis=1)))
+        else:
+            pitch = 8.0
+        half_len = max(2.0, min(14.0, pitch * 0.43))
+
+        for i, (p, state) in enumerate(zip(positions, states)):
+            if len(positions) == 1:
+                tangent = np.asarray([0.0, 1.0], dtype=np.float32)
+            elif i == 0:
+                tangent = positions[1] - positions[0]
+            elif i == len(positions) - 1:
+                tangent = positions[-1] - positions[-2]
+            else:
+                tangent = positions[i + 1] - positions[i - 1]
+            nt = float(np.linalg.norm(tangent))
+            tangent = tangent / nt if nt > 1e-6 else np.asarray([0.0, 1.0], dtype=np.float32)
+            a = p - tangent * half_len
+            b = p + tangent * half_len
+            p0 = (int(round(a[0])), int(round(a[1] + band_h)))
+            p1 = (int(round(b[0])), int(round(b[1] + band_h)))
+            color = red if state == "R" else green
+            cv2.line(canvas, p0, p1, color, thick, cv2.LINE_AA)
+            if state == "R":
+                total_r += 1
+                red_points.append((float(p[0]), float(p[1])))
+            else:
+                total_g += 1
+
+        confs.append(float(r.get("health_confidence", 0.0) or 0.0))
+
+        # Número SOLO arriba.
+        pts = _tc_norm_to_px(r.get("points_norm", []), w, h)
+        if len(pts) >= 2:
+            top = pts[int(np.argmin(pts[:, 1]))]
+            label = f"{rid:02d}"
+            lane = (rid - 1) % 2
+            ty = lane_y[lane]
+            (tw, th), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font, 1)
+            tx = int(np.clip(float(top[0]) - tw / 2, 1, max(1, w - tw - 2)))
+            ty = int(np.clip(ty, th + 2, band_h - base - 2))
+            cv2.putText(canvas, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, font,
+                        (15, 15, 15), 3, cv2.LINE_AA)
+            cv2.putText(canvas, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, font,
+                        (255, 255, 255), 1, cv2.LINE_AA)
+
+    total = total_g + total_r
+    green_pct = 100.0 * total_g / total if total else 0.0
+    red_pct = 100.0 * total_r / total if total else 0.0
+    return {
+        "annotated": canvas,
+        "green_pct": float(green_pct),
+        "red_pct": float(red_pct),
+        "green_slots": int(total_g),
+        "red_slots": int(total_r),
+        "total_slots": int(total),
+        "red_points": red_points,
+        "confidence": float(np.mean(confs)) if confs else 0.0,
+    }
+
+
+def _tc_zone_from_red_points(red_points, w, h):
+    if not red_points:
+        return "Sin concentración roja clara"
+    counts = {
+        "superior izquierda": 0,
+        "superior centro": 0,
+        "superior derecha": 0,
+        "centro izquierda": 0,
+        "centro": 0,
+        "centro derecha": 0,
+        "inferior izquierda": 0,
+        "inferior centro": 0,
+        "inferior derecha": 0,
+    }
+    for x, y in red_points:
+        col = "izquierda" if x < w / 3 else "centro" if x < 2 * w / 3 else "derecha"
+        row = "superior" if y < h / 3 else "centro" if y < 2 * h / 3 else "inferior"
+        key = "centro" if row == "centro" and col == "centro" else f"{row} {col}"
+        counts[key] = counts.get(key, 0) + 1
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+def _tc_analyze_health_openai(uploaded_image, rows):
+    """
+    Salud corregida: la unidad de cálculo es el SLOT confirmado.
+    Verde/Rojo = número de slots clasificados, NO longitud de línea coloreada.
+    """
+    pil = Image.open(io.BytesIO(uploaded_image.getvalue())).convert("RGB")
+    if not rows:
+        raise RuntimeError("No hay geometría de Inventario confirmada.")
+
+    valid_rows = [r for r in rows if int(r.get("slot_count", 0) or 0) > 0]
+    if not valid_rows:
+        raise RuntimeError("El Inventario no contiene slots válidos para analizar Salud.")
+
+    ai_map = _tc_health_slots_gemini(pil, valid_rows, batch_size=3)
+    health_rows = _tc_fuse_slot_health_ai(pil, valid_rows, ai_map)
+    visual = _tc_draw_health_slots_ai(pil, health_rows)
+
+    diag = _tc_health_diagnosis_openai(pil, visual, len(health_rows))
+    w, h = pil.size
+    zone_default = _tc_zone_from_red_points(visual.get("red_points", []), w, h)
+
+    zone = str(diag.get("zona_mas_afectada", "") or "").strip() or zone_default
+    level = str(diag.get("nivel_afectacion_visual", "") or "").strip()
+    if not level:
+        rp = float(visual.get("red_pct", 0.0))
+        level = "bajo" if rp < 18 else "medio" if rp < 40 else "alto"
+
+    diagnosis = str(diag.get("diagnostico_visual", "") or "").strip()
+    if not diagnosis:
+        diagnosis = (
+            f"Evaluación preliminar por slots: {visual.get('green_slots', 0)} posiciones verdes "
+            f"y {visual.get('red_slots', 0)} posiciones rojas de {visual.get('total_slots', 0)} slots. "
+            f"La mayor concentración roja se ubica en la zona {zone_default}."
+        )
+
+    result = {
+        "count": len(health_rows),
+        "green_pct": float(visual["green_pct"]),
+        "red_pct": float(visual["red_pct"]),
+        "green_slots": int(visual.get("green_slots", 0)),
+        "red_slots": int(visual.get("red_slots", 0)),
+        "total_slots": int(visual.get("total_slots", 0)),
+        "angle": 0.0,
+        "annotated": visual["annotated"],
+        "result_url": "",
+        "zona_mas_afectada": zone,
+        "nivel_afectacion_visual": level,
+        "diagnostico_visual": diagnosis,
+        "causas_probables": diag.get("causas_probables", []),
+        "explicacion_nutrientes": diag.get("explicacion_nutrientes", ""),
+        "recomendaciones_iniciales": diag.get("recomendaciones_iniciales", []),
+        "nota_diagnostico": diag.get(
+            "nota_diagnostico",
+            "Diagnóstico visual preliminar por slots. Confirma en campo antes de tomar decisiones agronómicas."
+        ),
+        "detalle_zonas": {},
+        "metodo": "geometria-local-gemini-slot-health",
+        "confidence": float(visual.get("confidence", 0.0)),
+        "health_rows": health_rows,
+    }
+    result["backend"] = {
+        "metodo": result["metodo"],
+        "analisis": {
+            "surcos_estimados": result["count"],
+            "verde_pct": result["green_pct"],
+            "rojo_pct": result["red_pct"],
+            "green_slots": result["green_slots"],
+            "red_slots": result["red_slots"],
+            "total_slots": result["total_slots"],
+            "zona_mas_afectada": result["zona_mas_afectada"],
+            "nivel_afectacion_visual": result["nivel_afectacion_visual"],
+            "diagnostico_visual": result["diagnostico_visual"],
+            "causas_probables": result["causas_probables"],
+            "explicacion_nutrientes": result["explicacion_nutrientes"],
+            "recomendaciones_iniciales": result["recomendaciones_iniciales"],
+            "nota_diagnostico": result["nota_diagnostico"],
+        },
+    }
+    return result
+
+
+
 # ------------------------------------------------------------
+
+
+def _tc_sync_inventory_table_to_rows(rows, df):
+    """Sincroniza conteos editados en la tabla con los datos usados por Salud."""
+    if not rows or df is None or getattr(df, "empty", True):
+        return rows
+    result = [dict(r) for r in rows]
+    col_slots = tr("Slots", "Emplacements")
+    col_empty = tr("Vacíos", "Vides")
+
+    for i, r in enumerate(result):
+        if i >= len(df):
+            break
+        try:
+            slots = max(0, int(df.iloc[i][col_slots]))
+            empty = max(0, min(slots, int(df.iloc[i][col_empty])))
+        except Exception:
+            continue
+        old = int(r.get("slot_count", 0) or 0)
+        old_vac = _tc_clean_index_list_ai(r.get("vacant_indices", []), old)
+        mapped = []
+        if slots > 0 and old > 1:
+            for idx in old_vac:
+                q = (idx - 1) / float(max(1, old - 1))
+                mapped.append(1 + int(round(q * max(0, slots - 1))))
+        mapped = _tc_clean_index_list_ai(mapped, slots)
+
+        # Si el usuario aumentó manualmente el número de vacíos, conservar los
+        # detectados y repartir únicamente los adicionales como posiciones a revisar.
+        if len(mapped) < empty and slots > 0:
+            pool = [x for x in range(1, slots + 1) if x not in set(mapped)]
+            need = empty - len(mapped)
+            if pool and need > 0:
+                picks = np.linspace(0, len(pool) - 1, min(need, len(pool))).round().astype(int)
+                mapped.extend(pool[int(j)] for j in picks)
+        mapped = sorted(set(mapped))[:empty]
+
+        r["slot_count"] = slots
+        r["vacant_indices"] = mapped
+        vacset = set(mapped)
+        r["occupancy"] = "".join("V" if j in vacset else "O" for j in range(1, slots + 1))
+        if slots != old:
+            r["table_adjusted"] = True
+    return result
+
 # ESTILOS ADICIONALES: SOLO COMPLEMENTAN EL DISEÑO ORIGINAL
 # ------------------------------------------------------------
 st.markdown(
@@ -7621,13 +8319,13 @@ with main_col:
 
         if analizar_inventario and uploaded_images:
             # ========================================================
-            # INVENTARIO 100% OPENAI VISION
-            # OpenCV solo dibuja; no detecta ni clasifica.
+            # INVENTARIO HÍBRIDO CORREGIDO
+            # OpenCV/V12 fija la geometría; Gemini audita y cuenta slots.
             # ========================================================
             progress = st.progress(
                 5,
                 text=tr(
-                    "Gemini Flash-Lite está revisando la parcela y cada surco...",
+                    "Visión geométrica + Gemini están revisando la parcela y cada surco...",
                     "Gemini Flash-Lite examine la parcelle et chaque rang..."
                 )
             )
@@ -7660,7 +8358,7 @@ with main_col:
                 progress.progress(100, text=tr("Inventario terminado.", "Inventaire terminé."))
                 st.success(
                     tr(
-                        "✅ Inventario terminado: Gemini primero + OpenAI solo si hizo falta como respaldo.",
+                        "✅ Inventario terminado: geometría local validada por Gemini; slots revisados por IA.",
                         "✅ Inventaire terminé : Gemini en premier + OpenAI seulement en secours si nécessaire."
                     )
                 )
@@ -7710,7 +8408,7 @@ with main_col:
         fuente_inv = st.session_state.tc_inventario_fuente or "—"
         st.caption(
             tr(
-                f"Inventario identificado principalmente con Gemini Flash-Lite. OpenAI es respaldo opcional y su falta de saldo no cancela un resultado válido de Gemini. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
+                f"Inventario: la geometría de los surcos se obtiene con visión local y Gemini la audita sin reinventar la rejilla. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
                 f"Inventaire automatique calculé à partir de la présence visuelle, séparé du diagnostic de santé. Image de référence : {fuente_inv}. Confiance moyenne : {confianza_inv*100:.1f} %."
             )
         )
@@ -7735,7 +8433,7 @@ with main_col:
                 st.markdown(
                     tr(
                         "**Inventario limpio:** los números 01…N aparecen únicamente arriba de cada surco. No se muestran números abajo. Los slots se calculan en la tabla, pero no se dibujan sobre la fotografía.",
-                        "**Inventaire épuré :** les numéros 01…N apparaissent uniquement en haut et en bas de chaque rang. Les emplacements sont calculés dans le tableau sans être dessinés sur la photo."
+                        "**Inventaire épuré :** les numéros 01…N apparaissent uniquement en haut de chaque rang. Les emplacements sont calculés dans le tableau sans être dessinés sur la photo."
                     ),
                     unsafe_allow_html=True
                 )
@@ -7814,6 +8512,10 @@ with main_col:
             disabled=(not inventario_valido),
             key="tc_confirmar_inventario"
         ):
+            st.session_state.tc_inventario_rows_ai = _tc_sync_inventory_table_to_rows(
+                st.session_state.tc_inventario_rows_ai or [],
+                edited,
+            )
             st.session_state.tc_inventario_confirmado = True
             st.success(
                 tr(
@@ -7859,7 +8561,7 @@ with main_col:
                 progress_salud = st.progress(
                     5,
                     text=tr(
-                        "Gemini está revisando cada surco por tramos y auditando falsos verdes...",
+                        "Gemini está revisando la Salud posición por posición (slots)...",
                         "Gemini examine chaque rang par sections et audite les faux verts..."
                     )
                 )
@@ -7904,6 +8606,9 @@ with main_col:
                         "count": int(backend_result.get("count", 0)),
                         "green_pct": float(backend_result.get("green_pct", 0.0)),
                         "red_pct": float(backend_result.get("red_pct", 0.0)),
+                        "green_slots": int(backend_result.get("green_slots", 0) or 0),
+                        "red_slots": int(backend_result.get("red_slots", 0) or 0),
+                        "total_slots": int(backend_result.get("total_slots", 0) or 0),
                         "angle": float(backend_result.get("angle", 0.0)),
                         "annotated": backend_result.get("annotated"),
                         "ia_scene": backend_result.get("backend"),
@@ -7948,9 +8653,17 @@ with main_col:
 
                 s1, s2 = st.columns(2)
                 with s1:
-                    st.metric(tr("Vegetación verde", "Végétation verte"), f"{green_pct:.1f}%")
+                    st.metric(tr("Slots verdes", "Emplacements verts"), f"{green_pct:.1f}%")
                 with s2:
-                    st.metric(tr("Afectación roja", "Affectation rouge"), f"{red_pct:.1f}%")
+                    st.metric(tr("Slots rojos", "Emplacements rouges"), f"{red_pct:.1f}%")
+
+                total_green_slots = sum(int(i.get("green_slots", 0) or 0) for i in resultados)
+                total_red_slots = sum(int(i.get("red_slots", 0) or 0) for i in resultados)
+                total_health_slots = sum(int(i.get("total_slots", 0) or 0) for i in resultados)
+                st.caption(tr(
+                    f"Salud calculada por slots: {total_green_slots} verdes + {total_red_slots} rojos = {total_health_slots} posiciones evaluadas.",
+                    f"Santé calculée par emplacements : {total_green_slots} verts + {total_red_slots} rouges = {total_health_slots} positions évaluées."
+                ))
 
                 for idx, item in enumerate(resultados):
                     with st.container(border=True):
@@ -7970,6 +8683,7 @@ with main_col:
                                 pass
                         with c_proc:
                             st.caption(tr("Imagen procesada — Salud", "Image traitée — Santé"))
+                            st.caption(tr("Los porcentajes se calculan contando slots, no la longitud de las líneas.", "Les pourcentages sont calculés par emplacements, pas par longueur de ligne."))
                             annotated = item.get("annotated")
                             if annotated is not None:
                                 st.image(
