@@ -5403,6 +5403,9 @@ _estado_nuevo = {
     "tc_inventario_imagen": None,
     "tc_inventario_fuente": "",
     "tc_inventario_confianza": 0.0,
+    "tc_inventario_rows_ai": [],
+    "tc_inventario_modelo": "",
+    "tc_inventario_debug": {},
     "tc_salud_procesada": False,
 }
 
@@ -5420,6 +5423,9 @@ def _tc_reiniciar_parcela():
     st.session_state.tc_inventario_imagen = None
     st.session_state.tc_inventario_fuente = ""
     st.session_state.tc_inventario_confianza = 0.0
+    st.session_state.tc_inventario_rows_ai = []
+    st.session_state.tc_inventario_modelo = ""
+    st.session_state.tc_inventario_debug = {}
     st.session_state.tc_salud_procesada = False
 
 
@@ -5752,6 +5758,712 @@ def _tc_metricas_tabla(df):
     return int(df[col_slots].sum()), int(df[col_occ].sum()), int(df[col_empty].sum()), ok
 
 
+
+# ============================================================
+# OPENAI VISION - PRECISION DE INVENTARIO Y SALUD
+# ============================================================
+# OpenAI identifica y clasifica. OpenCV solo recorta y dibuja.
+# El backend existente se conserva sin cambios.
+# ============================================================
+
+def _tc_openai_model():
+    try:
+        value = str(st.secrets.get("OPENAI_VISION_MODEL", "")).strip()
+        if value:
+            return value
+    except Exception:
+        pass
+    return "gpt-5.6-luna"
+
+
+def _tc_openai_client():
+    try:
+        api_key = str(st.secrets["OPENAI_API_KEY"]).strip()
+    except Exception:
+        api_key = ""
+    if not api_key:
+        raise RuntimeError("Falta OPENAI_API_KEY en Streamlit Secrets.")
+    return OpenAI(api_key=api_key)
+
+
+def _tc_jpeg_bytes(pil_img, max_side=1900, quality=91):
+    img = pil_img.convert("RGB")
+    w, h = img.size
+    scale = min(1.0, float(max_side) / float(max(w, h)))
+    if scale < 1.0:
+        img = img.resize(
+            (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
+            Image.Resampling.LANCZOS,
+        )
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=int(quality), optimize=True)
+    return buf.getvalue()
+
+
+def _tc_openai_json(images, prompt, detail="high"):
+    content = [{"type": "input_text", "text": str(prompt)}]
+    for img in images:
+        b = _tc_jpeg_bytes(img) if isinstance(img, Image.Image) else bytes(img)
+        data_url = "data:image/jpeg;base64," + base64.b64encode(b).decode("utf-8")
+        content.append({"type": "input_image", "image_url": data_url, "detail": detail})
+    response = _tc_openai_client().responses.create(
+        model=_tc_openai_model(),
+        input=[{"role": "user", "content": content}],
+    )
+    return limpiar_json_respuesta(getattr(response, "output_text", "") or "")
+
+
+def _tc_clamp01(value, default=0.0):
+    try:
+        return float(np.clip(float(value), 0.0, 1.0))
+    except Exception:
+        return float(default)
+
+
+def _tc_norm_point(point):
+    try:
+        return [
+            float(np.clip(float(point[0]), 0.0, 1000.0)),
+            float(np.clip(float(point[1]), 0.0, 1000.0)),
+        ]
+    except Exception:
+        return None
+
+
+def _tc_norm_to_px(points_norm, w, h):
+    arr = np.asarray(points_norm, dtype=np.float32)
+    if arr.size == 0:
+        return np.empty((0, 2), dtype=np.float32)
+    out = arr.copy()
+    out[:, 0] = out[:, 0] / 1000.0 * max(1, w - 1)
+    out[:, 1] = out[:, 1] / 1000.0 * max(1, h - 1)
+    return out
+
+
+def _tc_point_on_polyline(points, t):
+    pts = np.asarray(points, dtype=np.float32)
+    if len(pts) == 0:
+        return np.array([0.0, 0.0], dtype=np.float32)
+    if len(pts) == 1:
+        return pts[0].copy()
+    seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    total = float(cum[-1])
+    if total <= 1e-6:
+        return pts[0].copy()
+    d = float(np.clip(t, 0.0, 1.0)) * total
+    j = int(np.searchsorted(cum, d, side="right") - 1)
+    j = max(0, min(j, len(pts) - 2))
+    d0, d1 = float(cum[j]), float(cum[j + 1])
+    a = 0.0 if d1 <= d0 else (d - d0) / (d1 - d0)
+    return pts[j] * (1.0 - a) + pts[j + 1] * a
+
+
+def _tc_sanitize_rows(data):
+    if not isinstance(data, dict):
+        return []
+    raw = data.get("rows") or data.get("surcos") or []
+    result = []
+    for idx, item in enumerate(raw, 1):
+        if not isinstance(item, dict):
+            continue
+        pts = []
+        for p in (item.get("points") or item.get("puntos") or [])[:14]:
+            q = _tc_norm_point(p)
+            if q is not None:
+                pts.append(q)
+        if len(pts) < 2:
+            continue
+        result.append({
+            "id": int(item.get("id", idx) or idx),
+            "points_norm": pts,
+            "confidence": _tc_clamp01(item.get("confidence", item.get("confianza", 0.7)), 0.7),
+        })
+    return result
+
+
+def _tc_sort_rows_ai(rows, w, h):
+    if not rows:
+        return []
+    directions = []
+    prepared = []
+    for row in rows:
+        pts = _tc_norm_to_px(row.get("points_norm", []), w, h)
+        if len(pts) < 2:
+            continue
+        v = pts[-1] - pts[0]
+        n = float(np.linalg.norm(v))
+        if n > 1e-6:
+            v = v / n
+            if abs(v[1]) >= abs(v[0]):
+                if v[1] < 0:
+                    v = -v
+            elif v[0] < 0:
+                v = -v
+            directions.append(v)
+        prepared.append((row, pts))
+    if not prepared:
+        return []
+    d = np.mean(np.asarray(directions), axis=0) if directions else np.array([0.0, 1.0])
+    dn = float(np.linalg.norm(d))
+    d = d / dn if dn > 1e-6 else np.array([0.0, 1.0])
+    normal = np.array([d[1], -d[0]], dtype=np.float32)
+    if abs(d[1]) >= abs(d[0]) and normal[0] < 0:
+        normal = -normal
+    if abs(d[0]) > abs(d[1]) and normal[1] < 0:
+        normal = -normal
+    ordered = []
+    for row, pts in prepared:
+        mid = _tc_point_on_polyline(pts, 0.5)
+        ordered.append((float(np.dot(mid, normal)), row))
+    ordered.sort(key=lambda item: item[0])
+    out = []
+    for i, (_, row) in enumerate(ordered, 1):
+        rr = dict(row)
+        rr["id"] = i
+        out.append(rr)
+    return out
+
+
+def _tc_remove_duplicate_rows_ai(rows, w, h):
+    rows = _tc_sort_rows_ai(rows, w, h)
+    if len(rows) < 3:
+        return rows
+    mids = np.asarray([
+        _tc_point_on_polyline(_tc_norm_to_px(r["points_norm"], w, h), 0.5)
+        for r in rows
+    ])
+    gaps = np.linalg.norm(np.diff(mids, axis=0), axis=1)
+    good = gaps[gaps > 2.0]
+    if len(good) == 0:
+        return rows
+    med = float(np.median(good))
+    kept = [rows[0]]
+    last_mid = mids[0]
+    for i in range(1, len(rows)):
+        distance = float(np.linalg.norm(mids[i] - last_mid))
+        if distance < med * 0.30:
+            if rows[i].get("confidence", 0) > kept[-1].get("confidence", 0):
+                kept[-1] = rows[i]
+                last_mid = mids[i]
+            continue
+        kept.append(rows[i])
+        last_mid = mids[i]
+    return _tc_sort_rows_ai(kept, w, h)
+
+
+def _tc_detect_rows_openai(uploaded_image):
+    pil = Image.open(io.BytesIO(uploaded_image.getvalue())).convert("RGB")
+    w, h = pil.size
+
+    prompt_1 = """
+Eres el módulo de visión agrícola de TerraCore. Analiza SOLO esta fotografía.
+Localiza TODAS las hileras/surcos físicos reales del viñedo. No cuentes plantas todavía y no hagas Salud.
+
+Reglas obligatorias:
+- Una hilera física = una trayectoria continua aunque tenga huecos secos o plantas faltantes.
+- No fragmentes una hilera y no unas dos hileras vecinas.
+- No traces caminos, suelo entre hileras, árboles laterales, techos, postes ni sombras.
+- Sigue el CENTRO de cada hilera desde el inicio visible hasta el final visible.
+- Respeta inclinación, perspectiva y curvas reales. No fuerces líneas verticales/paralelas.
+- Incluye hileras débiles o parcialmente secas si pertenecen al patrón.
+- Revisa con cuidado la primera y la última hilera de la parcela.
+- Cada trayectoria debe tener de 5 a 9 puntos.
+- Coordenadas [x,y] normalizadas 0..1000 sobre la imagen completa.
+
+Devuelve SOLO JSON válido:
+{
+ "coverage_score":0.0,
+ "confidence":0.0,
+ "estimated_row_count":0,
+ "rows":[{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y]]}],
+ "notes":""
+}
+Devuelve TODAS las hileras visibles, no una muestra.
+"""
+    first = _tc_openai_json([pil], prompt_1, detail="high")
+    first_rows = _tc_sanitize_rows(first)
+    if not first_rows:
+        raise RuntimeError("OpenAI no devolvió surcos en la primera revisión.")
+
+    proposal = {
+        "estimated_row_count": first.get("estimated_row_count", len(first_rows)) if isinstance(first, dict) else len(first_rows),
+        "rows": [{"id": r["id"], "points": r["points_norm"]} for r in first_rows],
+    }
+    prompt_2 = f"""
+Revisa nuevamente la MISMA fotografía como auditor de precisión TerraCore.
+Propuesta inicial: {json.dumps(proposal, ensure_ascii=False, separators=(',',':'))}
+
+Corrige la propuesta completa:
+1) elimina cualquier duplicado;
+2) añade cualquier hilera real omitida, incluyendo extremos;
+3) mueve líneas que estén en el espacio entre hileras hacia el centro de la hilera correcta;
+4) evita cruces entre hileras;
+5) mantén la misma hilera continua a través de huecos;
+6) excluye caminos, árboles, construcciones y zonas ajenas;
+7) usa 5 a 9 puntos por hilera y coordenadas 0..1000.
+No analices slots ni salud.
+
+Devuelve SOLO JSON válido:
+{{"coverage_score":0.0,"confidence":0.0,"estimated_row_count":0,
+"rows":[{{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y]]}}],"audit_notes":""}}
+"""
+    audit = _tc_openai_json([pil], prompt_2, detail="high")
+    rows = _tc_sanitize_rows(audit) or first_rows
+    rows = _tc_remove_duplicate_rows_ai(rows, w, h)
+    return {
+        "pil": pil,
+        "rows": rows,
+        "coverage_score": _tc_clamp01((audit or {}).get("coverage_score", (first or {}).get("coverage_score", 0.7)), 0.7),
+        "confidence": _tc_clamp01((audit or {}).get("confidence", (first or {}).get("confidence", 0.7)), 0.7),
+        "debug": {"first": first, "audit": audit},
+    }
+
+
+def _tc_crop_bbox_for_rows(pil, rows, margin_factor=1.5):
+    w, h = pil.size
+    groups = []
+    mids = []
+    for row in rows:
+        pts = _tc_norm_to_px(row.get("points_norm", []), w, h)
+        if len(pts):
+            groups.append(pts)
+            mids.append(_tc_point_on_polyline(pts, 0.5))
+    if not groups:
+        return (0, 0, w, h)
+    all_pts = np.vstack(groups)
+    spacing = max(14.0, min(w, h) * 0.02)
+    if len(mids) > 1:
+        ds = np.linalg.norm(np.diff(np.asarray(mids), axis=0), axis=1)
+        ds = ds[ds > 3]
+        if len(ds):
+            spacing = float(np.median(ds))
+    margin = max(18.0, spacing * margin_factor)
+    x0 = max(0, int(np.floor(all_pts[:,0].min() - margin)))
+    y0 = max(0, int(np.floor(all_pts[:,1].min() - margin)))
+    x1 = min(w, int(np.ceil(all_pts[:,0].max() + margin)))
+    y1 = min(h, int(np.ceil(all_pts[:,1].max() + margin)))
+    return (x0, y0, max(x0+12, x1), max(y0+12, y1))
+
+
+def _tc_reference_crop_ai(pil, rows, bbox, slots=False):
+    x0, y0, x1, y1 = bbox
+    crop = pil.crop(bbox).convert("RGB")
+    bgr = cv2.cvtColor(np.asarray(crop), cv2.COLOR_RGB2BGR)
+    fw, fh = pil.size
+    cw, ch = crop.size
+    for row in rows:
+        pts = _tc_norm_to_px(row.get("points_norm", []), fw, fh)
+        if len(pts) < 2:
+            continue
+        pts[:,0] -= x0
+        pts[:,1] -= y0
+        ip = np.rint(pts).astype(np.int32)
+        cv2.polylines(bgr, [ip], False, (255, 0, 255), 1, cv2.LINE_AA)
+        mid = _tc_point_on_polyline(pts, 0.5)
+        label = f"R{int(row.get('id',0)):02d}"
+        cv2.putText(bgr, label, (int(mid[0])+2, int(mid[1])-2), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (20,20,20), 3, cv2.LINE_AA)
+        cv2.putText(bgr, label, (int(mid[0])+2, int(mid[1])-2), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255,255,255), 1, cv2.LINE_AA)
+        if slots:
+            for p in _tc_slot_positions_px_ai(row, (fw, fh)):
+                xx, yy = int(round(p[0]-x0)), int(round(p[1]-y0))
+                if 0 <= xx < cw and 0 <= yy < ch:
+                    cv2.circle(bgr, (xx,yy), 2, (0,230,230), -1, cv2.LINE_AA)
+    return Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+
+
+def _tc_crop_norm_to_global(points, bbox, fw, fh):
+    x0, y0, x1, y1 = bbox
+    cw, ch = max(1, x1-x0), max(1, y1-y0)
+    out = []
+    for p in points:
+        q = _tc_norm_point(p)
+        if q is None:
+            continue
+        x = x0 + q[0] / 1000.0 * max(1, cw-1)
+        y = y0 + q[1] / 1000.0 * max(1, ch-1)
+        out.append([
+            float(np.clip(x / max(1, fw-1) * 1000.0, 0, 1000)),
+            float(np.clip(y / max(1, fh-1) * 1000.0, 0, 1000)),
+        ])
+    return out
+
+
+def _tc_clean_occupancy_ai(value, count):
+    s = "".join(c for c in str(value or "").upper() if c in "OV")
+    count = max(0, int(count or 0))
+    if count <= 0:
+        return s
+    return s[:count]
+
+
+def _tc_inventory_item_valid_ai(item):
+    if not isinstance(item, dict):
+        return False
+    try:
+        count = int(item.get("slot_count", 0) or 0)
+    except Exception:
+        return False
+    if count <= 1:
+        return False
+    occ = "".join(c for c in str(item.get("occupancy", "") or "").upper() if c in "OV")
+    points = item.get("points") or []
+    return len(occ) == count and len(points) >= 2
+
+
+def _tc_refine_inventory_batches_openai(pil, rough_rows, batch_size=10):
+    fw, fh = pil.size
+    rough_rows = _tc_sort_rows_ai(rough_rows, fw, fh)
+    refined = []
+    for start in range(0, len(rough_rows), batch_size):
+        group = rough_rows[start:start+batch_size]
+        bbox = _tc_crop_bbox_for_rows(pil, group, 1.55)
+        original = pil.crop(bbox).convert("RGB")
+        guide = _tc_reference_crop_ai(pil, group, bbox, slots=False)
+        ids = [int(r["id"]) for r in group]
+        prompt = f"""
+TerraCore Inventario. Imagen 1 es el recorte original. Imagen 2 muestra líneas magenta aproximadas con etiquetas Rxx.
+Analiza SOLO estos IDs: {ids}.
+
+Para cada Rxx:
+- corrige la trayectoria para que quede exactamente en el CENTRO de la hilera real (5 a 9 puntos 0..1000 respecto a ESTE RECORTE);
+- determina la secuencia regular de posiciones reales de planta desde el inicio hasta el final;
+- slot_count = total de posiciones esperadas, incluyendo faltantes;
+- occupancy debe tener EXACTAMENTE slot_count caracteres: O=planta físicamente presente, V=posición vacía/faltante;
+- una planta débil o seca sigue siendo O si físicamente existe;
+- no cuentes hojas individuales, sombras, postes, suelo ni maleza;
+- usa la regularidad de hileras vecinas para fijar la separación real de plantas;
+- start_t y end_t son 0..1000 sobre la trayectoria corregida y delimitan la zona donde existen slots.
+
+Devuelve SOLO JSON válido:
+{{"rows":[{{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y]],
+"start_t":0,"end_t":1000,"slot_count":0,"occupancy":"OOOVOO"}}]}}
+Devuelve exactamente todos los IDs pedidos y revisa el conteo dos veces.
+"""
+        data = _tc_openai_json([original, guide], prompt, detail="high")
+        returned = data.get("rows", []) if isinstance(data, dict) else []
+        by_id = {}
+        for item in returned:
+            if isinstance(item, dict):
+                try:
+                    by_id[int(item.get("id"))] = item
+                except Exception:
+                    pass
+        for rough in group:
+            rid = int(rough["id"])
+            item = by_id.get(rid, {})
+
+            # Si el lote omitió la hilera o devolvió una cadena incompleta,
+            # OpenAI vuelve a revisar SOLO esa hilera. No rellenamos datos a mano.
+            if not _tc_inventory_item_valid_ai(item):
+                retry_prompt = f"""
+Revisa SOLO R{rid:02d} en las dos imágenes adjuntas.
+Corrige el centro de la hilera y cuenta posiciones reales de planta.
+Devuelve SOLO JSON válido:
+{{"id":{rid},"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y]],"start_t":0,"end_t":1000,"slot_count":0,"occupancy":"..."}}
+occupancy debe tener EXACTAMENTE slot_count caracteres O/V. O=planta físicamente presente; V=posición esperada vacía. Una planta seca pero existente es O.
+"""
+                item = _tc_openai_json([original, guide], retry_prompt, detail="high")
+
+            if not _tc_inventory_item_valid_ai(item):
+                raise RuntimeError(
+                    f"OpenAI no pudo validar el conteo de slots del surco R{rid:02d}. Vuelve a intentar con una imagen de mayor resolución."
+                )
+
+            pts = _tc_crop_norm_to_global(item.get("points") or [], bbox, fw, fh)
+            if len(pts) < 2:
+                pts = rough["points_norm"]
+            count = int(item.get("slot_count", 0) or 0)
+            occ = _tc_clean_occupancy_ai(item.get("occupancy", ""), count)
+            try:
+                start_t = float(np.clip(float(item.get("start_t", 0) or 0), 0, 1000))
+                end_t = float(np.clip(float(item.get("end_t", 1000) or 1000), 0, 1000))
+            except Exception:
+                start_t, end_t = 0.0, 1000.0
+            refined.append({
+                "id": rid,
+                "points_norm": pts,
+                "confidence": _tc_clamp01(item.get("confidence", rough.get("confidence", 0.6)), 0.6),
+                "start_t": start_t,
+                "end_t": end_t,
+                "slot_count": max(0, count),
+                "occupancy": occ,
+            })
+    refined = _tc_sort_rows_ai(refined, fw, fh)
+    for i, row in enumerate(refined, 1):
+        row["id"] = i
+    return refined
+
+
+def _tc_slot_positions_px_ai(row, full_size):
+    w, h = full_size
+    pts = _tc_norm_to_px(row.get("points_norm", []), w, h)
+    count = int(row.get("slot_count", 0) or 0)
+    if len(pts) < 2 or count <= 0:
+        return []
+    a = float(np.clip(float(row.get("start_t", 0) or 0) / 1000.0, 0, 1))
+    b = float(np.clip(float(row.get("end_t", 1000) or 1000) / 1000.0, 0, 1))
+    if b < a:
+        a, b = b, a
+    ts = np.linspace(a, b, count) if count > 1 else np.array([(a+b)/2])
+    return [_tc_point_on_polyline(pts, float(t)) for t in ts]
+
+
+def _tc_draw_inventory_ai(pil, rows):
+    bgr = cv2.cvtColor(np.asarray(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
+    h, w = bgr.shape[:2]
+    line_th = max(1, int(round(min(w,h)/900)))
+    radius = max(2, int(round(min(w,h)/520)))
+    font = max(0.30, min(0.50, min(w,h)/1700))
+    table = []
+    confs = []
+    for i, row in enumerate(rows, 1):
+        row["id"] = i
+        pts = _tc_norm_to_px(row.get("points_norm", []), w, h)
+        if len(pts) < 2:
+            continue
+        ip = np.rint(pts).astype(np.int32)
+        cv2.polylines(bgr, [ip], False, (245,245,245), line_th, cv2.LINE_AA)
+        label = f"{i:02d}"
+        for endpoint in (ip[0], ip[-1]):
+            x, y = int(endpoint[0]), int(endpoint[1])
+            tx = int(np.clip(x+3, 0, max(0,w-26)))
+            ty = int(np.clip(y-3, 12, max(12,h-3)))
+            cv2.putText(bgr,label,(tx,ty),cv2.FONT_HERSHEY_SIMPLEX,font,(25,25,25),3,cv2.LINE_AA)
+            cv2.putText(bgr,label,(tx,ty),cv2.FONT_HERSHEY_SIMPLEX,font,(255,255,255),1,cv2.LINE_AA)
+        positions = _tc_slot_positions_px_ai(row, (w,h))
+        occ = _tc_clean_occupancy_ai(row.get("occupancy", ""), len(positions))
+        row["occupancy"] = occ
+        occupied = empty = 0
+        for p, state in zip(positions, occ):
+            x, y = int(round(p[0])), int(round(p[1]))
+            if state == "V":
+                empty += 1
+                r = radius+1
+                cv2.line(bgr,(x-r,y-r),(x+r,y+r),(0,150,255),max(1,line_th+1),cv2.LINE_AA)
+                cv2.line(bgr,(x-r,y+r),(x+r,y-r),(0,150,255),max(1,line_th+1),cv2.LINE_AA)
+            else:
+                occupied += 1
+                cv2.circle(bgr,(x,y),radius,(255,170,20),max(1,line_th),cv2.LINE_AA)
+        conf = _tc_clamp01(row.get("confidence",0),0)
+        confs.append(conf)
+        table.append({
+            tr("Surco","Rang"): label,
+            tr("Slots","Emplacements"): len(positions),
+            tr("Ocupados","Occupés"): occupied,
+            tr("Vacíos","Vides"): empty,
+            tr("Confianza","Confiance"): round(conf*100,1),
+        })
+    return bgr, pd.DataFrame(table), float(np.mean(confs)) if confs else 0.0, rows
+
+
+def _tc_analyze_inventory_openai(uploaded_image, base=None):
+    base = base or _tc_detect_rows_openai(uploaded_image)
+    refined = _tc_refine_inventory_batches_openai(base["pil"], base["rows"], batch_size=10)
+    if not refined:
+        raise RuntimeError("OpenAI no devolvió un Inventario refinado.")
+    image, table, local_conf, refined = _tc_draw_inventory_ai(base["pil"], refined)
+    if table.empty:
+        raise RuntimeError("OpenAI no pudo construir la tabla de Inventario.")
+    return {
+        "image": image,
+        "table": table,
+        "count": len(table),
+        "confidence": float(np.mean([base.get("confidence",0), local_conf])),
+        "coverage_score": base.get("coverage_score",0),
+        "rows": refined,
+        "model": _tc_openai_model(),
+        "debug": base.get("debug",{}),
+    }
+
+
+def _tc_select_best_capture_openai(uploaded_images):
+    candidates = []
+    errors = []
+    for up in uploaded_images:
+        try:
+            base = _tc_detect_rows_openai(up)
+            count = len(base.get("rows",[]))
+            score = float(base.get("coverage_score",0))*0.55 + float(base.get("confidence",0))*0.30 + min(1.0,count/80.0)*0.15
+            candidates.append((score, up, base))
+        except Exception as exc:
+            errors.append(f"{up.name}: {exc}")
+    if not candidates:
+        raise RuntimeError(" | ".join(errors) if errors else "No se pudo analizar la captura con OpenAI.")
+    candidates.sort(key=lambda item:item[0], reverse=True)
+    _, up, base = candidates[0]
+    return up, _tc_analyze_inventory_openai(up, base=base), errors
+
+
+def _tc_clean_health_ai(value, count, occupancy):
+    s = "".join(c for c in str(value or "").upper() if c in "GR")[:max(0, int(count or 0))]
+    occ = _tc_clean_occupancy_ai(occupancy, count)
+    chars = list(s)
+    for i, c in enumerate(occ):
+        if i < len(chars) and c == "V":
+            chars[i] = "R"
+    return "".join(chars)
+
+
+def _tc_health_batches_openai(pil, rows, batch_size=10):
+    health = {}
+    for start in range(0, len(rows), batch_size):
+        group = rows[start:start+batch_size]
+        bbox = _tc_crop_bbox_for_rows(pil, group, 1.55)
+        original = pil.crop(bbox).convert("RGB")
+        guide = _tc_reference_crop_ai(pil, group, bbox, slots=True)
+        spec = [{
+            "id":int(r["id"]),
+            "slot_count":int(r.get("slot_count",0) or 0),
+            "occupancy":_tc_clean_occupancy_ai(r.get("occupancy",""), int(r.get("slot_count",0) or 0)),
+        } for r in group]
+        prompt = f"""
+TerraCore Salud. Imagen 1 es el recorte original. Imagen 2 es una guía con cada hilera Rxx y puntos de slots ya confirmados.
+Inventario confirmado: {json.dumps(spec, ensure_ascii=False, separators=(',',':'))}
+
+Para cada Rxx devuelve health con EXACTAMENTE slot_count caracteres y en el mismo orden:
+G = planta/segmento con vigor visual suficiente.
+R = planta muy débil, seca, severamente despoblada o slot faltante.
+Si occupancy contiene V, esa posición debe ser R.
+No cambies los slots ni el inventario. No clasifiques el suelo entre hileras. Evita ruido de hojas/sombras: R solo si el tramo es realmente débil/seco/faltante frente a sus vecinos.
+
+Devuelve SOLO JSON válido:
+{{"rows":[{{"id":1,"confidence":0.0,"health":"GGGGRR"}}]}}
+"""
+        data = _tc_openai_json([original, guide], prompt, detail="high")
+        returned = data.get("rows",[]) if isinstance(data,dict) else []
+        for item in returned:
+            if not isinstance(item,dict):
+                continue
+            try:
+                rid = int(item.get("id"))
+            except Exception:
+                continue
+            row = next((r for r in group if int(r["id"])==rid),None)
+            if row is None:
+                continue
+            count = int(row.get("slot_count",0) or 0)
+            raw_health = "".join(c for c in str(item.get("health","") or "").upper() if c in "GR")
+            if len(raw_health) == count:
+                health[rid] = {
+                    "health":_tc_clean_health_ai(raw_health,count,row.get("occupancy","")),
+                    "confidence":_tc_clamp01(item.get("confidence",0.7),0.7),
+                }
+        # Reintento puntual si faltó una hilera.
+        for row in group:
+            rid = int(row["id"])
+            if rid in health:
+                continue
+            count = int(row.get("slot_count",0) or 0)
+            occ = _tc_clean_occupancy_ai(row.get("occupancy",""), count)
+            retry = f"""Revisa SOLO R{rid:02d}. Tiene {count} slots y occupancy={occ}. Devuelve SOLO JSON: {{"id":{rid},"confidence":0.0,"health":"cadena G/R de exactamente {count} caracteres"}}. V siempre es R."""
+            try:
+                d = _tc_openai_json([original,guide],retry,detail="high")
+                raw_retry = "".join(c for c in str(d.get("health","") or "").upper() if c in "GR")
+                if len(raw_retry) != count:
+                    raise RuntimeError(f"Cadena G/R incompleta ({len(raw_retry)}/{count}).")
+                health[rid] = {"health":_tc_clean_health_ai(raw_retry,count,occ),"confidence":_tc_clamp01(d.get("confidence",0.6),0.6)}
+            except Exception as retry_exc:
+                raise RuntimeError(
+                    f"OpenAI no pudo validar Salud para R{rid:02d}: {retry_exc}"
+                )
+            if rid not in health or len(health[rid].get("health", "")) != count:
+                raise RuntimeError(
+                    f"OpenAI devolvió una clasificación de Salud incompleta para R{rid:02d}."
+                )
+    return health
+
+
+def _tc_draw_health_ai(pil, rows, health_map):
+    bgr = cv2.cvtColor(np.asarray(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
+    h, w = bgr.shape[:2]
+    thick = max(2, int(round(min(w,h)/650)))
+    font = max(0.30, min(0.50, min(w,h)/1700))
+    green, red = (45,210,50), (35,35,245)
+    total_g = total_r = 0
+    red_points = []
+    confs = []
+    for row in rows:
+        rid = int(row["id"])
+        pts = _tc_norm_to_px(row.get("points_norm",[]),w,h)
+        positions = _tc_slot_positions_px_ai(row,(w,h))
+        info = health_map.get(rid,{})
+        states = _tc_clean_health_ai(info.get("health",""),len(positions),row.get("occupancy",""))
+        confs.append(_tc_clamp01(info.get("confidence",0),0))
+        for i in range(max(0,len(positions)-1)):
+            p0,p1 = positions[i],positions[i+1]
+            s0 = states[i] if i < len(states) else "G"
+            s1 = states[i+1] if i+1 < len(states) else s0
+            color = green if s0=="G" and s1=="G" else red
+            cv2.line(bgr,(int(round(p0[0])),int(round(p0[1]))),(int(round(p1[0])),int(round(p1[1]))),color,thick,cv2.LINE_AA)
+        for p,state in zip(positions,states):
+            if state=="R":
+                total_r += 1
+                red_points.append((float(p[0]),float(p[1])))
+            else:
+                total_g += 1
+        if len(pts)>=2:
+            label=f"{rid:02d}"
+            for ep in (pts[0],pts[-1]):
+                x,y=int(round(ep[0])),int(round(ep[1]))
+                tx=int(np.clip(x+3,0,max(0,w-26))); ty=int(np.clip(y-3,12,max(12,h-3)))
+                cv2.putText(bgr,label,(tx,ty),cv2.FONT_HERSHEY_SIMPLEX,font,(25,25,25),3,cv2.LINE_AA)
+                cv2.putText(bgr,label,(tx,ty),cv2.FONT_HERSHEY_SIMPLEX,font,(255,255,255),1,cv2.LINE_AA)
+    total=max(1,total_g+total_r)
+    return {
+        "annotated":bgr,
+        "green_pct":100.0*total_g/total,
+        "red_pct":100.0*total_r/total,
+        "red_points":red_points,
+        "confidence":float(np.mean(confs)) if confs else 0.0,
+    }
+
+
+def _tc_health_diagnosis_openai(pil, visual, row_count):
+    w,h=pil.size
+    distribution={"left":0,"center":0,"right":0,"top":0,"middle":0,"bottom":0}
+    for x,y in visual.get("red_points",[]):
+        distribution["left" if x<w/3 else "center" if x<2*w/3 else "right"] += 1
+        distribution["top" if y<h/3 else "middle" if y<2*h/3 else "bottom"] += 1
+    prompt=f"""
+TerraCore. Haz un diagnóstico VISUAL PRELIMINAR de esta fotografía.
+Resultados OpenAI por hilera: surcos={row_count}, vigor verde={visual.get('green_pct',0):.1f}%, afectación roja={visual.get('red_pct',0):.1f}%, distribución R={json.dumps(distribution)}.
+No afirmes una enfermedad ni un nutriente específico solo por la foto.
+Devuelve SOLO JSON válido:
+{{"zona_mas_afectada":"texto corto","nivel_afectacion_visual":"bajo|medio|alto","diagnostico_visual":"1 a 3 frases","causas_probables":["..."],"explicacion_nutrientes":"texto breve","recomendaciones_iniciales":["..."],"nota_diagnostico":"Diagnóstico visual preliminar..."}}
+"""
+    try:
+        data=_tc_openai_json([pil],prompt,detail="high")
+        return data if isinstance(data,dict) else {}
+    except Exception:
+        return {}
+
+
+def _tc_analyze_health_openai(uploaded_image, rows):
+    pil=Image.open(io.BytesIO(uploaded_image.getvalue())).convert("RGB")
+    if not rows:
+        raise RuntimeError("No hay geometría de Inventario confirmada.")
+    health_map=_tc_health_batches_openai(pil,rows,batch_size=10)
+    visual=_tc_draw_health_ai(pil,rows,health_map)
+    diag=_tc_health_diagnosis_openai(pil,visual,len(rows))
+    result={
+        "count":len(rows),"green_pct":float(visual["green_pct"]),"red_pct":float(visual["red_pct"]),"angle":0.0,
+        "annotated":visual["annotated"],"result_url":"","zona_mas_afectada":diag.get("zona_mas_afectada","No determinada"),
+        "nivel_afectacion_visual":diag.get("nivel_afectacion_visual","No determinado"),"diagnostico_visual":diag.get("diagnostico_visual",""),
+        "causas_probables":diag.get("causas_probables",[]),"explicacion_nutrientes":diag.get("explicacion_nutrientes",""),
+        "recomendaciones_iniciales":diag.get("recomendaciones_iniciales",[]),"nota_diagnostico":diag.get("nota_diagnostico","Diagnóstico visual preliminar."),
+        "detalle_zonas":{},"metodo":"openai-vision-direct","confidence":float(visual.get("confidence",0)),
+    }
+    result["backend"]={"metodo":"openai-vision-direct","analisis":{
+        "surcos_estimados":result["count"],"verde_pct":result["green_pct"],"rojo_pct":result["red_pct"],
+        "zona_mas_afectada":result["zona_mas_afectada"],"nivel_afectacion_visual":result["nivel_afectacion_visual"],
+        "diagnostico_visual":result["diagnostico_visual"],"causas_probables":result["causas_probables"],
+        "explicacion_nutrientes":result["explicacion_nutrientes"],"recomendaciones_iniciales":result["recomendaciones_iniciales"],
+        "nota_diagnostico":result["nota_diagnostico"],
+    }}
+    return result
+
+
 # ------------------------------------------------------------
 # ESTILOS ADICIONALES: SOLO COMPLEMENTAN EL DISEÑO ORIGINAL
 # ------------------------------------------------------------
@@ -5920,6 +6632,9 @@ with side_col:
             st.session_state.tc_inventario_imagen = None
             st.session_state.tc_inventario_fuente = ""
             st.session_state.tc_inventario_confianza = 0.0
+            st.session_state.tc_inventario_rows_ai = []
+            st.session_state.tc_inventario_modelo = ""
+            st.session_state.tc_inventario_debug = {}
             st.session_state.tc_salud_procesada = False
             st.success(
                 tr(
@@ -6010,78 +6725,63 @@ with main_col:
 
         if analizar_inventario and uploaded_images:
             # ========================================================
-            # ETAPA INVENTARIO: NO ejecuta diagnóstico de Salud.
-            # Solo detecta surcos, numeración y slots.
+            # INVENTARIO 100% OPENAI VISION
+            # OpenCV solo dibuja; no detecta ni clasifica.
             # ========================================================
             progress = st.progress(
-                0,
+                5,
                 text=tr(
-                    "Detectando surcos y slots...",
-                    "Détection des rangs et des emplacements..."
+                    "OpenAI está revisando la parcela y cada surco...",
+                    "OpenAI examine la parcelle et chaque rang..."
                 )
             )
 
-            mejor_inventario = None
-            mejor_nombre = ""
-            errores_inventario = []
-
-            for index, uploaded_image in enumerate(uploaded_images, 1):
-                try:
-                    inv = _tc_analizar_inventario_local(uploaded_image)
-                    if (
-                        mejor_inventario is None
-                        or int(inv.get("count", 0)) > int(mejor_inventario.get("count", 0))
-                        or (
-                            int(inv.get("count", 0)) == int(mejor_inventario.get("count", 0))
-                            and float(inv.get("confidence", 0.0)) > float(mejor_inventario.get("confidence", 0.0))
-                        )
-                    ):
-                        mejor_inventario = inv
-                        mejor_nombre = uploaded_image.name
-                except Exception as inv_exc:
-                    errores_inventario.append(f"{uploaded_image.name}: {inv_exc}")
-
+            try:
+                best_up, inv, errores_inventario = _tc_select_best_capture_openai(
+                    uploaded_images
+                )
                 progress.progress(
-                    int(100 * index / max(1, len(uploaded_images))),
+                    92,
                     text=tr(
-                        f"Inventario: imagen {index} de {len(uploaded_images)}...",
-                        f"Inventaire : image {index} sur {len(uploaded_images)}..."
+                        "OpenAI está terminando slots ocupados y vacíos...",
+                        "OpenAI termine les emplacements occupés et vides..."
                     )
                 )
 
-            st.session_state.tc_resultados_base = []
-            st.session_state.tc_salud_procesada = False
-            st.session_state.tc_inventario_confirmado = False
-
-            if mejor_inventario is not None:
-                st.session_state.tc_tabla_inventario = mejor_inventario["table"]
-                st.session_state.tc_inventario_imagen = mejor_inventario["image"]
-                st.session_state.tc_inventario_fuente = mejor_nombre
-                st.session_state.tc_inventario_confianza = float(
-                    mejor_inventario.get("confidence", 0.0)
-                )
+                st.session_state.tc_resultados_base = []
+                st.session_state.tc_salud_procesada = False
+                st.session_state.tc_inventario_confirmado = False
+                st.session_state.tc_tabla_inventario = inv["table"]
+                st.session_state.tc_inventario_imagen = inv["image"]
+                st.session_state.tc_inventario_fuente = best_up.name
+                st.session_state.tc_inventario_confianza = float(inv.get("confidence", 0.0))
+                st.session_state.tc_inventario_rows_ai = inv.get("rows", [])
+                st.session_state.tc_inventario_modelo = inv.get("model", _tc_openai_model())
+                st.session_state.tc_inventario_debug = inv.get("debug", {})
                 st.session_state.tc_inventario_procesado = True
+
+                progress.progress(100, text=tr("Inventario terminado.", "Inventaire terminé."))
                 st.success(
                     tr(
-                        "✅ Inventario procesado: surcos + slots automáticos.",
-                        "✅ Inventaire traité : rangs + emplacements automatiques."
+                        "✅ Inventario terminado con OpenAI: surcos alineados + slots ocupados/vacíos.",
+                        "✅ Inventaire terminé avec OpenAI : rangs alignés + emplacements occupés/vides."
                     )
                 )
-            else:
+                if errores_inventario:
+                    with st.expander(tr("Detalles de otras capturas", "Détails des autres captures"), expanded=False):
+                        for msg in errores_inventario:
+                            st.caption(msg)
+            except Exception as exc:
                 st.session_state.tc_inventario_procesado = False
                 st.session_state.tc_tabla_inventario = None
                 st.session_state.tc_inventario_imagen = None
-                st.session_state.tc_inventario_fuente = ""
-                st.session_state.tc_inventario_confianza = 0.0
-                detalle_error = errores_inventario[0] if errores_inventario else ""
+                st.session_state.tc_inventario_rows_ai = []
                 st.error(
                     tr(
-                        "No se pudo construir el Inventario automático. Usa una toma donde se vea completa la parcela y los surcos estén definidos.",
-                        "Impossible de construire l’inventaire automatique. Utilisez une prise où la parcelle complète et les rangs sont clairement visibles."
+                        f"No se pudo terminar el Inventario con OpenAI: {exc}",
+                        f"Impossible de terminer l’inventaire avec OpenAI : {exc}"
                     )
                 )
-                if detalle_error:
-                    st.caption(detalle_error)
 
     # --------------------------------------------------------
     # RESULTADO DE INVENTARIO
@@ -6112,7 +6812,7 @@ with main_col:
         fuente_inv = st.session_state.tc_inventario_fuente or "—"
         st.caption(
             tr(
-                f"Inventario automático calculado sobre presencia visual, separado del diagnóstico de Salud. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
+                f"Inventario identificado por OpenAI Vision sobre la fotografía real. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
                 f"Inventaire automatique calculé à partir de la présence visuelle, séparé du diagnostic de santé. Image de référence : {fuente_inv}. Confiance moyenne : {confianza_inv*100:.1f} %."
             )
         )
@@ -6145,8 +6845,8 @@ with main_col:
 
         st.markdown(tr("#### Tabla automática por surco", "#### Tableau automatique par rang"))
         st.caption(tr(
-            "La IA llena Slots, Ocupados y Vacíos. Puedes corregir un valor antes de confirmar si la revisión visual lo requiere.",
-            "L’IA remplit Emplacements, Occupés et Vides. Vous pouvez corriger une valeur avant confirmation si la vérification visuelle l’exige."
+            "OpenAI revisa cada hilera y llena Slots, Ocupados y Vacíos. Puedes corregir un valor antes de confirmar si la revisión visual lo requiere.",
+            "OpenAI examine chaque rang et remplit Emplacements, Occupés et Vides. Vous pouvez corriger une valeur avant confirmation si la vérification visuelle l’exige."
         ))
 
         edited = st.data_editor(
@@ -6246,78 +6946,81 @@ with main_col:
             if analizar_salud and uploaded_images:
                 resultados_salud = []
                 progress_salud = st.progress(
-                    0,
+                    5,
                     text=tr(
-                        "Analizando estado de vegetación...",
-                        "Analyse de l’état de la végétation..."
+                        "OpenAI está revisando la salud por cada surco y slot...",
+                        "OpenAI examine la santé pour chaque rang et emplacement..."
                     )
                 )
 
-                for index, uploaded_image in enumerate(uploaded_images, 1):
-                    try:
-                        ok_backend, backend_result = procesar_imagen_backend_ia(uploaded_image)
-                        if not ok_backend:
-                            raise RuntimeError(str(backend_result))
-
-                        # El historial original se guarda AHORA, en Salud,
-                        # no durante el conteo de Inventario.
-                        historial_google_ok = False
-                        historial_google_info = ""
-                        try:
-                            historial_google_ok, historial_google_info = guardar_analisis_en_google(
-                                uploaded_image,
-                                backend_result
-                            )
-                        except Exception as historial_exc:
-                            historial_google_info = str(historial_exc)
-
-                        resultados_salud.append({
-                            "id": f"{index}_{uploaded_image.name}",
-                            "name": uploaded_image.name,
-                            "count": int(backend_result.get("count", 0)),
-                            "green_pct": float(backend_result.get("green_pct", 0.0)),
-                            "red_pct": float(backend_result.get("red_pct", 0.0)),
-                            "angle": float(backend_result.get("angle", 0.0)),
-                            "annotated": backend_result.get("annotated"),
-                            "ia_scene": backend_result.get("backend"),
-                            "result_url": backend_result.get("result_url"),
-                            "historial_google_guardado": historial_google_ok,
-                            "historial_google_info": historial_google_info,
-                            "zona_mas_afectada": backend_result.get("zona_mas_afectada", "No determinada"),
-                            "nivel_afectacion_visual": backend_result.get("nivel_afectacion_visual", "No determinado"),
-                            "diagnostico_visual": backend_result.get("diagnostico_visual", ""),
-                            "causas_probables": backend_result.get("causas_probables", []),
-                            "explicacion_nutrientes": backend_result.get("explicacion_nutrientes", ""),
-                            "recomendaciones_iniciales": backend_result.get("recomendaciones_iniciales", []),
-                            "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
-                            "detalle_zonas": backend_result.get("detalle_zonas", {}),
-                            "metodo": backend_result.get("metodo", "gpt-image")
-                        })
-                    except Exception as exc:
-                        st.warning(
-                            tr(
-                                f"No se pudo analizar Salud en {uploaded_image.name}: {exc}",
-                                f"Impossible d’analyser la santé dans {uploaded_image.name} : {exc}"
-                            )
+                try:
+                    fuente = st.session_state.tc_inventario_fuente or ""
+                    uploaded_image = next(
+                        (u for u in uploaded_images if u.name == fuente),
+                        uploaded_images[0]
+                    )
+                    rows_ai = st.session_state.tc_inventario_rows_ai or []
+                    if not rows_ai:
+                        raise RuntimeError(
+                            "Falta la geometría de Inventario. Vuelve a ejecutar Inventario antes de Salud."
                         )
 
+                    backend_result = _tc_analyze_health_openai(
+                        uploaded_image,
+                        rows_ai
+                    )
                     progress_salud.progress(
-                        int(100 * index / max(1, len(uploaded_images))),
+                        90,
                         text=tr(
-                            f"Salud: imagen {index} de {len(uploaded_images)}...",
-                            f"Santé : image {index} sur {len(uploaded_images)}..."
+                            "Guardando resultado y preparando diagnóstico...",
+                            "Enregistrement du résultat et préparation du diagnostic..."
                         )
                     )
 
-                if resultados_salud:
+                    historial_google_ok = False
+                    historial_google_info = ""
+                    try:
+                        historial_google_ok, historial_google_info = guardar_analisis_en_google(
+                            uploaded_image,
+                            backend_result
+                        )
+                    except Exception as historial_exc:
+                        historial_google_info = str(historial_exc)
+
+                    resultados_salud.append({
+                        "id": f"1_{uploaded_image.name}",
+                        "name": uploaded_image.name,
+                        "count": int(backend_result.get("count", 0)),
+                        "green_pct": float(backend_result.get("green_pct", 0.0)),
+                        "red_pct": float(backend_result.get("red_pct", 0.0)),
+                        "angle": float(backend_result.get("angle", 0.0)),
+                        "annotated": backend_result.get("annotated"),
+                        "ia_scene": backend_result.get("backend"),
+                        "result_url": backend_result.get("result_url"),
+                        "historial_google_guardado": historial_google_ok,
+                        "historial_google_info": historial_google_info,
+                        "zona_mas_afectada": backend_result.get("zona_mas_afectada", "No determinada"),
+                        "nivel_afectacion_visual": backend_result.get("nivel_afectacion_visual", "No determinado"),
+                        "diagnostico_visual": backend_result.get("diagnostico_visual", ""),
+                        "causas_probables": backend_result.get("causas_probables", []),
+                        "explicacion_nutrientes": backend_result.get("explicacion_nutrientes", ""),
+                        "recomendaciones_iniciales": backend_result.get("recomendaciones_iniciales", []),
+                        "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
+                        "detalle_zonas": backend_result.get("detalle_zonas", {}),
+                        "metodo": backend_result.get("metodo", "openai-vision-direct"),
+                        "confidence": backend_result.get("confidence", 0.0),
+                    })
+
                     st.session_state.tc_resultados_base = resultados_salud
                     st.session_state.tc_salud_procesada = True
+                    progress_salud.progress(100, text=tr("Salud terminada.", "Santé terminée."))
                     st.rerun()
-                else:
+
+                except Exception as exc:
                     st.error(
                         tr(
-                            "No se obtuvieron resultados de Salud.",
-                            "Aucun résultat de santé n’a été obtenu."
+                            f"No se pudo analizar Salud con OpenAI: {exc}",
+                            f"Impossible d’analyser la santé avec OpenAI : {exc}"
                         )
                     )
 
@@ -6346,7 +7049,8 @@ with main_col:
                         with c_original:
                             st.caption(tr("Imagen original", "Image originale"))
                             try:
-                                up = uploaded_images[idx]
+                                fuente = st.session_state.tc_inventario_fuente or item.get("name", "")
+                                up = next((u for u in uploaded_images if u.name == fuente), uploaded_images[0])
                                 st.image(
                                     Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
                                     use_container_width=True
