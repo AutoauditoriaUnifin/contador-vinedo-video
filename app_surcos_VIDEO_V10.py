@@ -6097,50 +6097,107 @@ def _tc_clean_occupancy_ai(value, count):
     return s[:count]
 
 
-def _tc_inventory_item_valid_ai(item):
+def _tc_clean_index_list_ai(value, count):
+    """Devuelve índices 1..count únicos/ordenados. Acepta lista, CSV o texto."""
+    count = max(0, int(count or 0))
+    if count <= 0:
+        return []
+    raw = value
+    if isinstance(raw, str):
+        import re
+        raw = re.findall(r"\d+", raw)
+    if not isinstance(raw, (list, tuple)):
+        return []
+    clean = []
+    seen = set()
+    for v in raw:
+        try:
+            i = int(v)
+        except Exception:
+            continue
+        if 1 <= i <= count and i not in seen:
+            seen.add(i)
+            clean.append(i)
+    clean.sort()
+    return clean
+
+
+def _tc_inventory_item_to_occ_ai(item):
+    """Convierte respuesta compacta de IA a occupancy O/V sin exigir cadenas largas."""
     if not isinstance(item, dict):
-        return False
+        return 0, "", []
     try:
         count = int(item.get("slot_count", 0) or 0)
     except Exception:
-        return False
-    if count <= 1:
-        return False
+        count = 0
+    if count <= 1 or count > 500:
+        return 0, "", []
+
+    # Formato nuevo preferido: solo índices vacíos.
+    vacant = _tc_clean_index_list_ai(
+        item.get("vacant_indices", item.get("empty_indices", [])),
+        count,
+    )
+    if "vacant_indices" in item or "empty_indices" in item:
+        chars = ["O"] * count
+        for idx in vacant:
+            chars[idx - 1] = "V"
+        return count, "".join(chars), vacant
+
+    # Compatibilidad con respuestas antiguas.
     occ = "".join(c for c in str(item.get("occupancy", "") or "").upper() if c in "OV")
-    points = item.get("points") or []
-    return len(occ) == count and len(points) >= 2
+    if len(occ) == count:
+        return count, occ, [i + 1 for i, c in enumerate(occ) if c == "V"]
+
+    return 0, "", []
 
 
-def _tc_refine_inventory_batches_openai(pil, rough_rows, batch_size=10):
+def _tc_inventory_item_valid_ai(item):
+    if not isinstance(item, dict):
+        return False
+    count, occ, _ = _tc_inventory_item_to_occ_ai(item)
+    # Para validar el INVENTARIO lo crítico es el conteo y los faltantes.
+    # Si OpenAI no devuelve puntos suficientes, conservamos la trayectoria
+    # de la detección global en lugar de cancelar toda la parcela.
+    return count > 1 and len(occ) == count
+
+
+def _tc_refine_inventory_batches_openai(pil, rough_rows, batch_size=8):
     fw, fh = pil.size
     rough_rows = _tc_sort_rows_ai(rough_rows, fw, fh)
     refined = []
+
     for start in range(0, len(rough_rows), batch_size):
-        group = rough_rows[start:start+batch_size]
-        bbox = _tc_crop_bbox_for_rows(pil, group, 1.55)
+        group = rough_rows[start:start + batch_size]
+        bbox = _tc_crop_bbox_for_rows(pil, group, 1.45)
         original = pil.crop(bbox).convert("RGB")
         guide = _tc_reference_crop_ai(pil, group, bbox, slots=False)
         ids = [int(r["id"]) for r in group]
+
         prompt = f"""
-TerraCore Inventario. Imagen 1 es el recorte original. Imagen 2 muestra líneas magenta aproximadas con etiquetas Rxx.
+TerraCore Inventario. Imagen 1 es el recorte ORIGINAL. Imagen 2 muestra una guía magenta aproximada con etiquetas Rxx.
 Analiza SOLO estos IDs: {ids}.
 
 Para cada Rxx:
-- corrige la trayectoria para que quede exactamente en el CENTRO de la hilera real (5 a 9 puntos 0..1000 respecto a ESTE RECORTE);
-- determina la secuencia regular de posiciones reales de planta desde el inicio hasta el final;
-- slot_count = total de posiciones esperadas, incluyendo faltantes;
-- occupancy debe tener EXACTAMENTE slot_count caracteres: O=planta físicamente presente, V=posición vacía/faltante;
-- una planta débil o seca sigue siendo O si físicamente existe;
-- no cuentes hojas individuales, sombras, postes, suelo ni maleza;
-- usa la regularidad de hileras vecinas para fijar la separación real de plantas;
-- start_t y end_t son 0..1000 sobre la trayectoria corregida y delimitan la zona donde existen slots.
+1) Corrige la trayectoria para quedar en el CENTRO de la hilera real. Devuelve 5 a 9 puntos 0..1000 respecto a ESTE RECORTE.
+2) Determina la secuencia REGULAR de posiciones reales de planta entre start_t y end_t.
+3) slot_count = número TOTAL de posiciones esperadas, incluyendo faltantes.
+4) NO devuelvas una cadena O/V. Devuelve SOLO vacant_indices: lista de índices 1-based de las posiciones realmente vacías.
+5) Una planta seca, amarilla, débil o sin vigor sigue estando OCUPADA si físicamente existe. Solo una ausencia clara es vacía.
+6) Usa la separación repetitiva de plantas en ESA hilera y en sus vecinas para fijar el paso real.
+7) No cuentes hojas, manchas, postes, sombras, maleza ni textura del suelo.
+8) start_t y end_t van de 0..1000 sobre la trayectoria corregida y delimitan la zona real con slots.
 
 Devuelve SOLO JSON válido:
-{{"rows":[{{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y]],
-"start_t":0,"end_t":1000,"slot_count":0,"occupancy":"OOOVOO"}}]}}
-Devuelve exactamente todos los IDs pedidos y revisa el conteo dos veces.
+{{"rows":[{{"id":1,"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y]],"start_t":0,"end_t":1000,"slot_count":52,"vacant_indices":[7,19]}}]}}
+
+Devuelve exactamente todos los IDs pedidos. Revisa dos veces que ningún vacant_index sea mayor que slot_count.
 """
-        data = _tc_openai_json([original, guide], prompt, detail="high")
+        try:
+            data = _tc_openai_json([original, guide], prompt, detail="high")
+        except Exception:
+            data = {}
+
         returned = data.get("rows", []) if isinstance(data, dict) else []
         by_id = {}
         for item in returned:
@@ -6149,37 +6206,75 @@ Devuelve exactamente todos los IDs pedidos y revisa el conteo dos veces.
                     by_id[int(item.get("id"))] = item
                 except Exception:
                     pass
+
         for rough in group:
             rid = int(rough["id"])
             item = by_id.get(rid, {})
 
-            # Si el lote omitió la hilera o devolvió una cadena incompleta,
-            # OpenAI vuelve a revisar SOLO esa hilera. No rellenamos datos a mano.
+            # Reintentos puntuales. Usamos un formato compacto para evitar
+            # errores por cadenas O/V demasiado largas.
             if not _tc_inventory_item_valid_ai(item):
-                retry_prompt = f"""
-Revisa SOLO R{rid:02d} en las dos imágenes adjuntas.
-Corrige el centro de la hilera y cuenta posiciones reales de planta.
+                single_bbox = _tc_crop_bbox_for_rows(pil, [rough], 2.15)
+                single_original = pil.crop(single_bbox).convert("RGB")
+                single_guide = _tc_reference_crop_ai(pil, [rough], single_bbox, slots=False)
+
+                retry_prompts = [
+                    f"""
+Revisa SOLO R{rid:02d}. Imagen 1 original; imagen 2 guía aproximada.
+Cuenta posiciones reales de planta siguiendo la regularidad de la hilera.
 Devuelve SOLO JSON válido:
-{{"id":{rid},"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y]],"start_t":0,"end_t":1000,"slot_count":0,"occupancy":"..."}}
-occupancy debe tener EXACTAMENTE slot_count caracteres O/V. O=planta físicamente presente; V=posición esperada vacía. Una planta seca pero existente es O.
-"""
-                item = _tc_openai_json([original, guide], retry_prompt, detail="high")
+{{"id":{rid},"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y]],"start_t":0,"end_t":1000,"slot_count":52,"vacant_indices":[7,19]}}
+NO escribas occupancy O/V. vacant_indices son índices 1-based de faltantes claros. Planta seca pero presente NO es vacía.
+""",
+                    f"""
+Auditoría final de R{rid:02d}. Ignora conteos previos si no coinciden con la fotografía.
+Primero identifica el inicio y final reales del tramo plantado. Después estima el paso repetitivo entre plantas y cuenta TODOS los slots esperados.
+Marca únicamente las AUSENCIAS CLARAS con vacant_indices.
+Devuelve SOLO JSON:
+{{"id":{rid},"confidence":0.0,"points":[[x,y],[x,y],[x,y],[x,y],[x,y]],"start_t":0,"end_t":1000,"slot_count":0,"vacant_indices":[]}}
+""",
+                ]
 
+                for rp in retry_prompts:
+                    try:
+                        candidate = _tc_openai_json([single_original, single_guide], rp, detail="high")
+                    except Exception:
+                        candidate = {}
+                    if _tc_inventory_item_valid_ai(candidate):
+                        item = candidate
+                        # Los puntos del recorte puntual deben transformarse con su bbox.
+                        item = dict(item)
+                        item["_single_bbox"] = single_bbox
+                        break
+
+            # Si una hilera sigue sin poder validarse, NO cancelamos toda la parcela.
+            # Conservamos la geometría detectada y la marcamos para revisión, sin inventar slots.
             if not _tc_inventory_item_valid_ai(item):
-                raise RuntimeError(
-                    f"OpenAI no pudo validar el conteo de slots del surco R{rid:02d}. Vuelve a intentar con una imagen de mayor resolución."
-                )
+                refined.append({
+                    "id": rid,
+                    "points_norm": rough.get("points_norm", []),
+                    "confidence": min(0.35, _tc_clamp01(rough.get("confidence", 0.35), 0.35)),
+                    "start_t": 0.0,
+                    "end_t": 1000.0,
+                    "slot_count": 0,
+                    "occupancy": "",
+                    "needs_review": True,
+                    "review_reason": f"R{rid:02d}: OpenAI no pudo validar slots después de varios intentos.",
+                })
+                continue
 
-            pts = _tc_crop_norm_to_global(item.get("points") or [], bbox, fw, fh)
+            bbox_used = item.pop("_single_bbox", bbox)
+            pts = _tc_crop_norm_to_global(item.get("points") or [], bbox_used, fw, fh)
             if len(pts) < 2:
                 pts = rough["points_norm"]
-            count = int(item.get("slot_count", 0) or 0)
-            occ = _tc_clean_occupancy_ai(item.get("occupancy", ""), count)
+
+            count, occ, vacant = _tc_inventory_item_to_occ_ai(item)
             try:
                 start_t = float(np.clip(float(item.get("start_t", 0) or 0), 0, 1000))
                 end_t = float(np.clip(float(item.get("end_t", 1000) or 1000), 0, 1000))
             except Exception:
                 start_t, end_t = 0.0, 1000.0
+
             refined.append({
                 "id": rid,
                 "points_norm": pts,
@@ -6188,7 +6283,10 @@ occupancy debe tener EXACTAMENTE slot_count caracteres O/V. O=planta físicament
                 "end_t": end_t,
                 "slot_count": max(0, count),
                 "occupancy": occ,
+                "vacant_indices": vacant,
+                "needs_review": False,
             })
+
     refined = _tc_sort_rows_ai(refined, fw, fh)
     for i, row in enumerate(refined, 1):
         row["id"] = i
@@ -6253,6 +6351,7 @@ def _tc_draw_inventory_ai(pil, rows):
             tr("Ocupados","Occupés"): occupied,
             tr("Vacíos","Vides"): empty,
             tr("Confianza","Confiance"): round(conf*100,1),
+            tr("Estado","État"): tr("Revisar", "À vérifier") if row.get("needs_review") else tr("Validado por IA", "Validé par IA"),
         })
     return bgr, pd.DataFrame(table), float(np.mean(confs)) if confs else 0.0, rows
 
@@ -6273,6 +6372,7 @@ def _tc_analyze_inventory_openai(uploaded_image, base=None):
         "coverage_score": base.get("coverage_score",0),
         "rows": refined,
         "model": _tc_openai_model(),
+        "warnings": [r.get("review_reason") for r in refined if r.get("needs_review") and r.get("review_reason")],
         "debug": base.get("debug",{}),
     }
 
@@ -6305,72 +6405,104 @@ def _tc_clean_health_ai(value, count, occupancy):
     return "".join(chars)
 
 
-def _tc_health_batches_openai(pil, rows, batch_size=10):
+def _tc_health_from_red_indices_ai(red_indices, count, occupancy):
+    count = max(0, int(count or 0))
+    if count <= 0:
+        return ""
+    red = set(_tc_clean_index_list_ai(red_indices, count))
+    occ = _tc_clean_occupancy_ai(occupancy, count)
+    for i, c in enumerate(occ, 1):
+        if c == "V":
+            red.add(i)
+    return "".join("R" if i in red else "G" for i in range(1, count + 1))
+
+
+def _tc_health_batches_openai(pil, rows, batch_size=8):
     health = {}
-    for start in range(0, len(rows), batch_size):
-        group = rows[start:start+batch_size]
-        bbox = _tc_crop_bbox_for_rows(pil, group, 1.55)
+    rows_to_process = [r for r in rows if int(r.get("slot_count", 0) or 0) > 0]
+
+    for start in range(0, len(rows_to_process), batch_size):
+        group = rows_to_process[start:start + batch_size]
+        bbox = _tc_crop_bbox_for_rows(pil, group, 1.45)
         original = pil.crop(bbox).convert("RGB")
         guide = _tc_reference_crop_ai(pil, group, bbox, slots=True)
         spec = [{
-            "id":int(r["id"]),
-            "slot_count":int(r.get("slot_count",0) or 0),
-            "occupancy":_tc_clean_occupancy_ai(r.get("occupancy",""), int(r.get("slot_count",0) or 0)),
+            "id": int(r["id"]),
+            "slot_count": int(r.get("slot_count", 0) or 0),
+            "vacant_indices": [i + 1 for i, c in enumerate(_tc_clean_occupancy_ai(r.get("occupancy", ""), int(r.get("slot_count", 0) or 0))) if c == "V"],
         } for r in group]
-        prompt = f"""
-TerraCore Salud. Imagen 1 es el recorte original. Imagen 2 es una guía con cada hilera Rxx y puntos de slots ya confirmados.
-Inventario confirmado: {json.dumps(spec, ensure_ascii=False, separators=(',',':'))}
 
-Para cada Rxx devuelve health con EXACTAMENTE slot_count caracteres y en el mismo orden:
-G = planta/segmento con vigor visual suficiente.
-R = planta muy débil, seca, severamente despoblada o slot faltante.
-Si occupancy contiene V, esa posición debe ser R.
-No cambies los slots ni el inventario. No clasifiques el suelo entre hileras. Evita ruido de hojas/sombras: R solo si el tramo es realmente débil/seco/faltante frente a sus vecinos.
+        prompt = f"""
+TerraCore Salud. Imagen 1 es el recorte ORIGINAL. Imagen 2 muestra cada hilera Rxx y sus slots confirmados.
+Inventario confirmado: {json.dumps(spec, ensure_ascii=False, separators=(',', ':'))}
+
+Para cada Rxx NO devuelvas una cadena G/R larga.
+Devuelve solamente red_indices = índices 1-based de slots que visualmente están secos, muy débiles, severamente despoblados o faltantes.
+- Los vacant_indices del Inventario DEBEN estar incluidos en red_indices.
+- Una planta presente y con vigor visual suficiente NO debe estar en red_indices.
+- No cambies cantidad ni posición de slots.
+- No clasifiques suelo, maleza entre hileras, sombras o postes.
 
 Devuelve SOLO JSON válido:
-{{"rows":[{{"id":1,"confidence":0.0,"health":"GGGGRR"}}]}}
+{{"rows":[{{"id":1,"confidence":0.0,"red_indices":[7,8,19]}}]}}
 """
-        data = _tc_openai_json([original, guide], prompt, detail="high")
-        returned = data.get("rows",[]) if isinstance(data,dict) else []
+        try:
+            data = _tc_openai_json([original, guide], prompt, detail="high")
+        except Exception:
+            data = {}
+
+        returned = data.get("rows", []) if isinstance(data, dict) else []
+        by_id = {}
         for item in returned:
-            if not isinstance(item,dict):
-                continue
-            try:
-                rid = int(item.get("id"))
-            except Exception:
-                continue
-            row = next((r for r in group if int(r["id"])==rid),None)
-            if row is None:
-                continue
-            count = int(row.get("slot_count",0) or 0)
-            raw_health = "".join(c for c in str(item.get("health","") or "").upper() if c in "GR")
-            if len(raw_health) == count:
-                health[rid] = {
-                    "health":_tc_clean_health_ai(raw_health,count,row.get("occupancy","")),
-                    "confidence":_tc_clamp01(item.get("confidence",0.7),0.7),
-                }
-        # Reintento puntual si faltó una hilera.
+            if isinstance(item, dict):
+                try:
+                    by_id[int(item.get("id"))] = item
+                except Exception:
+                    pass
+
         for row in group:
             rid = int(row["id"])
-            if rid in health:
+            count = int(row.get("slot_count", 0) or 0)
+            occ = _tc_clean_occupancy_ai(row.get("occupancy", ""), count)
+            item = by_id.get(rid)
+
+            if isinstance(item, dict) and "red_indices" in item:
+                health[rid] = {
+                    "health": _tc_health_from_red_indices_ai(item.get("red_indices", []), count, occ),
+                    "confidence": _tc_clamp01(item.get("confidence", 0.72), 0.72),
+                }
                 continue
-            count = int(row.get("slot_count",0) or 0)
-            occ = _tc_clean_occupancy_ai(row.get("occupancy",""), count)
-            retry = f"""Revisa SOLO R{rid:02d}. Tiene {count} slots y occupancy={occ}. Devuelve SOLO JSON: {{"id":{rid},"confidence":0.0,"health":"cadena G/R de exactamente {count} caracteres"}}. V siempre es R."""
+
+            # Reintento puntual solo para esa hilera.
+            single_bbox = _tc_crop_bbox_for_rows(pil, [row], 2.15)
+            single_original = pil.crop(single_bbox).convert("RGB")
+            single_guide = _tc_reference_crop_ai(pil, [row], single_bbox, slots=True)
+            vac = [i + 1 for i, c in enumerate(occ) if c == "V"]
+            retry = f"""
+Revisa SOLO R{rid:02d}. Tiene {count} slots. Faltantes confirmados por Inventario: {vac}.
+Devuelve SOLO JSON:
+{{"id":{rid},"confidence":0.0,"red_indices":[1,2]}}
+red_indices son los índices 1-based de slots secos/muy débiles/faltantes. Incluye obligatoriamente {vac}.
+"""
             try:
-                d = _tc_openai_json([original,guide],retry,detail="high")
-                raw_retry = "".join(c for c in str(d.get("health","") or "").upper() if c in "GR")
-                if len(raw_retry) != count:
-                    raise RuntimeError(f"Cadena G/R incompleta ({len(raw_retry)}/{count}).")
-                health[rid] = {"health":_tc_clean_health_ai(raw_retry,count,occ),"confidence":_tc_clamp01(d.get("confidence",0.6),0.6)}
-            except Exception as retry_exc:
-                raise RuntimeError(
-                    f"OpenAI no pudo validar Salud para R{rid:02d}: {retry_exc}"
-                )
-            if rid not in health or len(health[rid].get("health", "")) != count:
-                raise RuntimeError(
-                    f"OpenAI devolvió una clasificación de Salud incompleta para R{rid:02d}."
-                )
+                d = _tc_openai_json([single_original, single_guide], retry, detail="high")
+            except Exception:
+                d = {}
+
+            if isinstance(d, dict) and "red_indices" in d:
+                health[rid] = {
+                    "health": _tc_health_from_red_indices_ai(d.get("red_indices", []), count, occ),
+                    "confidence": _tc_clamp01(d.get("confidence", 0.62), 0.62),
+                }
+            else:
+                # No inventamos diagnóstico: solo respetamos faltantes confirmados,
+                # y dejamos el resto verde con confianza muy baja para que la app continúe.
+                health[rid] = {
+                    "health": _tc_health_from_red_indices_ai(vac, count, occ),
+                    "confidence": 0.20,
+                    "needs_review": True,
+                }
+
     return health
 
 
@@ -6758,6 +6890,7 @@ with main_col:
                 st.session_state.tc_inventario_rows_ai = inv.get("rows", [])
                 st.session_state.tc_inventario_modelo = inv.get("model", _tc_openai_model())
                 st.session_state.tc_inventario_debug = inv.get("debug", {})
+                st.session_state.tc_inventario_warnings = inv.get("warnings", [])
                 st.session_state.tc_inventario_procesado = True
 
                 progress.progress(100, text=tr("Inventario terminado.", "Inventaire terminé."))
@@ -6776,6 +6909,7 @@ with main_col:
                 st.session_state.tc_tabla_inventario = None
                 st.session_state.tc_inventario_imagen = None
                 st.session_state.tc_inventario_rows_ai = []
+                st.session_state.tc_inventario_warnings = []
                 st.error(
                     tr(
                         f"No se pudo terminar el Inventario con OpenAI: {exc}",
@@ -6816,6 +6950,16 @@ with main_col:
                 f"Inventaire automatique calculé à partir de la présence visuelle, séparé du diagnostic de santé. Image de référence : {fuente_inv}. Confiance moyenne : {confianza_inv*100:.1f} %."
             )
         )
+
+        warnings_inv = st.session_state.get("tc_inventario_warnings", []) or []
+        if warnings_inv:
+            st.warning(tr(
+                "OpenAI terminó la parcela, pero hay uno o más surcos que requieren revisión. No se canceló todo el Inventario.",
+                "OpenAI a terminé la parcelle, mais un ou plusieurs rangs nécessitent une vérification. L’inventaire complet n’a pas été annulé."
+            ))
+            with st.expander(tr("Surcos a revisar", "Rangs à vérifier"), expanded=False):
+                for warning_msg in warnings_inv:
+                    st.caption(str(warning_msg))
 
         inv_image = st.session_state.tc_inventario_imagen
         if inv_image is not None:
@@ -6874,6 +7018,9 @@ with main_col:
                     max_value=100.0,
                     format="%.1f %%",
                     disabled=True
+                ),
+                tr("Estado", "État"): st.column_config.TextColumn(
+                    tr("Estado", "État"), disabled=True, width="medium"
                 ),
             }
         )
