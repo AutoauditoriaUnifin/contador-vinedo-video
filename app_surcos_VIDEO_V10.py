@@ -3724,6 +3724,10 @@ def analizar(
     )
 
     all_tracks = []
+    # Datos técnicos de cada trayectoria para Inventario.
+    # No cambia el resultado visual de Salud; solo expone la geometría
+    # necesaria para calcular slots ocupados/vacíos por separado.
+    all_track_records = []
 
     total_green = 0
     total_red = 0
@@ -4110,6 +4114,16 @@ def analizar(
                 points
             )
 
+            all_track_records.append({
+                "track_index": int(track_index),
+                "grid_id": int(grid_id) if grid_id is not None else None,
+                "points": np.asarray(points, dtype=np.float32),
+                "green_scores": np.asarray(green_scores, dtype=np.float32),
+                "states": np.asarray(states, dtype=bool),
+                "spacing": float(spacing),
+                "line_length": float(line_length),
+            })
+
             if grid_id is not None:
                 used_grid_ids.add(
                     int(grid_id)
@@ -4169,7 +4183,11 @@ def analizar(
         "red_pct": float(
             red_pct
         ),
-        "angle": mean_angle
+        "angle": mean_angle,
+        # Campos técnicos usados exclusivamente por Inventario.
+        "tracks": all_track_records,
+        "green_mask": (green > 0).astype(np.uint8) * 255,
+        "response_map": response.astype(np.float32),
     }
 
 
@@ -5382,6 +5400,10 @@ _estado_nuevo = {
     "tc_inventario_confirmado": False,
     "tc_resultados_base": [],
     "tc_tabla_inventario": None,
+    "tc_inventario_imagen": None,
+    "tc_inventario_fuente": "",
+    "tc_inventario_confianza": 0.0,
+    "tc_salud_procesada": False,
 }
 
 for _k, _v in _estado_nuevo.items():
@@ -5395,11 +5417,316 @@ def _tc_reiniciar_parcela():
     st.session_state.tc_inventario_confirmado = False
     st.session_state.tc_resultados_base = []
     st.session_state.tc_tabla_inventario = None
+    st.session_state.tc_inventario_imagen = None
+    st.session_state.tc_inventario_fuente = ""
+    st.session_state.tc_inventario_confianza = 0.0
+    st.session_state.tc_salud_procesada = False
+
+
+# ============================================================
+# INVENTARIO AUTOMÁTICO - SLOTS / OCUPADOS / VACÍOS
+# ============================================================
+
+def _tc_polyline_distances(points):
+    pts = np.asarray(points, dtype=np.float32)
+    if len(pts) < 2:
+        return np.array([0.0], dtype=np.float32)
+    seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    return np.concatenate([[0.0], np.cumsum(seg)]).astype(np.float32)
+
+
+def _tc_interp_point(points, cumulative, distance):
+    pts = np.asarray(points, dtype=np.float32)
+    cumulative = np.asarray(cumulative, dtype=np.float32)
+    if len(pts) == 0:
+        return np.array([0.0, 0.0], dtype=np.float32)
+    if len(pts) == 1 or cumulative[-1] <= 1e-6:
+        return pts[0].copy()
+    d = float(np.clip(distance, 0.0, cumulative[-1]))
+    idx = int(np.searchsorted(cumulative, d, side="right") - 1)
+    idx = max(0, min(idx, len(pts) - 2))
+    d0 = float(cumulative[idx])
+    d1 = float(cumulative[idx + 1])
+    alpha = 0.0 if d1 <= d0 else (d - d0) / (d1 - d0)
+    return (pts[idx] * (1.0 - alpha) + pts[idx + 1] * alpha).astype(np.float32)
+
+
+def _tc_sample_map_along_track(score_map, points, spacing, step_px=2.0):
+    """Muestrea presencia visual a lo largo del eje del surco.
+
+    Importante: score_map proviene de respuesta de textura/estructura, no de
+    color verde/rojo. Por eso Inventario queda separado de Salud.
+    """
+    pts = np.asarray(points, dtype=np.float32)
+    cumulative = _tc_polyline_distances(pts)
+    length = float(cumulative[-1]) if len(cumulative) else 0.0
+    if length < 2.0:
+        return np.array([], dtype=np.float32), np.array([], dtype=np.float32), cumulative
+
+    distances = np.arange(0.0, length + 1e-6, max(1.0, float(step_px)), dtype=np.float32)
+    h, w = score_map.shape[:2]
+    radius = max(2, int(round(float(spacing or 10.0) * 0.16)))
+    values = []
+
+    for d in distances:
+        p = _tc_interp_point(pts, cumulative, float(d))
+        x = int(np.clip(round(float(p[0])), 0, w - 1))
+        y = int(np.clip(round(float(p[1])), 0, h - 1))
+        x0, x1 = max(0, x - radius), min(w, x + radius + 1)
+        y0, y1 = max(0, y - radius), min(h, y + radius + 1)
+        patch = score_map[y0:y1, x0:x1]
+        values.append(float(np.mean(patch)) if patch.size else 0.0)
+
+    arr = np.asarray(values, dtype=np.float32)
+    if len(arr) >= 5:
+        arr = gaussian_filter1d(arr, sigma=1.2, mode="nearest")
+    return distances, arr, cumulative
+
+
+def _tc_estimar_pitch_slots(distances, profile, row_spacing):
+    """Estima automáticamente la distancia entre posiciones de planta.
+
+    Primero busca periodicidad real de presencia sobre el surco. Si la foto no
+    permite verla claramente, usa una relación geométrica conservadora con la
+    separación entre surcos como respaldo.
+    """
+    if len(distances) < 8 or len(profile) < 8:
+        return max(8.0, float(row_spacing or 18.0) * 0.55), 0.35
+
+    step = float(np.median(np.diff(distances))) if len(distances) > 1 else 2.0
+    row_spacing = max(8.0, float(row_spacing or 18.0))
+    min_pitch = max(7.0, row_spacing * 0.24)
+    max_pitch = max(min_pitch + 3.0, row_spacing * 1.10)
+
+    smooth = np.asarray(profile, dtype=np.float32)
+    broad_sigma = max(2.0, len(smooth) * 0.045)
+    centered = smooth - gaussian_filter1d(smooth, sigma=broad_sigma, mode="nearest")
+    centered = centered - float(np.mean(centered))
+
+    energy = float(np.std(centered))
+    if energy > 1e-5:
+        ac = np.correlate(centered, centered, mode="full")[len(centered)-1:]
+        if ac[0] > 1e-8:
+            ac = ac / ac[0]
+            lag_min = max(2, int(round(min_pitch / step)))
+            lag_max = min(len(ac) - 2, int(round(max_pitch / step)))
+            if lag_max > lag_min:
+                segment = ac[lag_min:lag_max + 1]
+                peaks, props = find_peaks(segment, prominence=0.035)
+                if len(peaks):
+                    peak_vals = segment[peaks]
+                    best = int(peaks[int(np.argmax(peak_vals))]) + lag_min
+                    corr = float(ac[best])
+                    if corr >= 0.08:
+                        confidence = float(np.clip(0.45 + corr * 0.55, 0.45, 0.90))
+                        return float(best * step), confidence
+
+    fallback = float(np.clip(row_spacing * 0.55, min_pitch, max_pitch))
+    return fallback, 0.35
+
+
+def _tc_score_at_distance(distances, profile, d, window):
+    if len(distances) == 0:
+        return 0.0
+    mask = np.abs(distances - float(d)) <= float(window)
+    if np.any(mask):
+        return float(np.mean(profile[mask]))
+    return float(np.interp(float(d), distances, profile))
+
+
+def _tc_slots_track(score_map, track, forced_pitch=None):
+    points = np.asarray(track.get("points", []), dtype=np.float32)
+    spacing = float(track.get("spacing", 18.0) or 18.0)
+    distances, profile, cumulative = _tc_sample_map_along_track(
+        score_map, points, spacing, step_px=2.0
+    )
+    if len(distances) < 4:
+        return [], 0.0, 0.0
+
+    length = float(distances[-1])
+    local_pitch, pitch_conf = _tc_estimar_pitch_slots(distances, profile, spacing)
+    pitch = float(forced_pitch or local_pitch)
+    pitch = max(6.0, min(pitch, max(7.0, length / 2.0)))
+
+    # Encontrar la fase que mejor coincide con presencia repetitiva real.
+    offsets = np.linspace(pitch * 0.25, pitch * 0.95, 12)
+    best_offset = pitch * 0.5
+    best_score = -1e9
+    for off in offsets:
+        ds = np.arange(off, max(off + 0.1, length - pitch * 0.15), pitch)
+        if len(ds) < 2:
+            continue
+        scores = [_tc_score_at_distance(distances, profile, d, pitch * 0.18) for d in ds]
+        score = float(np.mean(scores)) if scores else -1e9
+        if score > best_score:
+            best_score = score
+            best_offset = float(off)
+
+    slot_distances = np.arange(
+        best_offset,
+        max(best_offset + 0.1, length - pitch * 0.10),
+        pitch,
+        dtype=np.float32
+    )
+    if len(slot_distances) == 0:
+        slot_distances = np.array([length * 0.5], dtype=np.float32)
+
+    slot_scores = np.asarray([
+        _tc_score_at_distance(distances, profile, float(d), pitch * 0.24)
+        for d in slot_distances
+    ], dtype=np.float32)
+
+    # Umbral adaptativo de PRESENCIA. No representa salud.
+    if len(slot_scores) >= 3 and float(np.max(slot_scores) - np.min(slot_scores)) > 0.012:
+        norm = slot_scores - float(np.min(slot_scores))
+        denom = float(np.max(norm)) or 1.0
+        scaled = np.clip(norm / denom * 255.0, 0, 255).astype(np.uint8)
+        otsu_value, _ = cv2.threshold(
+            scaled.reshape(-1, 1), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+        threshold = float(np.min(slot_scores) + (otsu_value / 255.0) * denom)
+        # Evitar un corte demasiado exigente cuando el viñedo es homogéneo.
+        threshold = min(threshold, float(np.percentile(slot_scores, 48)))
+    else:
+        threshold = float(np.median(slot_scores) * 0.45) if len(slot_scores) else 0.0
+
+    threshold = max(0.006, threshold)
+    occupied = slot_scores >= threshold
+
+    slots = []
+    for d, score, is_occ in zip(slot_distances, slot_scores, occupied):
+        p = _tc_interp_point(points, cumulative, float(d))
+        slots.append({
+            "distance": float(d),
+            "point": (float(p[0]), float(p[1])),
+            "score": float(score),
+            "occupied": bool(is_occ),
+        })
+
+    contrast = float(np.std(slot_scores) / (np.mean(slot_scores) + 1e-6)) if len(slot_scores) else 0.0
+    confidence = float(np.clip(pitch_conf + min(0.25, contrast * 0.20), 0.30, 0.95))
+    return slots, pitch, confidence
+
+
+def _tc_analizar_inventario_local(uploaded_image):
+    """Detecta surcos + slots sin mezclar el diagnóstico de salud.
+
+    Devuelve una imagen de Inventario, tabla automática y confianza media.
+    """
+    pil_img = Image.open(io.BytesIO(uploaded_image.getvalue())).convert("RGB")
+    base = analizar(pil_img)
+    tracks_raw = list(base.get("tracks", []) or [])
+    response_map = np.asarray(base.get("response_map"), dtype=np.float32)
+
+    if not tracks_raw or response_map.ndim != 2:
+        raise RuntimeError(tr(
+            "No se pudieron obtener trayectorias técnicas para Inventario.",
+            "Impossible d’obtenir les trajectoires techniques pour l’inventaire."
+        ))
+
+    # Deduplicar fragmentos asignados a la misma hilera global.
+    by_index = {}
+    for track in tracks_raw:
+        idx = int(track.get("track_index", len(by_index) + 1))
+        current = by_index.get(idx)
+        if current is None or float(track.get("line_length", 0.0)) > float(current.get("line_length", 0.0)):
+            by_index[idx] = track
+
+    tracks = [by_index[k] for k in sorted(by_index)]
+
+    # Pitch común: mantiene una escala coherente de slots entre todos los surcos.
+    pitches = []
+    pitch_confidences = []
+    for track in tracks:
+        points = np.asarray(track.get("points", []), dtype=np.float32)
+        spacing = float(track.get("spacing", 18.0) or 18.0)
+        ds, prof, _ = _tc_sample_map_along_track(response_map, points, spacing, step_px=2.0)
+        if len(ds) >= 8:
+            p, c = _tc_estimar_pitch_slots(ds, prof, spacing)
+            if np.isfinite(p) and p > 0:
+                pitches.append(float(p))
+                pitch_confidences.append(float(c))
+
+    forced_pitch = float(np.median(pitches)) if pitches else None
+
+    original = cv2.cvtColor(np.asarray(pil_img), cv2.COLOR_RGB2BGR)
+    annotated = original.copy()
+    h, w = annotated.shape[:2]
+
+    rows = []
+    confidences = []
+
+    # Colores de INVENTARIO, deliberadamente distintos de Salud.
+    color_line = (245, 245, 245)      # blanco
+    color_occ = (255, 185, 30)        # azul/cian en BGR
+    color_empty = (0, 170, 255)       # naranja en BGR
+
+    for row_number, track in enumerate(tracks, 1):
+        pts = np.asarray(track.get("points", []), dtype=np.float32)
+        if len(pts) < 2:
+            continue
+
+        slots, pitch_used, conf = _tc_slots_track(response_map, track, forced_pitch=forced_pitch)
+        confidences.append(conf)
+
+        ipts = np.rint(pts).astype(np.int32)
+        ipts[:, 0] = np.clip(ipts[:, 0], 0, w - 1)
+        ipts[:, 1] = np.clip(ipts[:, 1], 0, h - 1)
+        cv2.polylines(annotated, [ipts], False, color_line, 1, cv2.LINE_AA)
+
+        # Numeración igual al INICIO y FINAL.
+        label = f"{row_number:02d}"
+        for endpoint in (ipts[0], ipts[-1]):
+            ex, ey = int(endpoint[0]), int(endpoint[1])
+            tx = int(np.clip(ex + 5, 0, max(0, w - 38)))
+            ty = int(np.clip(ey - 5, 16, max(16, h - 4)))
+            cv2.putText(annotated, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (40, 40, 40), 3, cv2.LINE_AA)
+            cv2.putText(annotated, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
+
+        occupied_count = 0
+        empty_count = 0
+        for slot in slots:
+            x = int(np.clip(round(slot["point"][0]), 0, w - 1))
+            y = int(np.clip(round(slot["point"][1]), 0, h - 1))
+            if slot["occupied"]:
+                occupied_count += 1
+                cv2.circle(annotated, (x, y), 4, color_occ, 2, cv2.LINE_AA)
+                cv2.circle(annotated, (x, y), 1, (255, 255, 255), -1, cv2.LINE_AA)
+            else:
+                empty_count += 1
+                r = 5
+                cv2.line(annotated, (x-r, y-r), (x+r, y+r), color_empty, 2, cv2.LINE_AA)
+                cv2.line(annotated, (x-r, y+r), (x+r, y-r), color_empty, 2, cv2.LINE_AA)
+
+        rows.append({
+            tr("Surco", "Rang"): label,
+            tr("Slots", "Emplacements"): int(len(slots)),
+            tr("Ocupados", "Occupés"): int(occupied_count),
+            tr("Vacíos", "Vides"): int(empty_count),
+            tr("Confianza", "Confiance"): round(float(conf) * 100.0, 1),
+        })
+
+    if not rows:
+        raise RuntimeError(tr(
+            "No se pudo construir el inventario automático de slots.",
+            "Impossible de construire l’inventaire automatique des emplacements."
+        ))
+
+    # Reordenar/renumerar de forma continua 01..N.
+    for i, row in enumerate(rows, 1):
+        row[tr("Surco", "Rang")] = f"{i:02d}"
+
+    return {
+        "image": annotated,
+        "table": pd.DataFrame(rows),
+        "count": len(rows),
+        "pitch_px": float(forced_pitch or 0.0),
+        "confidence": float(np.mean(confidences)) if confidences else 0.0,
+    }
 
 
 def _tc_resultado_a_fila_surcos(total_surcos):
-    """Crea la tabla editable de inventario. Slots se completan manualmente
-    hasta conectar el detector automático de posiciones ocupadas/vacías."""
+    """Tabla de respaldo si el detector automático de slots no logra ejecutarse."""
     total_surcos = max(0, int(total_surcos or 0))
     return pd.DataFrame([
         {
@@ -5407,6 +5734,7 @@ def _tc_resultado_a_fila_surcos(total_surcos):
             tr("Slots", "Emplacements"): 0,
             tr("Ocupados", "Occupés"): 0,
             tr("Vacíos", "Vides"): 0,
+            tr("Confianza", "Confiance"): 0.0,
         }
         for i in range(1, total_surcos + 1)
     ])
@@ -5589,6 +5917,10 @@ with side_col:
             st.session_state.tc_inventario_confirmado = False
             st.session_state.tc_resultados_base = []
             st.session_state.tc_tabla_inventario = None
+            st.session_state.tc_inventario_imagen = None
+            st.session_state.tc_inventario_fuente = ""
+            st.session_state.tc_inventario_confianza = 0.0
+            st.session_state.tc_salud_procesada = False
             st.success(
                 tr(
                     "✅ Captura base creada. Ya puedes analizar Inventario.",
@@ -5677,87 +6009,84 @@ with main_col:
         )
 
         if analizar_inventario and uploaded_images:
-            resultados = []
-            progress = st.progress(0, text=tr("Analizando captura base...", "Analyse de la capture de base..."))
+            # ========================================================
+            # ETAPA INVENTARIO: NO ejecuta diagnóstico de Salud.
+            # Solo detecta surcos, numeración y slots.
+            # ========================================================
+            progress = st.progress(
+                0,
+                text=tr(
+                    "Detectando surcos y slots...",
+                    "Détection des rangs et des emplacements..."
+                )
+            )
+
+            mejor_inventario = None
+            mejor_nombre = ""
+            errores_inventario = []
 
             for index, uploaded_image in enumerate(uploaded_images, 1):
                 try:
-                    ok_backend, backend_result = procesar_imagen_backend_ia(uploaded_image)
-                    if not ok_backend:
-                        raise RuntimeError(str(backend_result))
-
-                    # Conservamos la lógica original de guardado automático.
-                    historial_google_ok = False
-                    historial_google_info = ""
-                    try:
-                        historial_google_ok, historial_google_info = guardar_analisis_en_google(
-                            uploaded_image,
-                            backend_result
+                    inv = _tc_analizar_inventario_local(uploaded_image)
+                    if (
+                        mejor_inventario is None
+                        or int(inv.get("count", 0)) > int(mejor_inventario.get("count", 0))
+                        or (
+                            int(inv.get("count", 0)) == int(mejor_inventario.get("count", 0))
+                            and float(inv.get("confidence", 0.0)) > float(mejor_inventario.get("confidence", 0.0))
                         )
-                    except Exception as historial_exc:
-                        historial_google_info = str(historial_exc)
-
-                    resultados.append({
-                        "id": f"{index}_{uploaded_image.name}",
-                        "name": uploaded_image.name,
-                        "count": int(backend_result.get("count", 0)),
-                        "green_pct": float(backend_result.get("green_pct", 0.0)),
-                        "red_pct": float(backend_result.get("red_pct", 0.0)),
-                        "angle": float(backend_result.get("angle", 0.0)),
-                        "annotated": backend_result.get("annotated"),
-                        "ia_scene": backend_result.get("backend"),
-                        "result_url": backend_result.get("result_url"),
-                        "historial_google_guardado": historial_google_ok,
-                        "historial_google_info": historial_google_info,
-                        "zona_mas_afectada": backend_result.get("zona_mas_afectada", "No determinada"),
-                        "nivel_afectacion_visual": backend_result.get("nivel_afectacion_visual", "No determinado"),
-                        "diagnostico_visual": backend_result.get("diagnostico_visual", ""),
-                        "causas_probables": backend_result.get("causas_probables", []),
-                        "explicacion_nutrientes": backend_result.get("explicacion_nutrientes", ""),
-                        "recomendaciones_iniciales": backend_result.get("recomendaciones_iniciales", []),
-                        "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
-                        "detalle_zonas": backend_result.get("detalle_zonas", {}),
-                        "metodo": backend_result.get("metodo", "gpt-image")
-                    })
-
-                except Exception as exc:
-                    st.warning(
-                        tr(
-                            f"No se pudo analizar {uploaded_image.name}: {exc}",
-                            f"Impossible d’analyser {uploaded_image.name} : {exc}"
-                        )
-                    )
+                    ):
+                        mejor_inventario = inv
+                        mejor_nombre = uploaded_image.name
+                except Exception as inv_exc:
+                    errores_inventario.append(f"{uploaded_image.name}: {inv_exc}")
 
                 progress.progress(
                     int(100 * index / max(1, len(uploaded_images))),
                     text=tr(
-                        f"Analizando imagen {index} de {len(uploaded_images)}...",
-                        f"Analyse de l’image {index} sur {len(uploaded_images)}..."
+                        f"Inventario: imagen {index} de {len(uploaded_images)}...",
+                        f"Inventaire : image {index} sur {len(uploaded_images)}..."
                     )
                 )
 
-            st.session_state.tc_resultados_base = resultados
-            st.session_state.tc_inventario_procesado = bool(resultados)
+            st.session_state.tc_resultados_base = []
+            st.session_state.tc_salud_procesada = False
             st.session_state.tc_inventario_confirmado = False
 
-            # Una captura base puede contener varias fotos de la MISMA parcela.
-            # Para evitar sumar la misma hilera repetida en vistas solapadas,
-            # usamos el mayor conteo devuelto como base inicial.
-            conteos = [int(r.get("count", 0) or 0) for r in resultados]
-            surcos_base = max(conteos) if conteos else 0
-            st.session_state.tc_tabla_inventario = _tc_resultado_a_fila_surcos(surcos_base)
-
-            if resultados:
-                st.success(tr("✅ Inventario procesado.", "✅ Inventaire traité."))
+            if mejor_inventario is not None:
+                st.session_state.tc_tabla_inventario = mejor_inventario["table"]
+                st.session_state.tc_inventario_imagen = mejor_inventario["image"]
+                st.session_state.tc_inventario_fuente = mejor_nombre
+                st.session_state.tc_inventario_confianza = float(
+                    mejor_inventario.get("confidence", 0.0)
+                )
+                st.session_state.tc_inventario_procesado = True
+                st.success(
+                    tr(
+                        "✅ Inventario procesado: surcos + slots automáticos.",
+                        "✅ Inventaire traité : rangs + emplacements automatiques."
+                    )
+                )
+            else:
+                st.session_state.tc_inventario_procesado = False
+                st.session_state.tc_tabla_inventario = None
+                st.session_state.tc_inventario_imagen = None
+                st.session_state.tc_inventario_fuente = ""
+                st.session_state.tc_inventario_confianza = 0.0
+                detalle_error = errores_inventario[0] if errores_inventario else ""
+                st.error(
+                    tr(
+                        "No se pudo construir el Inventario automático. Usa una toma donde se vea completa la parcela y los surcos estén definidos.",
+                        "Impossible de construire l’inventaire automatique. Utilisez une prise où la parcelle complète et les rangs sont clairement visibles."
+                    )
+                )
+                if detalle_error:
+                    st.caption(detalle_error)
 
     # --------------------------------------------------------
     # RESULTADO DE INVENTARIO
     # --------------------------------------------------------
     if st.session_state.tc_inventario_procesado:
-        resultados = st.session_state.tc_resultados_base or []
-        conteos = [int(r.get("count", 0) or 0) for r in resultados]
-        total_surcos = max(conteos) if conteos else 0
-
         st.markdown("---")
         st.subheader(tr("Resultado de Inventario", "Résultat de l’inventaire"))
 
@@ -5765,8 +6094,9 @@ with main_col:
 
         tabla_actual = st.session_state.tc_tabla_inventario
         if tabla_actual is None:
-            tabla_actual = _tc_resultado_a_fila_surcos(total_surcos)
+            tabla_actual = _tc_resultado_a_fila_surcos(0)
 
+        total_surcos = int(len(tabla_actual))
         total_slots, total_ocupados, total_vacios, inventario_valido = _tc_metricas_tabla(tabla_actual.copy())
 
         with m1:
@@ -5778,38 +6108,46 @@ with main_col:
         with m4:
             st.metric(tr("Vacíos", "Vides"), total_vacios)
 
+        confianza_inv = float(st.session_state.tc_inventario_confianza or 0.0)
+        fuente_inv = st.session_state.tc_inventario_fuente or "—"
         st.caption(
             tr(
-                "El detector actual ya devuelve surcos. Los slots ocupados/vacíos quedan editables hasta conectar el detector específico de inventario.",
-                "Le détecteur actuel renvoie déjà les rangs. Les emplacements occupés/vides restent modifiables jusqu’à la connexion du détecteur spécifique d’inventaire."
+                f"Inventario automático calculado sobre presencia visual, separado del diagnóstico de Salud. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
+                f"Inventaire automatique calculé à partir de la présence visuelle, séparé du diagnostic de santé. Image de référence : {fuente_inv}. Confiance moyenne : {confianza_inv*100:.1f} %."
             )
         )
 
-        # Comparación original / procesada
-        for idx, item in enumerate(resultados):
+        inv_image = st.session_state.tc_inventario_imagen
+        if inv_image is not None:
             with st.container(border=True):
-                st.markdown(f"**{item.get('name','')}**")
-                c_original, c_proc = st.columns(2)
-                with c_original:
-                    st.caption(tr("Imagen original", "Image originale"))
-                    try:
-                        up = uploaded_images[idx]
-                        st.image(
-                            Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
-                            use_container_width=True
-                        )
-                    except Exception:
-                        pass
-                with c_proc:
-                    st.caption(tr("Imagen procesada", "Image traitée"))
-                    annotated = item.get("annotated")
-                    if annotated is not None:
-                        st.image(
-                            cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
-                            use_container_width=True
-                        )
+                st.markdown(tr(
+                    "#### Imagen de Inventario",
+                    "#### Image d’inventaire"
+                ))
+                st.markdown(
+                    tr(
+                        "🔵 **Círculo azul = slot ocupado** &nbsp;&nbsp; 🟠 **X naranja = slot vacío**. Los números 01…N aparecen al inicio y al final de cada surco.",
+                        "🔵 **Cercle bleu = emplacement occupé** &nbsp;&nbsp; 🟠 **X orange = emplacement vide**. Les numéros 01…N apparaissent au début et à la fin de chaque rang."
+                    ),
+                    unsafe_allow_html=True
+                )
+                st.image(
+                    cv2.cvtColor(inv_image, cv2.COLOR_BGR2RGB),
+                    use_container_width=True
+                )
 
-        st.markdown(tr("#### Tabla por surco", "#### Tableau par rang"))
+        st.caption(
+            tr(
+                "Las imágenes verde/rojo del diagnóstico no se muestran en Inventario. Se habilitan únicamente después de confirmar esta etapa.",
+                "Les images vert/rouge du diagnostic ne sont pas affichées dans l’inventaire. Elles ne sont disponibles qu’après confirmation de cette étape."
+            )
+        )
+
+        st.markdown(tr("#### Tabla automática por surco", "#### Tableau automatique par rang"))
+        st.caption(tr(
+            "La IA llena Slots, Ocupados y Vacíos. Puedes corregir un valor antes de confirmar si la revisión visual lo requiere.",
+            "L’IA remplit Emplacements, Occupés et Vides. Vous pouvez corriger une valeur avant confirmation si la vérification visuelle l’exige."
+        ))
 
         edited = st.data_editor(
             tabla_actual,
@@ -5829,6 +6167,13 @@ with main_col:
                 ),
                 tr("Vacíos", "Vides"): st.column_config.NumberColumn(
                     tr("Vacíos", "Vides"), min_value=0, step=1, format="%d"
+                ),
+                tr("Confianza", "Confiance"): st.column_config.NumberColumn(
+                    tr("Confianza", "Confiance"),
+                    min_value=0.0,
+                    max_value=100.0,
+                    format="%.1f %%",
+                    disabled=True
                 ),
             }
         )
@@ -5881,47 +6226,163 @@ with main_col:
             )
         )
     else:
-        resultados = st.session_state.tc_resultados_base or []
+        # Salud se ejecuta como una etapa completamente independiente.
+        if not st.session_state.tc_salud_procesada:
+            st.info(
+                tr(
+                    "✅ Inventario confirmado. Ya puedes ejecutar el diagnóstico de Salud sobre la misma captura base.",
+                    "✅ Inventaire confirmé. Vous pouvez maintenant exécuter le diagnostic de santé sur la même capture de base."
+                )
+            )
 
-        if not resultados:
-            st.info(tr("No hay resultados para mostrar.", "Aucun résultat à afficher."))
-        else:
-            green_vals = [float(i.get("green_pct", 0.0) or 0.0) for i in resultados]
-            red_vals = [float(i.get("red_pct", 0.0) or 0.0) for i in resultados]
-            green_pct = float(np.mean(green_vals)) if green_vals else 0.0
-            red_pct = float(np.mean(red_vals)) if red_vals else 0.0
+            analizar_salud = st.button(
+                tr("🩺 Analizar Salud", "🩺 Analyser la santé"),
+                type="primary",
+                use_container_width=True,
+                disabled=not uploaded_images,
+                key="tc_analizar_salud"
+            )
 
-            s1, s2 = st.columns(2)
-            with s1:
-                st.metric(tr("Vegetación verde", "Végétation verte"), f"{green_pct:.1f}%")
-            with s2:
-                st.metric(tr("Afectación roja", "Affectation rouge"), f"{red_pct:.1f}%")
+            if analizar_salud and uploaded_images:
+                resultados_salud = []
+                progress_salud = st.progress(
+                    0,
+                    text=tr(
+                        "Analizando estado de vegetación...",
+                        "Analyse de l’état de la végétation..."
+                    )
+                )
 
-            # Detalle por imagen usando los campos que tu backend original ya entrega.
-            for item in resultados:
-                with st.container(border=True):
-                    st.markdown(f"**{item.get('name','')}**")
-                    d1, d2, d3 = st.columns(3)
-                    with d1:
-                        st.metric(tr("Verde", "Vert"), f"{float(item.get('green_pct',0.0)):.1f}%")
-                    with d2:
-                        st.metric(tr("Rojo", "Rouge"), f"{float(item.get('red_pct',0.0)):.1f}%")
-                    with d3:
-                        st.metric(
-                            tr("Zona más afectada", "Zone la plus touchée"),
-                            tr_diag_texto(item.get("zona_mas_afectada", "—"))
+                for index, uploaded_image in enumerate(uploaded_images, 1):
+                    try:
+                        ok_backend, backend_result = procesar_imagen_backend_ia(uploaded_image)
+                        if not ok_backend:
+                            raise RuntimeError(str(backend_result))
+
+                        # El historial original se guarda AHORA, en Salud,
+                        # no durante el conteo de Inventario.
+                        historial_google_ok = False
+                        historial_google_info = ""
+                        try:
+                            historial_google_ok, historial_google_info = guardar_analisis_en_google(
+                                uploaded_image,
+                                backend_result
+                            )
+                        except Exception as historial_exc:
+                            historial_google_info = str(historial_exc)
+
+                        resultados_salud.append({
+                            "id": f"{index}_{uploaded_image.name}",
+                            "name": uploaded_image.name,
+                            "count": int(backend_result.get("count", 0)),
+                            "green_pct": float(backend_result.get("green_pct", 0.0)),
+                            "red_pct": float(backend_result.get("red_pct", 0.0)),
+                            "angle": float(backend_result.get("angle", 0.0)),
+                            "annotated": backend_result.get("annotated"),
+                            "ia_scene": backend_result.get("backend"),
+                            "result_url": backend_result.get("result_url"),
+                            "historial_google_guardado": historial_google_ok,
+                            "historial_google_info": historial_google_info,
+                            "zona_mas_afectada": backend_result.get("zona_mas_afectada", "No determinada"),
+                            "nivel_afectacion_visual": backend_result.get("nivel_afectacion_visual", "No determinado"),
+                            "diagnostico_visual": backend_result.get("diagnostico_visual", ""),
+                            "causas_probables": backend_result.get("causas_probables", []),
+                            "explicacion_nutrientes": backend_result.get("explicacion_nutrientes", ""),
+                            "recomendaciones_iniciales": backend_result.get("recomendaciones_iniciales", []),
+                            "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
+                            "detalle_zonas": backend_result.get("detalle_zonas", {}),
+                            "metodo": backend_result.get("metodo", "gpt-image")
+                        })
+                    except Exception as exc:
+                        st.warning(
+                            tr(
+                                f"No se pudo analizar Salud en {uploaded_image.name}: {exc}",
+                                f"Impossible d’analyser la santé dans {uploaded_image.name} : {exc}"
+                            )
                         )
 
-                    diagnostico = str(item.get("diagnostico_visual", "") or "").strip()
-                    if diagnostico:
-                        st.markdown(tr("**Diagnóstico visual**", "**Diagnostic visuel**"))
-                        st.write(tr_diag_texto(diagnostico))
+                    progress_salud.progress(
+                        int(100 * index / max(1, len(uploaded_images))),
+                        text=tr(
+                            f"Salud: imagen {index} de {len(uploaded_images)}...",
+                            f"Santé : image {index} sur {len(uploaded_images)}..."
+                        )
+                    )
 
-                    recomendaciones = item.get("recomendaciones_iniciales", []) or []
-                    if recomendaciones:
-                        st.markdown(tr("**Recomendaciones iniciales**", "**Recommandations initiales**"))
-                        for rec in recomendaciones:
-                            st.markdown(f"- {tr_diag_texto(rec)}")
+                if resultados_salud:
+                    st.session_state.tc_resultados_base = resultados_salud
+                    st.session_state.tc_salud_procesada = True
+                    st.rerun()
+                else:
+                    st.error(
+                        tr(
+                            "No se obtuvieron resultados de Salud.",
+                            "Aucun résultat de santé n’a été obtenu."
+                        )
+                    )
+
+        if st.session_state.tc_salud_procesada:
+            resultados = st.session_state.tc_resultados_base or []
+
+            if not resultados:
+                st.info(tr("No hay resultados para mostrar.", "Aucun résultat à afficher."))
+            else:
+                green_vals = [float(i.get("green_pct", 0.0) or 0.0) for i in resultados]
+                red_vals = [float(i.get("red_pct", 0.0) or 0.0) for i in resultados]
+                green_pct = float(np.mean(green_vals)) if green_vals else 0.0
+                red_pct = float(np.mean(red_vals)) if red_vals else 0.0
+
+                s1, s2 = st.columns(2)
+                with s1:
+                    st.metric(tr("Vegetación verde", "Végétation verte"), f"{green_pct:.1f}%")
+                with s2:
+                    st.metric(tr("Afectación roja", "Affectation rouge"), f"{red_pct:.1f}%")
+
+                for idx, item in enumerate(resultados):
+                    with st.container(border=True):
+                        st.markdown(f"**{item.get('name','')}**")
+
+                        c_original, c_proc = st.columns(2)
+                        with c_original:
+                            st.caption(tr("Imagen original", "Image originale"))
+                            try:
+                                up = uploaded_images[idx]
+                                st.image(
+                                    Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
+                                    use_container_width=True
+                                )
+                            except Exception:
+                                pass
+                        with c_proc:
+                            st.caption(tr("Imagen procesada — Salud", "Image traitée — Santé"))
+                            annotated = item.get("annotated")
+                            if annotated is not None:
+                                st.image(
+                                    cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+                                    use_container_width=True
+                                )
+
+                        d1, d2, d3 = st.columns(3)
+                        with d1:
+                            st.metric(tr("Verde", "Vert"), f"{float(item.get('green_pct',0.0)):.1f}%")
+                        with d2:
+                            st.metric(tr("Rojo", "Rouge"), f"{float(item.get('red_pct',0.0)):.1f}%")
+                        with d3:
+                            st.metric(
+                                tr("Zona más afectada", "Zone la plus touchée"),
+                                tr_diag_texto(item.get("zona_mas_afectada", "—"))
+                            )
+
+                        diagnostico = str(item.get("diagnostico_visual", "") or "").strip()
+                        if diagnostico:
+                            st.markdown(tr("**Diagnóstico visual**", "**Diagnostic visuel**"))
+                            st.write(tr_diag_texto(diagnostico))
+
+                        recomendaciones = item.get("recomendaciones_iniciales", []) or []
+                        if recomendaciones:
+                            st.markdown(tr("**Recomendaciones iniciales**", "**Recommandations initiales**"))
+                            for rec in recomendaciones:
+                                st.markdown(f"- {tr_diag_texto(rec)}")
 
 
 # ============================================================
