@@ -56,6 +56,56 @@ st.set_page_config(
     layout="wide"
 )
 
+
+# ============================================================
+# DIAGNÓSTICO DE CONFIGURACIÓN GEMINI
+# ============================================================
+# No muestra ni imprime la clave. Solo confirma si Streamlit Cloud
+# puede leerla. También acepta una sección opcional [gemini].
+def _tc_gemini_secret_status():
+    value = ""
+    source = ""
+
+    try:
+        value = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+        if value:
+            source = "Streamlit Secrets"
+    except Exception:
+        value = ""
+
+    if not value:
+        try:
+            gemini_section = st.secrets.get("gemini", {})
+            if gemini_section:
+                value = str(
+                    gemini_section.get("GEMINI_API_KEY", "")
+                    or gemini_section.get("api_key", "")
+                ).strip()
+                if value:
+                    source = "Streamlit Secrets [gemini]"
+        except Exception:
+            value = ""
+
+    if not value:
+        value = str(os.getenv("GEMINI_API_KEY", "")).strip()
+        if value:
+            source = "variable de entorno"
+
+    return bool(value), source
+
+
+_tc_gemini_ok_inicio, _tc_gemini_source_inicio = _tc_gemini_secret_status()
+
+if _tc_gemini_ok_inicio:
+    st.success(
+        f"✅ Gemini API detectada correctamente ({_tc_gemini_source_inicio})."
+    )
+else:
+    st.error(
+        "❌ Gemini API NO detectada. En Streamlit Cloud abre "
+        "Manage app → Settings → Secrets, guarda GEMINI_API_KEY y después haz Reboot app."
+    )
+
 # ============================================================
 # IDIOMA ES / FR
 # ============================================================
@@ -5827,12 +5877,33 @@ def _tc_gemini_model():
 
 
 def _tc_gemini_api_key():
+    """
+    Obtiene la clave de Gemini sin exponerla.
+
+    Orden de búsqueda:
+    1) GEMINI_API_KEY en Streamlit Secrets (raíz).
+    2) [gemini] GEMINI_API_KEY o api_key.
+    3) Variable de entorno GEMINI_API_KEY.
+    """
     try:
         value = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
         if value:
             return value
     except Exception:
         pass
+
+    try:
+        gemini_section = st.secrets.get("gemini", {})
+        if gemini_section:
+            value = str(
+                gemini_section.get("GEMINI_API_KEY", "")
+                or gemini_section.get("api_key", "")
+            ).strip()
+            if value:
+                return value
+    except Exception:
+        pass
+
     return str(os.getenv("GEMINI_API_KEY", "")).strip()
 
 
@@ -5843,7 +5914,7 @@ def _tc_gemini_json(images, prompt, detail="high"):
     """
     api_key = _tc_gemini_api_key()
     if not api_key:
-        raise RuntimeError("Falta GEMINI_API_KEY en Streamlit Secrets o variables de entorno.")
+        raise RuntimeError("Falta GEMINI_API_KEY. En Streamlit Cloud: Manage app → Settings → Secrets → guarda la clave → Reboot app.")
 
     parts = [{"text": str(prompt)}]
     for img in images:
