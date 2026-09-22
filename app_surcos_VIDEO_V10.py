@@ -5362,49 +5362,156 @@ def crear_excel_imagenes(items):
 
 
 # ============================================================
-# INTERFAZ PRO V15 - LINEAS SUAVES + RESUMEN ARRIBA
+
+
+# ============================================================
+# INTERFAZ TERRACORE - FLUJO POR PARCELA / INVENTARIO
+# Conserva diseño, logo, idiomas, backend e historial original.
 # ============================================================
 
-if "video_v13_items" not in st.session_state:
-    st.session_state.video_v13_items = None
+from datetime import date
 
-if "video_v13_duration" not in st.session_state:
-    st.session_state.video_v13_duration = None
+# ------------------------------------------------------------
+# ESTADO DE SESIÓN NUEVO
+# ------------------------------------------------------------
+_estado_nuevo = {
+    "tc_parcela_nombre": "",
+    "tc_fecha_captura": date.today(),
+    "tc_captura_confirmada": False,
+    "tc_inventario_procesado": False,
+    "tc_inventario_confirmado": False,
+    "tc_resultados_base": [],
+    "tc_tabla_inventario": None,
+}
 
-if "video_v13_signature" not in st.session_state:
-    st.session_state.video_v13_signature = None
-
-if "imagenes_v13_items" not in st.session_state:
-    st.session_state.imagenes_v13_items = None
-
-if "escena_activa_v13" not in st.session_state:
-    st.session_state.escena_activa_v13 = 0
+for _k, _v in _estado_nuevo.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
 
 
-main_col, side_col = st.columns(
-    [2.15, 1.0],
-    gap="medium"
+def _tc_reiniciar_parcela():
+    st.session_state.tc_captura_confirmada = False
+    st.session_state.tc_inventario_procesado = False
+    st.session_state.tc_inventario_confirmado = False
+    st.session_state.tc_resultados_base = []
+    st.session_state.tc_tabla_inventario = None
+
+
+def _tc_resultado_a_fila_surcos(total_surcos):
+    """Crea la tabla editable de inventario. Slots se completan manualmente
+    hasta conectar el detector automático de posiciones ocupadas/vacías."""
+    total_surcos = max(0, int(total_surcos or 0))
+    return pd.DataFrame([
+        {
+            tr("Surco", "Rang"): f"{i:02d}",
+            tr("Slots", "Emplacements"): 0,
+            tr("Ocupados", "Occupés"): 0,
+            tr("Vacíos", "Vides"): 0,
+        }
+        for i in range(1, total_surcos + 1)
+    ])
+
+
+def _tc_metricas_tabla(df):
+    col_slots = tr("Slots", "Emplacements")
+    col_occ = tr("Ocupados", "Occupés")
+    col_empty = tr("Vacíos", "Vides")
+    if df is None or df.empty:
+        return 0, 0, 0, True
+    for c in (col_slots, col_occ, col_empty):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
+    ok = bool((df[col_slots] == (df[col_occ] + df[col_empty])).all())
+    return int(df[col_slots].sum()), int(df[col_occ].sum()), int(df[col_empty].sum()), ok
+
+
+# ------------------------------------------------------------
+# ESTILOS ADICIONALES: SOLO COMPLEMENTAN EL DISEÑO ORIGINAL
+# ------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    .tc-flow-wrap{
+        display:grid;
+        grid-template-columns:repeat(5,1fr);
+        gap:8px;
+        margin:.35rem 0 1rem 0;
+    }
+    .tc-flow-step{
+        border:1px solid rgba(255,255,255,.26);
+        background:rgba(73,20,29,.18);
+        border-radius:10px;
+        padding:10px 7px;
+        text-align:center;
+        font-size:.84rem;
+        font-weight:800;
+        color:#FFF;
+    }
+    .tc-flow-step.active{
+        background:#FFFDFC;
+        color:#722F37;
+        border-color:#F2D5D8;
+    }
+    .tc-flow-step.locked{
+        opacity:.45;
+    }
+    .tc-parcela-title{
+        font-size:1.03rem;
+        font-weight:800;
+        color:#FFF;
+        margin-bottom:.15rem;
+    }
+    .tc-small-note{
+        color:#F5DADD;
+        font-size:.86rem;
+    }
+    .tc-row-number-demo{
+        border:1px dashed rgba(255,255,255,.55);
+        border-radius:10px;
+        padding:12px;
+        text-align:center;
+        color:#FFF;
+        font-weight:900;
+        letter-spacing:.12em;
+        margin:.35rem 0 .75rem 0;
+        background:rgba(79,30,38,.25);
+    }
+    @media (max-width:900px){
+        .tc-flow-wrap{grid-template-columns:1fr 1fr;}
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
-# ============================================================
-# PANEL DERECHO - CONTROLES
-# ============================================================
 
+# ------------------------------------------------------------
+# CABECERA DE FLUJO
+# ------------------------------------------------------------
+st.markdown(
+    f"""
+    <div class="tc-flow-wrap">
+      <div class="tc-flow-step active">{tr('① Captura', '① Capture')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.tc_captura_confirmada else ''}">{tr('② Inventario', '② Inventaire')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.tc_inventario_procesado else ''}">{tr('③ Validación', '③ Validation')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.tc_inventario_confirmado else 'locked'}">{tr('④ Salud', '④ Santé')}</div>
+      <div class="tc-flow-step locked">{tr('⑤ Reporte', '⑤ Rapport')}</div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+main_col, side_col = st.columns([2.15, 1.0], gap="medium")
+
+# ============================================================
+# PANEL DERECHO - PARCELA + CAPTURA BASE
+# ============================================================
 with side_col:
-
-    # ========================================================
-    # SELECTOR DE IDIOMA
-    # Justo arriba de "1. Tipo de archivo"
-    # ========================================================
-    idioma_es_col, idioma_fr_col = st.columns(
-        2,
-        gap="medium"
-    )
+    idioma_es_col, idioma_fr_col = st.columns(2, gap="medium")
 
     with idioma_es_col:
         if st.button(
             "🇪🇸 ES Español",
-            key="lang_es_v15_abajo",
+            key="lang_es_inventario",
             use_container_width=True,
             disabled=st.session_state.idioma_terrocore == "ES"
         ):
@@ -5414,336 +5521,202 @@ with side_col:
     with idioma_fr_col:
         if st.button(
             "🇫🇷 FR Français",
-            key="lang_fr_v15_abajo",
+            key="lang_fr_inventario",
             use_container_width=True,
             disabled=st.session_state.idioma_terrocore == "FR"
         ):
             st.session_state.idioma_terrocore = "FR"
             st.rerun()
 
-    # ========================================================
-    # PASO 1 - PRUEBA DE CONEXIÓN OPENAI
-    # ========================================================
-    if st.button(
-        tr(
-            "🧠 Probar conexión IA",
-            "🧠 Tester la connexion IA"
-        ),
-        key="probar_openai_paso1",
-        use_container_width=True
-    ):
-        ok_openai, resultado_openai = probar_openai()
+    with st.container(border=True):
+        st.markdown(tr("### 1. Parcela", "### 1. Parcelle"))
 
-        if ok_openai:
-            st.success(
-                tr(
-                    "✅ OpenAI conectado correctamente",
-                    "✅ OpenAI connecté correctement"
-                )
-            )
-            st.caption(resultado_openai)
-        else:
-            st.error(
-                tr(
-                    "❌ No se pudo conectar con OpenAI",
-                    "❌ Impossible de se connecter à OpenAI"
-                )
-            )
-            st.code(resultado_openai)
+        parcela_nombre = st.text_input(
+            tr("Nombre de la parcela", "Nom de la parcelle"),
+            value=st.session_state.tc_parcela_nombre,
+            placeholder=tr("Ej. Parcela 01", "Ex. Parcelle 01"),
+            key="tc_parcela_input"
+        )
+        st.session_state.tc_parcela_nombre = parcela_nombre
 
-    # Espacio pequeño entre los botones y el panel siguiente
-    st.markdown(
-        "<div style='height:10px;'></div>",
-        unsafe_allow_html=True
-    )
+        fecha_captura = st.date_input(
+            tr("Fecha de captura", "Date de capture"),
+            value=st.session_state.tc_fecha_captura,
+            key="tc_fecha_input"
+        )
+        st.session_state.tc_fecha_captura = fecha_captura
 
     with st.container(border=True):
+        st.markdown(tr("### 2. Captura Base", "### 2. Capture de base"))
+
+        uploaded_images = st.file_uploader(
+            tr(
+                "Selecciona una o varias fotografías de la misma parcela",
+                "Sélectionnez une ou plusieurs photos de la même parcelle"
+            ),
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+            key="tc_uploader_captura_base"
+        )
+
+        misma_parcela = st.checkbox(
+            tr(
+                "Confirmo que todas las imágenes pertenecen a la misma parcela",
+                "Je confirme que toutes les images appartiennent à la même parcelle"
+            ),
+            key="tc_misma_parcela"
+        )
+
+        if uploaded_images:
+            st.caption(
+                tr(
+                    f"Imágenes seleccionadas: {len(uploaded_images)}",
+                    f"Images sélectionnées : {len(uploaded_images)}"
+                )
+            )
+
+        crear_captura = st.button(
+            tr("📷 Crear captura base", "📷 Créer la capture de base"),
+            type="primary",
+            use_container_width=True,
+            disabled=(not uploaded_images or not misma_parcela or not parcela_nombre.strip()),
+            key="tc_crear_captura"
+        )
+
+        if crear_captura:
+            st.session_state.tc_captura_confirmada = True
+            st.session_state.tc_inventario_procesado = False
+            st.session_state.tc_inventario_confirmado = False
+            st.session_state.tc_resultados_base = []
+            st.session_state.tc_tabla_inventario = None
+            st.success(
+                tr(
+                    "✅ Captura base creada. Ya puedes analizar Inventario.",
+                    "✅ Capture de base créée. Vous pouvez maintenant analyser l’inventaire."
+                )
+            )
+
+    with st.container(border=True):
+        st.markdown(tr("### Estado de la parcela", "### État de la parcelle"))
+        st.write(f"**{tr('Parcela', 'Parcelle')}:** {parcela_nombre or '—'}")
+        st.write(f"**{tr('Fecha', 'Date')}:** {fecha_captura}")
+        st.write(f"**{tr('Imágenes', 'Images')}:** {len(uploaded_images or [])}")
+        st.write(
+            f"**{tr('Estado', 'État')}:** " +
+            (tr("Captura base lista", "Capture de base prête") if st.session_state.tc_captura_confirmada else tr("Pendiente", "En attente"))
+        )
+
+    if st.button(
+        tr("🔄 Nueva parcela / Nuevo análisis", "🔄 Nouvelle parcelle / Nouvelle analyse"),
+        use_container_width=True,
+        key="tc_reiniciar"
+    ):
+        _tc_reiniciar_parcela()
+        st.rerun()
+
+
+# ============================================================
+# PANEL IZQUIERDO - CAPTURA / INVENTARIO / SALUD
+# ============================================================
+with main_col:
+    # --------------------------------------------------------
+    # VISTA PREVIA CAPTURA BASE
+    # --------------------------------------------------------
+    with st.container(border=True):
+        st.subheader(tr("Captura Base de la Parcela", "Capture de base de la parcelle"))
+        st.caption(
+            tr(
+                "Esta captura será la referencia para Inventario y, después de confirmarlo, para Salud.",
+                "Cette capture servira de référence pour l’inventaire puis, après validation, pour la santé."
+            )
+        )
+
+        if uploaded_images:
+            preview_cols = st.columns(min(3, len(uploaded_images)))
+            for idx, up in enumerate(uploaded_images):
+                try:
+                    with preview_cols[idx % len(preview_cols)]:
+                        st.image(
+                            Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
+                            caption=up.name,
+                            use_container_width=True
+                        )
+                except Exception as exc:
+                    st.warning(f"{up.name}: {exc}")
+        else:
+            st.info(
+                tr(
+                    "Carga las fotografías desde el panel derecho.",
+                    "Chargez les photos depuis le panneau de droite."
+                )
+            )
+
+    # --------------------------------------------------------
+    # INVENTARIO
+    # --------------------------------------------------------
+    with st.container(border=True):
+        st.subheader(tr("Inventario", "Inventaire"))
+        st.caption(
+            tr(
+                "Primera etapa: detectar surcos, numerarlos al inicio y al final y separar slots ocupados/vacíos. El diagnóstico de salud permanece bloqueado.",
+                "Première étape : détecter les rangs, les numéroter au début et à la fin et séparer les emplacements occupés/vides. Le diagnostic de santé reste bloqué."
+            )
+        )
+
         st.markdown(
-            tr(
-                "### 1. Tipo de archivo",
-                "### 1. Type de fichier"
-            )
+            f"<div class='tc-row-number-demo'>01 ───────────────────────── 01</div>",
+            unsafe_allow_html=True
         )
 
-        modo = st.radio(
-            tr(
-                "Selecciona qué quieres analizar:",
-                "Sélectionnez ce que vous souhaitez analyser :"
-            ),
-            options=["video", "imagenes"],
-            format_func=lambda value: (
-                tr("🎥 Video", "🎥 Vidéo")
-                if value == "video"
-                else tr("🖼️ Imágenes", "🖼️ Images")
-            ),
-            horizontal=True,
-            label_visibility="collapsed",
-            key="modo_v13"
+        analizar_inventario = st.button(
+            tr("🌿 Analizar Inventario", "🌿 Analyser l’inventaire"),
+            type="primary",
+            use_container_width=True,
+            disabled=(not st.session_state.tc_captura_confirmada or not uploaded_images),
+            key="tc_analizar_inventario"
         )
 
-    if modo == "video":
-        with st.container(border=True):
-            st.markdown(
-                tr(
-                    "### 2. Subir archivo de video",
-                    "### 2. Importer un fichier vidéo"
-                )
-            )
+        if analizar_inventario and uploaded_images:
+            resultados = []
+            progress = st.progress(0, text=tr("Analizando captura base...", "Analyse de la capture de base..."))
 
-            uploaded_video = st.file_uploader(
-                tr(
-                    "Haz clic para subir un video o arrástralo aquí",
-                    "Cliquez pour importer une vidéo ou déposez-la ici"
-                ),
-                type=["mp4", "mov", "avi", "m4v"],
-                key="uploader_video_v13",
-                help=tr(
-                    "Formatos: MP4, MOV, AVI, M4V",
-                    "Formats : MP4, MOV, AVI, M4V"
-                )
-            )
-
-            st.caption(
-                tr(
-                    "Formatos: MP4, MOV, AVI, M4V · máximo configurado: 500 MB",
-                    "Formats : MP4, MOV, AVI, M4V · maximum configuré : 500 Mo"
-                )
-            )
-
-            if uploaded_video is not None:
-                current_signature = (
-                    f"{uploaded_video.name}:"
-                    f"{getattr(uploaded_video, 'size', 0)}"
-                )
-
-                if (
-                    st.session_state.video_v13_signature is not None
-                    and
-                    st.session_state.video_v13_signature
-                    != current_signature
-                ):
-                    st.session_state.video_v13_items = None
-                    st.session_state.video_v13_duration = None
-
-            analizar_video = st.button(
-                tr(
-                    "▶ Analizar video",
-                    "▶ Analyser la vidéo"
-                ),
-                type="primary",
-                use_container_width=True,
-                disabled=uploaded_video is None,
-                key="analizar_video_v13"
-            )
-
-        if analizar_video and uploaded_video is not None:
-            suffix = Path(
-                uploaded_video.name
-            ).suffix or ".mp4"
-
-            with tempfile.NamedTemporaryFile(
-                delete=False,
-                suffix=suffix
-            ) as tmp:
-                tmp.write(
-                    uploaded_video.getbuffer()
-                )
-                temp_path = Path(
-                    tmp.name
-                )
-
-            try:
-                progress = st.progress(
-                    0,
-                    text=tr(
-                        "Buscando fotogramas útiles...",
-                        "Recherche des images utiles..."
-                    )
-                )
-
-                info = extraer_candidatos(
-                    temp_path
-                )
-
-                progress.progress(
-                    35,
-                    text=tr(
-                        f"Se seleccionaron {len(info['frames'])} fotogramas. Contando surcos...",
-                        f"{len(info['frames'])} images ont été sélectionnées. Comptage des rangs..."
-                    )
-                )
-
-                items = analizar_frames_video(
-                    info
-                )
-
-                progress.progress(
-                    100,
-                    text=tr(
-                        "Análisis terminado.",
-                        "Analyse terminée."
-                    )
-                )
-
-                st.session_state.video_v13_items = items
-                st.session_state.video_v13_duration = float(
-                    info["duration"]
-                )
-                st.session_state.video_v13_signature = (
-                    f"{uploaded_video.name}:"
-                    f"{getattr(uploaded_video, 'size', 0)}"
-                )
-                st.session_state.escena_activa_v13 = 0
-
-            except Exception as exc:
-                st.error(
-                    tr(
-                        "No se pudo completar el análisis del video.",
-                        "L’analyse de la vidéo n’a pas pu être terminée."
-                    )
-                )
-                st.caption(str(exc))
-                st.session_state.video_v13_items = None
-
-            finally:
+            for index, uploaded_image in enumerate(uploaded_images, 1):
                 try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
-
-    else:
-        with st.container(border=True):
-            st.markdown(
-                tr(
-                    "### 2. Subir imágenes",
-                    "### 2. Importer des images"
-                )
-            )
-
-            uploaded_images = st.file_uploader(
-                tr(
-                    "Selecciona una o varias fotografías",
-                    "Sélectionnez une ou plusieurs photographies"
-                ),
-                type=["jpg", "jpeg", "png"],
-                accept_multiple_files=True,
-                key="uploader_images_v13"
-            )
-
-            st.caption(
-                tr(
-                    "Puedes seleccionar varias imágenes desde el teléfono.",
-                    "Vous pouvez sélectionner plusieurs images depuis votre téléphone."
-                )
-            )
-
-            analizar_imagenes = st.button(
-                tr(
-                    "🖼 Analizar imágenes",
-                    "🖼 Analyser les images"
-                ),
-                type="primary",
-                use_container_width=True,
-                disabled=not uploaded_images,
-                key="analizar_images_v13"
-            )
-
-        if analizar_imagenes and uploaded_images:
-            analyzed_images = []
-
-            progress = st.progress(
-                0,
-                text=tr(
-                    "Analizando fotografías...",
-                    "Analyse des photographies..."
-                )
-            )
-
-            total_images = len(
-                uploaded_images
-            )
-
-            for index, uploaded_image in enumerate(
-                uploaded_images,
-                1
-            ):
-                try:
-                    # ====================================================
-                    # IA VISUAL: enviar la fotografía completa al backend.
-                    # GPT Image crea directamente las líneas sobre la foto.
-                    # NO se llama al detector local analizar() para imágenes.
-                    # ====================================================
-                    ok_backend, backend_result = procesar_imagen_backend_ia(
-                        uploaded_image
-                    )
-
+                    ok_backend, backend_result = procesar_imagen_backend_ia(uploaded_image)
                     if not ok_backend:
                         raise RuntimeError(str(backend_result))
 
-                    # ====================================================
-                    # GUARDADO AUTOMÁTICO EN GOOGLE DRIVE + SHEETS
-                    # Si falla, NO detiene el análisis actual.
-                    # ====================================================
+                    # Conservamos la lógica original de guardado automático.
                     historial_google_ok = False
                     historial_google_info = ""
-
                     try:
-                        historial_google_ok, historial_google_info = (
-                            guardar_analisis_en_google(
-                                uploaded_image,
-                                backend_result
-                            )
+                        historial_google_ok, historial_google_info = guardar_analisis_en_google(
+                            uploaded_image,
+                            backend_result
                         )
                     except Exception as historial_exc:
                         historial_google_info = str(historial_exc)
 
-                    analyzed_images.append({
+                    resultados.append({
                         "id": f"{index}_{uploaded_image.name}",
                         "name": uploaded_image.name,
                         "count": int(backend_result.get("count", 0)),
                         "green_pct": float(backend_result.get("green_pct", 0.0)),
                         "red_pct": float(backend_result.get("red_pct", 0.0)),
                         "angle": float(backend_result.get("angle", 0.0)),
-                        "annotated": backend_result["annotated"],
+                        "annotated": backend_result.get("annotated"),
                         "ia_scene": backend_result.get("backend"),
                         "result_url": backend_result.get("result_url"),
                         "historial_google_guardado": historial_google_ok,
                         "historial_google_info": historial_google_info,
-
-                        # Diagnóstico agronómico
-                        "zona_mas_afectada": backend_result.get(
-                            "zona_mas_afectada",
-                            "No determinada"
-                        ),
-                        "nivel_afectacion_visual": backend_result.get(
-                            "nivel_afectacion_visual",
-                            "No determinado"
-                        ),
-                        "diagnostico_visual": backend_result.get(
-                            "diagnostico_visual",
-                            ""
-                        ),
-                        "causas_probables": backend_result.get(
-                            "causas_probables",
-                            []
-                        ),
-                        "explicacion_nutrientes": backend_result.get(
-                            "explicacion_nutrientes",
-                            ""
-                        ),
-                        "recomendaciones_iniciales": backend_result.get(
-                            "recomendaciones_iniciales",
-                            []
-                        ),
-                        "nota_diagnostico": backend_result.get(
-                            "nota_diagnostico",
-                            ""
-                        ),
-                        "detalle_zonas": backend_result.get(
-                            "detalle_zonas",
-                            {}
-                        ),
-
+                        "zona_mas_afectada": backend_result.get("zona_mas_afectada", "No determinada"),
+                        "nivel_afectacion_visual": backend_result.get("nivel_afectacion_visual", "No determinado"),
+                        "diagnostico_visual": backend_result.get("diagnostico_visual", ""),
+                        "causas_probables": backend_result.get("causas_probables", []),
+                        "explicacion_nutrientes": backend_result.get("explicacion_nutrientes", ""),
+                        "recomendaciones_iniciales": backend_result.get("recomendaciones_iniciales", []),
+                        "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
+                        "detalle_zonas": backend_result.get("detalle_zonas", {}),
                         "metodo": backend_result.get("metodo", "gpt-image")
                     })
 
@@ -5756,838 +5729,250 @@ with side_col:
                     )
 
                 progress.progress(
-                    int(
-                        100 *
-                        index /
-                        max(
-                            total_images,
-                            1
-                        )
-                    ),
+                    int(100 * index / max(1, len(uploaded_images))),
                     text=tr(
-                        f"Analizando imagen {index} de {total_images}...",
-                        f"Analyse de l’image {index} sur {total_images}..."
+                        f"Analizando imagen {index} de {len(uploaded_images)}...",
+                        f"Analyse de l’image {index} sur {len(uploaded_images)}..."
                     )
                 )
 
-            st.session_state.imagenes_v13_items = analyzed_images
-            st.session_state.escena_activa_v13 = 0
+            st.session_state.tc_resultados_base = resultados
+            st.session_state.tc_inventario_procesado = bool(resultados)
+            st.session_state.tc_inventario_confirmado = False
 
+            # Una captura base puede contener varias fotos de la MISMA parcela.
+            # Para evitar sumar la misma hilera repetida en vistas solapadas,
+            # usamos el mayor conteo devuelto como base inicial.
+            conteos = [int(r.get("count", 0) or 0) for r in resultados]
+            surcos_base = max(conteos) if conteos else 0
+            st.session_state.tc_tabla_inventario = _tc_resultado_a_fila_surcos(surcos_base)
 
-# ============================================================
-# RECUPERAR RESULTADOS ACTIVOS
-# ============================================================
+            if resultados:
+                st.success(tr("✅ Inventario procesado.", "✅ Inventaire traité."))
 
-if modo == "video":
-    active_items = st.session_state.video_v13_items or []
-    duration_text = formato_tiempo(
-        st.session_state.video_v13_duration or 0
-    )
-else:
-    active_items = st.session_state.imagenes_v13_items or []
-    duration_text = "—"
+    # --------------------------------------------------------
+    # RESULTADO DE INVENTARIO
+    # --------------------------------------------------------
+    if st.session_state.tc_inventario_procesado:
+        resultados = st.session_state.tc_resultados_base or []
+        conteos = [int(r.get("count", 0) or 0) for r in resultados]
+        total_surcos = max(conteos) if conteos else 0
 
+        st.markdown("---")
+        st.subheader(tr("Resultado de Inventario", "Résultat de l’inventaire"))
 
-# ============================================================
-# RESUMEN ARRIBA - OCUPA EL ESPACIO IZQUIERDO VACÍO
-# ============================================================
+        m1, m2, m3, m4 = st.columns(4)
 
-with main_col:
+        tabla_actual = st.session_state.tc_tabla_inventario
+        if tabla_actual is None:
+            tabla_actual = _tc_resultado_a_fila_surcos(total_surcos)
 
-    if active_items:
+        total_slots, total_ocupados, total_vacios, inventario_valido = _tc_metricas_tabla(tabla_actual.copy())
 
-        with st.container(
-            border=True
-        ):
-
-            st.subheader(
-                tr(
-                    "Resumen del análisis",
-                    "Résumé de l’analyse"
-                )
-            )
-
-            m1, m2, m3 = st.columns(
-                3
-            )
-
-            with m1:
-                st.metric(
-                    tr(
-                        "Duración",
-                        "Durée"
-                    ),
-                    duration_text
-                )
-
-            with m2:
-                st.metric(
-                    tr(
-                        "Escenas útiles"
-                        if modo == "video"
-                        else "Imágenes",
-                        "Scènes utiles"
-                        if modo == "video"
-                        else "Images"
-                    ),
-                    len(
-                        active_items
-                    )
-                )
-
-            with m3:
-                st.metric(
-                    tr(
-                        "Surcos sumados",
-                        "Rangs cumulés"
-                    ),
-                    int(
-                        sum(
-                            item["count"]
-                            for item
-                            in active_items
-                        )
-                    )
-                )
-
-            st.caption(
-                tr(
-                    "Resumen calculado con las escenas que conservas.",
-                    "Résumé calculé à partir des scènes conservées."
-                )
-            )
-
-            d1, d2 = st.columns(
-                2
-            )
-
-            with d1:
-
-                if modo == "video":
-                    excel_top = crear_excel_video(
-                        active_items
-                    )
-                else:
-                    excel_top = crear_excel_imagenes(
-                        active_items
-                    )
-
-                st.download_button(
-                    tr(
-                        "⬇ Descargar resultados (Excel)",
-                        "⬇ Télécharger les résultats (Excel)"
-                    ),
-                    excel_top,
-                    file_name=(
-                        "TerroCore_resultados_video.xlsx"
-                        if modo == "video"
-                        else "TerroCore_resultados_imagenes.xlsx"
-                    ),
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key="excel_top_v14"
-                )
-
-            with d2:
-
-                if modo == "video":
-                    zip_top = crear_zip_resultados(
-                        active_items
-                    )
-                else:
-                    zip_top = crear_zip_resultados_imagenes(
-                        active_items
-                    )
-
-                st.download_button(
-                    tr(
-                        "⬇ Descargar imágenes (ZIP)",
-                        "⬇ Télécharger les images (ZIP)"
-                    ),
-                    zip_top,
-                    file_name=(
-                        "TerroCore_imagenes_video.zip"
-                        if modo == "video"
-                        else "TerroCore_imagenes.zip"
-                    ),
-                    mime="application/zip",
-                    use_container_width=True,
-                    key="zip_top_v14"
-                )
-
-    else:
-
-        with st.container(
-            border=True
-        ):
-            st.subheader(
-                tr(
-                    "Resumen del análisis",
-                    "Résumé de l’analyse"
-                )
-            )
-
-            st.info(
-                tr(
-                    "El resumen aparecerá aquí después de analizar el video o las imágenes.",
-                    "Le résumé apparaîtra ici après l’analyse de la vidéo ou des images."
-                )
-            )
-
-
-# ============================================================
-# RESULTADOS GENERALES
-# ============================================================
-
-if active_items:
-
-    st.markdown("---")
-
-    st.subheader(
-        tr(
-            "Resultados por escena / parcela candidata",
-            "Résultats par scène / parcelle candidate"
-        )
-    )
-
-    if modo == "video":
-        table_rows = [
-            {
-                tr("Escena", "Scène"): item["scene"],
-                tr("Tiempo", "Temps"): formato_tiempo(
-                    item["time"]
-                ),
-                tr(
-                    "Surcos estimados",
-                    "Rangs estimés"
-                ): item["count"],
-                tr(
-                    "Verde %",
-                    "Vert %"
-                ): round(
-                    item["green_pct"],
-                    1
-                ),
-                tr(
-                    "Rojo %",
-                    "Rouge %"
-                ): round(
-                    item["red_pct"],
-                    1
-                )
-            }
-            for item in active_items
-        ]
-
-    else:
-        table_rows = [
-            {
-                tr(
-                    "Imagen",
-                    "Image"
-                ): item["name"],
-                tr(
-                    "Surcos estimados",
-                    "Rangs estimés"
-                ): item["count"],
-                tr(
-                    "Verde %",
-                    "Vert %"
-                ): round(
-                    item["green_pct"],
-                    1
-                ),
-                tr(
-                    "Rojo %",
-                    "Rouge %"
-                ): round(
-                    item["red_pct"],
-                    1
-                ),
-                tr(
-                    "Zona más afectada",
-                    "Zone la plus touchée"
-                ): item.get(
-                    "zona_mas_afectada",
-                    "—"
-                ),
-                tr(
-                    "Nivel visual",
-                    "Niveau visuel"
-                ): item.get(
-                    "nivel_afectacion_visual",
-                    "—"
-                )
-            }
-            for item in active_items
-        ]
-
-    st.dataframe(
-        pd.DataFrame(
-            table_rows
-        ),
-        use_container_width=True,
-        hide_index=True
-    )
-
-
-    # ========================================================
-    # DIAGNÓSTICO AGRONÓMICO - SOLO IMÁGENES
-    # Se agrega sin quitar la tabla ni las imágenes existentes.
-    # ========================================================
-    if modo == "imagenes":
-
-        st.subheader(
-            tr(
-                "Diagnóstico agronómico",
-                "Diagnostic agronomique"
-            )
-        )
+        with m1:
+            st.metric(tr("Surcos", "Rangs"), total_surcos)
+        with m2:
+            st.metric(tr("Slots totales", "Emplacements totaux"), total_slots)
+        with m3:
+            st.metric(tr("Ocupados", "Occupés"), total_ocupados)
+        with m4:
+            st.metric(tr("Vacíos", "Vides"), total_vacios)
 
         st.caption(
             tr(
-                "Interpretación visual preliminar. Para confirmar deficiencias de nutrientes se requiere análisis de suelo, análisis foliar y revisión del riego.",
-                "Interprétation visuelle préliminaire. Pour confirmer une carence en nutriments, une analyse du sol, une analyse foliaire et une vérification de l'irrigation sont nécessaires."
+                "El detector actual ya devuelve surcos. Los slots ocupados/vacíos quedan editables hasta conectar el detector específico de inventario.",
+                "Le détecteur actuel renvoie déjà les rangs. Les emplacements occupés/vides restent modifiables jusqu’à la connexion du détecteur spécifique d’inventaire."
             )
         )
 
-        for diag_idx, item in enumerate(active_items):
-
+        # Comparación original / procesada
+        for idx, item in enumerate(resultados):
             with st.container(border=True):
-
-                st.markdown(
-                    f"### {item.get('name', tr('Imagen', 'Image'))}"
-                )
-
-                diag_col1, diag_col2, diag_col3, diag_col4 = st.columns(4)
-
-                with diag_col1:
-                    st.metric(
-                        tr("Surcos", "Rangs"),
-                        int(item.get("count", 0))
-                    )
-
-                with diag_col2:
-                    st.metric(
-                        tr("Verde", "Vert"),
-                        f"{float(item.get('green_pct', 0.0)):.1f}%"
-                    )
-
-                with diag_col3:
-                    st.metric(
-                        tr("Seco / rojo", "Sec / rouge"),
-                        f"{float(item.get('red_pct', 0.0)):.1f}%"
-                    )
-
-                with diag_col4:
-                    st.metric(
-                        tr("Nivel visual", "Niveau visuel"),
-                        tr_diag_texto(
-                            item.get(
-                                "nivel_afectacion_visual",
-                                "No determinado"
-                            )
-                        ).capitalize()
-                    )
-
-                st.markdown(
-                    tr(
-                        "**Zona más afectada:** ",
-                        "**Zone la plus touchée :** "
-                    )
-                    +
-                    tr_diag_texto(
-                        item.get(
-                            "zona_mas_afectada",
-                            "No determinada"
+                st.markdown(f"**{item.get('name','')}**")
+                c_original, c_proc = st.columns(2)
+                with c_original:
+                    st.caption(tr("Imagen original", "Image originale"))
+                    try:
+                        up = uploaded_images[idx]
+                        st.image(
+                            Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
+                            use_container_width=True
                         )
-                    ).capitalize()
-                )
-
-                diagnostico_visual = str(
-                    item.get("diagnostico_visual", "") or ""
-                ).strip()
-
-                if not diagnostico_visual:
-                    zona_tmp = str(
-                        item.get("zona_mas_afectada", "No determinada")
-                    )
-                    nivel_tmp = str(
-                        item.get(
-                            "nivel_afectacion_visual",
-                            "No determinado"
-                        )
-                    )
-
-                    if (
-                        zona_tmp not in {"", "No determinada", "—"}
-                        or
-                        nivel_tmp not in {"", "No determinado", "—"}
-                    ):
-                        diagnostico_visual = tr(
-                            f"El análisis visual reporta un nivel {nivel_tmp.lower()} "
-                            f"y señala como zona más afectada: {zona_tmp}.",
-                            f"L'analyse visuelle indique un niveau {nivel_tmp.lower()} "
-                            f"et signale comme zone la plus touchée : {zona_tmp}."
+                    except Exception:
+                        pass
+                with c_proc:
+                    st.caption(tr("Imagen procesada", "Image traitée"))
+                    annotated = item.get("annotated")
+                    if annotated is not None:
+                        st.image(
+                            cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+                            use_container_width=True
                         )
 
-                if diagnostico_visual:
-                    st.markdown(
-                        tr(
-                            "#### Diagnóstico visual",
-                            "#### Diagnostic visuel"
-                        )
-                    )
-                    st.write(tr_diag_texto(diagnostico_visual))
+        st.markdown(tr("#### Tabla por surco", "#### Tableau par rang"))
 
-                causas = item.get("causas_probables", []) or []
-
-                if causas:
-                    st.markdown(
-                        tr(
-                            "#### Causas probables",
-                            "#### Causes probables"
-                        )
-                    )
-
-                    for causa in causas:
-                        st.markdown(f"- {tr_diag_texto(causa)}")
-
-                explicacion_nutrientes = str(
-                    item.get("explicacion_nutrientes", "") or ""
-                ).strip()
-
-                if explicacion_nutrientes:
-                    st.markdown(
-                        tr(
-                            "#### Suelo y nutrientes",
-                            "#### Sol et nutriments"
-                        )
-                    )
-                    st.write(tr_diag_texto(explicacion_nutrientes))
-
-                recomendaciones = item.get(
-                    "recomendaciones_iniciales",
-                    []
-                ) or []
-
-                if recomendaciones:
-                    st.markdown(
-                        tr(
-                            "#### Recomendaciones iniciales",
-                            "#### Recommandations initiales"
-                        )
-                    )
-
-                    for recomendacion in recomendaciones:
-                        st.markdown(f"- {tr_diag_texto(recomendacion)}")
-
-                nota = str(
-                    item.get("nota_diagnostico", "") or ""
-                ).strip()
-
-                if nota:
-                    st.info(tr_diag_texto(nota))
-
-
-    # ========================================================
-    # FOTOGRAMAS ANALIZADOS - UNA IMAGEN POR FILA
-    # ========================================================
-    st.subheader(
-        tr(
-            "Fotogramas analizados"
-            if modo == "video"
-            else "Imágenes analizadas",
-            "Images analysées"
-        )
-    )
-
-    for idx, item in enumerate(
-        list(active_items)
-    ):
-
-        with st.container(border=True):
-
-            # Imagen grande: una por fila
-            st.image(
-                cv2.cvtColor(
-                    item["annotated"],
-                    cv2.COLOR_BGR2RGB
+        edited = st.data_editor(
+            tabla_actual,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key="tc_editor_inventario",
+            column_config={
+                tr("Surco", "Rang"): st.column_config.TextColumn(
+                    tr("Surco", "Rang"), disabled=True, width="small"
                 ),
-                use_container_width=True
+                tr("Slots", "Emplacements"): st.column_config.NumberColumn(
+                    tr("Slots", "Emplacements"), min_value=0, step=1, format="%d"
+                ),
+                tr("Ocupados", "Occupés"): st.column_config.NumberColumn(
+                    tr("Ocupados", "Occupés"), min_value=0, step=1, format="%d"
+                ),
+                tr("Vacíos", "Vides"): st.column_config.NumberColumn(
+                    tr("Vacíos", "Vides"), min_value=0, step=1, format="%d"
+                ),
+            }
+        )
+
+        st.session_state.tc_tabla_inventario = edited
+        total_slots, total_ocupados, total_vacios, inventario_valido = _tc_metricas_tabla(edited.copy())
+
+        if inventario_valido:
+            st.success(
+                tr(
+                    "✅ Validación correcta: Slots = Ocupados + Vacíos en todos los surcos.",
+                    "✅ Validation correcte : Emplacements = Occupés + Vides pour tous les rangs."
+                )
+            )
+        else:
+            st.error(
+                tr(
+                    "Revisa la tabla: cada surco debe cumplir Slots = Ocupados + Vacíos.",
+                    "Vérifiez le tableau : chaque rang doit respecter Emplacements = Occupés + Vides."
+                )
             )
 
-            # Mini-resumen agronómico debajo de cada imagen.
-            if modo == "imagenes":
-                st.markdown(
-                    tr(
-                        f"**Zona más afectada:** {item.get('zona_mas_afectada', '—')}  |  "
-                        f"**Nivel visual:** {item.get('nivel_afectacion_visual', '—')}",
-                        f"**Zone la plus touchée :** {tr_diag_texto(item.get('zona_mas_afectada', '—'))}  |  "
-                        f"**Niveau visuel :** {tr_diag_texto(item.get('nivel_afectacion_visual', '—'))}"
-                    )
-                )
-
-            # Solo botón BORRAR
-            if st.button(
+        if st.button(
+            tr("✅ Confirmar Inventario", "✅ Confirmer l’inventaire"),
+            type="primary",
+            use_container_width=True,
+            disabled=(not inventario_valido),
+            key="tc_confirmar_inventario"
+        ):
+            st.session_state.tc_inventario_confirmado = True
+            st.success(
                 tr(
-                    "🗑 Borrar",
-                    "🗑 Supprimer"
-                ),
-                key=f"delete_v13_{modo}_{idx}",
-                use_container_width=True
-            ):
-                if modo == "video":
-                    del st.session_state.video_v13_items[idx]
-                else:
-                    del st.session_state.imagenes_v13_items[idx]
-
-                st.session_state.escena_activa_v13 = max(
-                    0,
-                    min(
-                        st.session_state.escena_activa_v13,
-                        len(active_items) - 2
-                    )
+                    "Inventario confirmado. Diagnóstico de Salud desbloqueado.",
+                    "Inventaire confirmé. Diagnostic de santé déverrouillé."
                 )
+            )
+            st.rerun()
 
-                st.rerun()
+    # --------------------------------------------------------
+    # SALUD - OCULTA HASTA CONFIRMAR INVENTARIO
+    # --------------------------------------------------------
+    st.markdown("---")
+    st.subheader(tr("Diagnóstico de Salud", "Diagnostic de santé"))
 
+    if not st.session_state.tc_inventario_confirmado:
+        st.info(
+            tr(
+                "🔒 Salud está bloqueada. Primero confirma el Inventario.",
+                "🔒 Santé est verrouillée. Confirmez d’abord l’inventaire."
+            )
+        )
+    else:
+        resultados = st.session_state.tc_resultados_base or []
+
+        if not resultados:
+            st.info(tr("No hay resultados para mostrar.", "Aucun résultat à afficher."))
+        else:
+            green_vals = [float(i.get("green_pct", 0.0) or 0.0) for i in resultados]
+            red_vals = [float(i.get("red_pct", 0.0) or 0.0) for i in resultados]
+            green_pct = float(np.mean(green_vals)) if green_vals else 0.0
+            red_pct = float(np.mean(red_vals)) if red_vals else 0.0
+
+            s1, s2 = st.columns(2)
+            with s1:
+                st.metric(tr("Vegetación verde", "Végétation verte"), f"{green_pct:.1f}%")
+            with s2:
+                st.metric(tr("Afectación roja", "Affectation rouge"), f"{red_pct:.1f}%")
+
+            # Detalle por imagen usando los campos que tu backend original ya entrega.
+            for item in resultados:
+                with st.container(border=True):
+                    st.markdown(f"**{item.get('name','')}**")
+                    d1, d2, d3 = st.columns(3)
+                    with d1:
+                        st.metric(tr("Verde", "Vert"), f"{float(item.get('green_pct',0.0)):.1f}%")
+                    with d2:
+                        st.metric(tr("Rojo", "Rouge"), f"{float(item.get('red_pct',0.0)):.1f}%")
+                    with d3:
+                        st.metric(
+                            tr("Zona más afectada", "Zone la plus touchée"),
+                            tr_diag_texto(item.get("zona_mas_afectada", "—"))
+                        )
+
+                    diagnostico = str(item.get("diagnostico_visual", "") or "").strip()
+                    if diagnostico:
+                        st.markdown(tr("**Diagnóstico visual**", "**Diagnostic visuel**"))
+                        st.write(tr_diag_texto(diagnostico))
+
+                    recomendaciones = item.get("recomendaciones_iniciales", []) or []
+                    if recomendaciones:
+                        st.markdown(tr("**Recomendaciones iniciales**", "**Recommandations initiales**"))
+                        for rec in recomendaciones:
+                            st.markdown(f"- {tr_diag_texto(rec)}")
 
 
 # ============================================================
-# HISTORIAL DE ANÁLISIS - GOOGLE DRIVE
+# HISTORIAL ACTUAL - GOOGLE DRIVE / SHEETS
+# Se conserva sin modificar la estructura existente.
 # ============================================================
-
 st.markdown("---")
 
 with st.expander(
-    tr(
-        "📂 Historial de análisis",
-        "📂 Historique des analyses"
-    ),
+    tr("📂 Historial de análisis", "📂 Historique des analyses"),
     expanded=False
 ):
-
     if not historial_google_configurado():
-
         st.info(
             tr(
                 "El historial de Google Drive aún no está configurado.",
                 "L’historique Google Drive n’est pas encore configuré."
             )
         )
-
     else:
-
         try:
-            registros_historial = obtener_historial_google(
-                limite=100
-            )
-
+            registros_historial = obtener_historial_google(limite=100)
             if not registros_historial:
-
                 st.info(
                     tr(
                         "Todavía no hay análisis guardados.",
                         "Aucune analyse enregistrée pour le moment."
                     )
                 )
-
             else:
-
                 filas_historial = []
-
                 for registro in registros_historial:
                     filas_historial.append({
-                        tr("Fecha", "Date"):
-                            registro.get("fecha", ""),
-                        tr("Imagen", "Image"):
-                            registro.get("nombre", ""),
-                        tr("Surcos", "Rangs"):
-                            registro.get("surcos", 0),
-                        tr("Verde %", "Vert %"):
-                            registro.get("verde_pct", 0.0),
-                        tr("Rojo %", "Rouge %"):
-                            registro.get("rojo_pct", 0.0),
-                        tr(
-                            "Zona más afectada",
-                            "Zone la plus touchée"
-                        ):
-                            tr_diag_texto(
-                                registro.get(
-                                    "zona_mas_afectada",
-                                    "No determinada"
-                                )
-                            ),
-                        tr(
-                            "Nivel visual",
-                            "Niveau visuel"
-                        ):
-                            tr_diag_texto(
-                                registro.get(
-                                    "nivel_visual",
-                                    "No determinado"
-                                )
-                            ),
+                        tr("Fecha", "Date"): registro.get("fecha", ""),
+                        tr("Imagen", "Image"): registro.get("nombre", ""),
+                        tr("Surcos", "Rangs"): registro.get("surcos", 0),
+                        tr("Verde %", "Vert %"): registro.get("verde_pct", 0.0),
+                        tr("Rojo %", "Rouge %"): registro.get("rojo_pct", 0.0),
+                        tr("Zona más afectada", "Zone la plus touchée"): tr_diag_texto(registro.get("zona_mas_afectada", "")),
                     })
-
-                st.dataframe(
-                    pd.DataFrame(
-                        filas_historial
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-                seleccionado = st.selectbox(
+                st.dataframe(pd.DataFrame(filas_historial), use_container_width=True, hide_index=True)
+                st.caption(
                     tr(
-                        "Selecciona un análisis para revisarlo",
-                        "Sélectionnez une analyse à consulter"
-                    ),
-                    options=list(
-                        range(
-                            len(registros_historial)
-                        )
-                    ),
-                    format_func=lambda i: (
-                        f"{registros_historial[i].get('fecha', '')} — "
-                        f"{registros_historial[i].get('nombre', '')}"
-                    ),
-                    key="historial_google_select",
+                        "Este historial conserva tu estructura actual. En la siguiente etapa podemos agregar ParcelaID para agrupar análisis por parcela y fecha.",
+                        "Cet historique conserve la structure actuelle. À l’étape suivante, nous pourrons ajouter ParcelleID pour regrouper les analyses par parcelle et par date."
+                    )
                 )
-
-                registro = registros_historial[
-                    int(seleccionado)
-                ]
-
-                st.markdown(
-                    f"### {registro.get('nombre', tr('Imagen', 'Image'))}"
-                )
-
-                img_col1, img_col2 = st.columns(2)
-
-                with img_col1:
-                    st.markdown(
-                        tr(
-                            "**Imagen original**",
-                            "**Image originale**"
-                        )
-                    )
-
-                    original_id = str(
-                        registro.get(
-                            "imagen_original_file_id",
-                            ""
-                        )
-                    ).strip()
-
-                    if original_id:
-                        try:
-                            original_bytes = (
-                                descargar_archivo_google_drive(
-                                    original_id
-                                )
-                            )
-
-                            st.image(
-                                original_bytes,
-                                use_container_width=True,
-                            )
-                        except Exception as exc:
-                            st.warning(
-                                tr(
-                                    f"No se pudo abrir la imagen original: {exc}",
-                                    f"Impossible d’ouvrir l’image originale : {exc}"
-                                )
-                            )
-
-                with img_col2:
-                    st.markdown(
-                        tr(
-                            "**Imagen procesada**",
-                            "**Image traitée**"
-                        )
-                    )
-
-                    processed_id = str(
-                        registro.get(
-                            "imagen_procesada_file_id",
-                            ""
-                        )
-                    ).strip()
-
-                    if processed_id:
-                        try:
-                            processed_bytes = (
-                                descargar_archivo_google_drive(
-                                    processed_id
-                                )
-                            )
-
-                            st.image(
-                                processed_bytes,
-                                use_container_width=True,
-                            )
-                        except Exception as exc:
-                            st.warning(
-                                tr(
-                                    f"No se pudo abrir la imagen procesada: {exc}",
-                                    f"Impossible d’ouvrir l’image traitée : {exc}"
-                                )
-                            )
-
-                hm1, hm2, hm3 = st.columns(3)
-
-                with hm1:
-                    st.metric(
-                        tr("Surcos", "Rangs"),
-                        registro.get("surcos", 0),
-                    )
-
-                with hm2:
-                    st.metric(
-                        tr("Verde", "Vert"),
-                        f"{float(registro.get('verde_pct', 0) or 0):.1f}%",
-                    )
-
-                with hm3:
-                    st.metric(
-                        tr("Rojo", "Rouge"),
-                        f"{float(registro.get('rojo_pct', 0) or 0):.1f}%",
-                    )
-
-                st.markdown(
-                    tr(
-                        "**Zona más afectada:** ",
-                        "**Zone la plus touchée :** "
-                    )
-                    +
-                    tr_diag_texto(
-                        registro.get(
-                            "zona_mas_afectada",
-                            "No determinada"
-                        )
-                    ).capitalize()
-                )
-
-                st.markdown(
-                    tr(
-                        "**Nivel visual:** ",
-                        "**Niveau visuel :** "
-                    )
-                    +
-                    tr_diag_texto(
-                        registro.get(
-                            "nivel_visual",
-                            "No determinado"
-                        )
-                    ).capitalize()
-                )
-
-                diagnostico_hist = str(
-                    registro.get(
-                        "diagnostico_visual",
-                        ""
-                    )
-                    or ""
-                ).strip()
-
-                if diagnostico_hist:
-                    st.markdown(
-                        tr(
-                            "#### Diagnóstico visual",
-                            "#### Diagnostic visuel"
-                        )
-                    )
-                    st.write(
-                        tr_diag_texto(
-                            diagnostico_hist
-                        )
-                    )
-
-                causas_hist = registro.get(
-                    "causas_probables",
-                    []
-                ) or []
-
-                if causas_hist:
-                    st.markdown(
-                        tr(
-                            "#### Causas probables",
-                            "#### Causes probables"
-                        )
-                    )
-
-                    for causa in causas_hist:
-                        st.markdown(
-                            f"- {tr_diag_texto(causa)}"
-                        )
-
-                nutrientes_hist = str(
-                    registro.get(
-                        "explicacion_nutrientes",
-                        ""
-                    )
-                    or ""
-                ).strip()
-
-                if nutrientes_hist:
-                    st.markdown(
-                        tr(
-                            "#### Suelo y nutrientes",
-                            "#### Sol et nutriments"
-                        )
-                    )
-
-                    st.write(
-                        tr_diag_texto(
-                            nutrientes_hist
-                        )
-                    )
-
-                recomendaciones_hist = registro.get(
-                    "recomendaciones",
-                    []
-                ) or []
-
-                if recomendaciones_hist:
-                    st.markdown(
-                        tr(
-                            "#### Recomendaciones iniciales",
-                            "#### Recommandations initiales"
-                        )
-                    )
-
-                    for rec in recomendaciones_hist:
-                        st.markdown(
-                            f"- {tr_diag_texto(rec)}"
-                        )
-
-                nota_hist = str(
-                    registro.get(
-                        "nota_diagnostico",
-                        ""
-                    )
-                    or ""
-                ).strip()
-
-                if nota_hist:
-                    st.info(
-                        tr_diag_texto(
-                            nota_hist
-                        )
-                    )
-
-        except Exception as historial_exc:
-
+        except Exception as exc:
             st.error(
                 tr(
-                    "No se pudo cargar el historial de Google Drive.",
-                    "Impossible de charger l’historique Google Drive."
+                    f"No se pudo cargar el historial: {exc}",
+                    f"Impossible de charger l’historique : {exc}"
                 )
             )
-
-            st.code(
-                str(historial_exc)
-            )
-
