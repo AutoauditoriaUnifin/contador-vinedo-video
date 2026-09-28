@@ -5696,14 +5696,14 @@ def _tc_analizar_inventario_local(uploaded_image):
         ipts[:, 1] = np.clip(ipts[:, 1], 0, h - 1)
         cv2.polylines(annotated, [ipts], False, color_line, 1, cv2.LINE_AA)
 
-        # Numeración igual al INICIO y FINAL.
+        # Numeración SOLO ARRIBA: elegir el extremo visualmente más alto.
         label = f"{row_number:02d}"
-        for endpoint in (ipts[0], ipts[-1]):
-            ex, ey = int(endpoint[0]), int(endpoint[1])
-            tx = int(np.clip(ex + 5, 0, max(0, w - 38)))
-            ty = int(np.clip(ey - 5, 16, max(16, h - 4)))
-            cv2.putText(annotated, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (40, 40, 40), 3, cv2.LINE_AA)
-            cv2.putText(annotated, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
+        top_endpoint = ipts[0] if int(ipts[0][1]) <= int(ipts[-1][1]) else ipts[-1]
+        ex, ey = int(top_endpoint[0]), int(top_endpoint[1])
+        tx = int(np.clip(ex + 5, 0, max(0, w - 38)))
+        ty = int(np.clip(ey - 5, 16, max(16, h - 4)))
+        cv2.putText(annotated, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (40, 40, 40), 3, cv2.LINE_AA)
+        cv2.putText(annotated, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
 
         occupied_count = 0
         empty_count = 0
@@ -8927,30 +8927,42 @@ def _tc_mascara_parcela_desde_surcos(width, height):
 
 def _tc_detectar_zonas_secas_opencv(uploaded_image):
     """
-    Detecta regiones con:
-      - vegetación local baja,
-      - suelo marrón/tierra visible,
-      - continuidad espacial.
-    Devuelve polígonos azules SIN relleno, como la referencia del usuario.
+    Diagnóstico 2.
+    Detecta zonas secas sobre la fotografía ORIGINAL usando:
+      - baja densidad local de vegetación,
+      - tierra visible,
+      - comparación relativa contra el resto de la misma parcela,
+      - agrupación espacial de manchas próximas.
+
+    El umbral es ADAPTATIVO por fotografía. Esto evita que una parcela con
+    iluminación distinta termine detectando solamente 1 o 2 manchas pequeñas.
     """
     pil = Image.open(io.BytesIO(uploaded_image.getvalue())).convert("RGB")
     rgb = np.asarray(pil)
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     h, w = bgr.shape[:2]
+    min_side = float(min(h, w))
 
-    # Vegetación verde ya usada por TerraCore.
-    green = mascara_verde(bgr).astype(np.uint8)
+    # --------------------------------------------------------
+    # VEGETACIÓN
+    # --------------------------------------------------------
+    green = mascara_verde(bgr).astype(np.float32)
 
-    # Densidad local de vegetación.
-    sigma = max(4.0, min(h, w) * 0.012)
-    green_density = cv2.GaussianBlur(
-        green.astype(np.float32),
-        (0, 0),
-        sigmaX=sigma,
-        sigmaY=sigma
+    sigma_fine = max(5.0, min_side * 0.012)
+    sigma_broad = max(12.0, min_side * 0.033)
+
+    green_fine = cv2.GaussianBlur(
+        green, (0, 0),
+        sigmaX=sigma_fine, sigmaY=sigma_fine
+    )
+    green_broad = cv2.GaussianBlur(
+        green, (0, 0),
+        sigmaX=sigma_broad, sigmaY=sigma_broad
     )
 
-    # Suelo/tierra visible: tonos marrón-beige y baja dominancia verde.
+    # --------------------------------------------------------
+    # TIERRA / SUELO VISIBLE
+    # --------------------------------------------------------
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     hh, ss, vv = cv2.split(hsv)
 
@@ -8959,41 +8971,84 @@ def _tc_detectar_zonas_secas_opencv(uploaded_image):
     g = rgbf[:, :, 1]
     b = rgbf[:, :, 2]
 
+    # Más permisivo con tierra clara, marrón y beige.
     soil = (
-        (hh >= 4) & (hh <= 38) &
-        (ss >= 18) & (ss <= 210) &
-        (vv >= 35) & (vv <= 245) &
-        (r >= g * 0.90) &
-        (g >= b * 0.78)
-    ).astype(np.uint8)
+        (hh >= 2) & (hh <= 42) &
+        (ss >= 12) & (ss <= 225) &
+        (vv >= 28) & (vv <= 250) &
+        (r >= b * 0.92) &
+        (g >= b * 0.72) &
+        (g <= r * 1.18)
+    ).astype(np.float32)
 
     soil_density = cv2.GaussianBlur(
-        soil.astype(np.float32),
-        (0, 0),
-        sigmaX=sigma * 0.85,
-        sigmaY=sigma * 0.85
+        soil, (0, 0),
+        sigmaX=max(8.0, min_side * 0.024),
+        sigmaY=max(8.0, min_side * 0.024)
     )
 
-    # Zonas secas: poca vegetación + bastante tierra visible.
-    dry_score = (
-        np.clip(1.0 - green_density, 0.0, 1.0) * 0.62
-        + np.clip(soil_density, 0.0, 1.0) * 0.38
-    )
-
+    # --------------------------------------------------------
+    # MÁSCARA DE PARCELA
+    # --------------------------------------------------------
     parcela_mask = _tc_mascara_parcela_desde_surcos(w, h)
 
+    # Si el hull del Inventario quedó demasiado pequeño por surcos omitidos,
+    # ampliarlo para no perder manchas secas laterales.
+    expand_k = max(11, int(round(min_side * 0.035)))
+    if expand_k % 2 == 0:
+        expand_k += 1
+    expand_k = min(expand_k, 81)
+    parcela_mask = cv2.dilate(
+        parcela_mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (expand_k, expand_k)),
+        iterations=1
+    )
+
+    valid = parcela_mask > 0
+
+    # --------------------------------------------------------
+    # PUNTAJE SECO ADAPTATIVO
+    # --------------------------------------------------------
+    # El componente principal es la falta de vegetación a escala AMPLIA.
+    dry_score = (
+        0.56 * np.clip(1.0 - green_broad, 0.0, 1.0)
+        + 0.25 * np.clip(soil_density, 0.0, 1.0)
+        + 0.19 * np.clip(1.0 - green_fine, 0.0, 1.0)
+    ).astype(np.float32)
+
+    values = dry_score[valid]
+    green_values = green_broad[valid]
+    soil_values = soil_density[valid]
+
+    if values.size < 100:
+        raise RuntimeError("No hay suficiente área útil de parcela para formar polígonos.")
+
+    # Percentiles relativos a ESTA parcela.
+    score_thr = float(np.percentile(values, 64))
+    green_thr = float(np.percentile(green_values, 61))
+    soil_thr = float(np.percentile(soil_values, 30))
+
+    # Un límite mínimo evita marcar sombras puras como sequedad.
+    score_thr = max(0.50, min(score_thr, 0.84))
+
     candidate = (
-        (dry_score >= 0.58) &
-        (green_density <= 0.38) &
-        (soil_density >= 0.23) &
-        (parcela_mask > 0)
+        valid
+        & (dry_score >= score_thr)
+        & (green_broad <= max(0.44, green_thr))
+        & (
+            (soil_density >= max(0.16, soil_thr))
+            | (green_broad <= 0.18)
+        )
     ).astype(np.uint8) * 255
 
-    # Agrupar franjas secas cercanas en manchas/polígonos más amplios.
-    close_k = max(9, int(round(min(w, h) * 0.020)))
+    # --------------------------------------------------------
+    # AGRUPAR MANCHAS COMO EN LA REFERENCIA DEL USUARIO
+    # --------------------------------------------------------
+    # Cerrar huecos pequeños entre bandas secas cercanas.
+    close_k = max(13, int(round(min_side * 0.030)))
     if close_k % 2 == 0:
         close_k += 1
-    close_k = min(close_k, 55)
+    close_k = min(close_k, 71)
 
     candidate = cv2.morphologyEx(
         candidate,
@@ -9002,17 +9057,28 @@ def _tc_detectar_zonas_secas_opencv(uploaded_image):
         iterations=2
     )
 
-    open_k = max(3, int(round(min(w, h) * 0.006)))
+    # Dilatación leve para unir manchas que pertenecen al mismo sector seco.
+    dil_k = max(5, int(round(min_side * 0.010)))
+    if dil_k % 2 == 0:
+        dil_k += 1
+    candidate = cv2.dilate(
+        candidate,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dil_k, dil_k)),
+        iterations=1
+    )
+
+    # Quitar ruido pequeño sin destruir formas irregulares.
+    open_k = max(3, int(round(min_side * 0.006)))
     if open_k % 2 == 0:
         open_k += 1
-    open_k = min(open_k, 19)
-
     candidate = cv2.morphologyEx(
         candidate,
         cv2.MORPH_OPEN,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_k, open_k)),
         iterations=1
     )
+
+    candidate[~valid] = 0
 
     contours, _ = cv2.findContours(
         candidate,
@@ -9021,38 +9087,42 @@ def _tc_detectar_zonas_secas_opencv(uploaded_image):
     )
 
     img_area = float(max(1, w * h))
-    min_area = img_area * 0.0010
-    max_area = img_area * 0.40
+    min_area = img_area * 0.0014
+    max_area = img_area * 0.36
 
     zones = []
+    rows = st.session_state.get("tc_inventario_rows_ai", []) or []
+
     for cnt in contours:
         area = float(cv2.contourArea(cnt))
         if area < min_area or area > max_area:
             continue
 
+        # Convex hull NO se usa: queremos conservar entrantes y forma real.
         peri = float(cv2.arcLength(cnt, True))
-        eps = max(2.0, peri * 0.010)
+        eps = max(1.5, peri * 0.006)
         poly = cv2.approxPolyDP(cnt, eps, True)
+
         if len(poly) < 3:
             continue
 
         x, y, bw, bh = cv2.boundingRect(poly)
-        area_pct = 100.0 * area / img_area
-
-        # Evita manchas casi cuadradas diminutas que suelen ser ruido.
-        if bw < w * 0.018 or bh < h * 0.018:
+        if bw < w * 0.020 or bh < h * 0.020:
             continue
 
-        pts_norm = []
-        for px, py in poly.reshape(-1, 2):
-            pts_norm.append([
+        area_pct = 100.0 * area / img_area
+
+        pts_norm = [
+            [
                 int(round(float(px) / max(1, w - 1) * 1000)),
                 int(round(float(py) / max(1, h - 1) * 1000))
-            ])
+            ]
+            for px, py in poly.reshape(-1, 2)
+        ]
 
-        # Relacionar con surcos por intersección/proximidad.
+        # Relación con surcos confirmados.
         related = []
-        rows = st.session_state.get("tc_inventario_rows_ai", []) or []
+        margin = max(7.0, min_side * 0.010)
         for idx, row in enumerate(rows, 1):
             pts = row.get("points", None)
             if pts is None or len(pts) < 2:
@@ -9071,18 +9141,16 @@ def _tc_detectar_zonas_secas_opencv(uploaded_image):
             if len(pts) < 2:
                 continue
 
-            hit = False
-            for px, py in pts[::max(1, len(pts)//30)]:
-                dist = cv2.pointPolygonTest(poly, (float(px), float(py)), True)
-                if dist >= -max(5.0, min(w, h) * 0.006):
-                    hit = True
-                    break
+            hit = any(
+                cv2.pointPolygonTest(poly, (float(px), float(py)), True) >= -margin
+                for px, py in pts[::max(1, len(pts)//45)]
+            )
             if hit:
                 related.append(idx)
 
-        if area_pct >= 4.0:
+        if area_pct >= 5.0:
             nivel = "Alto"
-        elif area_pct >= 1.5:
+        elif area_pct >= 1.8:
             nivel = "Medio"
         else:
             nivel = "Bajo"
@@ -9096,35 +9164,241 @@ def _tc_detectar_zonas_secas_opencv(uploaded_image):
             "bbox": [int(x), int(y), int(bw), int(bh)],
         })
 
-    # Orden de arriba a abajo e izquierda a derecha.
-    zones.sort(key=lambda z: (z["bbox"][1], z["bbox"][0]))
-
-    # Mantener las zonas principales para evitar exceso de manchas pequeñas.
+    # Priorizar zonas grandes, máximo 12.
     zones = sorted(zones, key=lambda z: z["area_visual_pct"], reverse=True)[:12]
     zones.sort(key=lambda z: (z["bbox"][1], z["bbox"][0]))
 
     annotated = bgr.copy()
+    thickness = max(3, int(round(min_side / 280.0)))
+
     for i, zone in enumerate(zones, 1):
         zone["nombre"] = f"Zona {chr(64+i) if i <= 26 else i}"
         poly = zone["_poly_px"]
 
-        # Azul brillante BGR, sin relleno.
+        # Azul brillante y SIN relleno.
         cv2.polylines(
             annotated,
             [poly],
             True,
-            (255, 150, 0),
-            max(3, int(round(min(w, h) / 300))),
+            (255, 145, 0),   # BGR -> azul/cian
+            thickness,
             cv2.LINE_AA
         )
 
-    # quitar objetos privados antes de guardar en session/sheets
-    clean_zones = []
-    for z in zones:
-        z2 = {k:v for k,v in z.items() if not k.startswith("_")}
-        clean_zones.append(z2)
+    clean_zones = [
+        {k: v for k, v in z.items() if not k.startswith("_")}
+        for z in zones
+    ]
 
     return clean_zones, annotated, candidate
+
+
+def _tc_mascara_desde_poligonos(zones, width, height):
+    """Convierte los polígonos normalizados del Diagnóstico 2 en máscara."""
+    mask = np.zeros((height, width), dtype=np.uint8)
+
+    for zone in zones or []:
+        pts = zone.get("poligono_normalizado_0_1000", []) or []
+        poly = []
+        for p in pts:
+            if not isinstance(p, (list, tuple)) or len(p) < 2:
+                continue
+            x = int(round(float(p[0]) / 1000.0 * max(1, width - 1)))
+            y = int(round(float(p[1]) / 1000.0 * max(1, height - 1)))
+            poly.append([x, y])
+
+        if len(poly) >= 3:
+            cv2.fillPoly(
+                mask,
+                [np.asarray(poly, dtype=np.int32)],
+                255
+            )
+
+    return mask
+
+
+def _tc_generar_lineas_salud_final(uploaded_image, zones):
+    """
+    Diagnóstico 3.
+    NO vuelve a detectar surcos desde cero.
+    Usa exactamente los surcos del Inventario confirmado y usa los polígonos
+    del Diagnóstico 2 para decidir dónde la línea debe ser roja.
+    """
+    pil = Image.open(io.BytesIO(uploaded_image.getvalue())).convert("RGB")
+    rgb = np.asarray(pil)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    h, w = bgr.shape[:2]
+
+    tracks = st.session_state.get("tc_inventario_rows_ai", []) or []
+    if not tracks:
+        raise RuntimeError("No existe geometría confirmada del Inventario.")
+
+    polygon_mask = _tc_mascara_desde_poligonos(zones, w, h)
+    green = mascara_verde(bgr).astype(np.uint8)
+
+    final = bgr.copy()
+    total_green = 0
+    total_red = 0
+
+    # Radio local solo como respaldo fuera de polígonos.
+    radius = max(3, int(round(min(h, w) * 0.005)))
+
+    for row_number, track in enumerate(tracks, 1):
+        pts = track.get("points", None)
+
+        if pts is None or len(pts) < 2:
+            pts_norm = track.get("points_norm", []) or []
+            pts = np.asarray([
+                [
+                    float(p[0]) / 1000.0 * max(1, w - 1),
+                    float(p[1]) / 1000.0 * max(1, h - 1)
+                ]
+                for p in pts_norm
+                if isinstance(p, (list, tuple)) and len(p) >= 2
+            ], dtype=np.float32)
+        else:
+            pts = np.asarray(pts, dtype=np.float32)
+
+        if len(pts) < 2:
+            continue
+
+        ipts = np.rint(pts).astype(np.int32)
+        ipts[:, 0] = np.clip(ipts[:, 0], 0, w - 1)
+        ipts[:, 1] = np.clip(ipts[:, 1], 0, h - 1)
+
+        for j in range(len(ipts) - 1):
+            x1, y1 = map(int, ipts[j])
+            x2, y2 = map(int, ipts[j + 1])
+
+            mx = int(round((x1 + x2) / 2))
+            my = int(round((y1 + y2) / 2))
+
+            # PRIORIDAD 1: si el tramo cae dentro de una zona seca del
+            # Diagnóstico 2, se marca ROJO.
+            inside_dry_polygon = polygon_mask[my, mx] > 0
+
+            # PRIORIDAD 2: respaldo local por falta extrema de vegetación.
+            xa, xb = max(0, mx-radius), min(w, mx+radius+1)
+            ya, yb = max(0, my-radius), min(h, my+radius+1)
+            patch = green[ya:yb, xa:xb]
+            local_green = float(np.mean(patch > 0)) if patch.size else 0.0
+
+            is_red = bool(
+                inside_dry_polygon
+                or (local_green < 0.035 and polygon_mask[max(0,my-radius):min(h,my+radius+1),
+                                                        max(0,mx-radius):min(w,mx+radius+1)].max() > 0)
+            )
+
+            if is_red:
+                color = (0, 0, 255)
+                total_red += 1
+            else:
+                color = (0, 220, 0)
+                total_green += 1
+
+            cv2.line(
+                final,
+                (x1, y1),
+                (x2, y2),
+                color,
+                2,
+                cv2.LINE_AA
+            )
+
+        # Número únicamente ARRIBA.
+        top_endpoint = ipts[0] if int(ipts[0][1]) <= int(ipts[-1][1]) else ipts[-1]
+        tx = int(np.clip(int(top_endpoint[0]) + 4, 0, max(0, w - 35)))
+        ty = int(np.clip(int(top_endpoint[1]) - 4, 15, max(15, h - 4)))
+        label = f"{row_number:02d}"
+        cv2.putText(final, label, (tx, ty),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255,255,255), 3, cv2.LINE_AA)
+        cv2.putText(final, label, (tx, ty),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (25,25,25), 1, cv2.LINE_AA)
+
+    total = total_green + total_red
+    green_pct = 100.0 * total_green / total if total else 0.0
+    red_pct = 100.0 * total_red / total if total else 0.0
+
+    return {
+        "annotated": final,
+        "green_pct": green_pct,
+        "red_pct": red_pct,
+        "count": len(tracks),
+        "total_segments": total,
+        "green_segments": total_green,
+        "red_segments": total_red,
+    }
+
+
+def _tc_guardar_lineas_salud_evidencia(uploaded_image, result):
+    """Guarda la imagen FINAL de líneas como evidencia del mismo análisis."""
+    if not historial_google_configurado():
+        return False, ""
+
+    import uuid
+    parcela_nombre = str(st.session_state.get("tc_parcela_nombre", "") or "Sin nombre")
+    parcela_id = _tc_asegurar_parcela(parcela_nombre)
+
+    analisis_id = (
+        str(st.session_state.get("tc_salud_historial_id", "") or "")
+        or str(st.session_state.get("tc_inventario_historial_id", "") or "")
+        or "AN-LIN-" + uuid.uuid4().hex[:12].upper()
+    )
+
+    annotated = result.get("annotated")
+    if annotated is None:
+        return False, ""
+
+    img_bytes = _tc_image_to_png_bytes(annotated)
+    name = f"{_tc_safe_slug(parcela_nombre)}_{analisis_id}_lineas_salud_final.png"
+    file_id = subir_bytes_google_drive(
+        img_bytes,
+        name,
+        "image/png",
+        "LineasSalud"
+    )
+
+    _tc_guardar_evidencia(
+        analisis_id,
+        parcela_id,
+        "Líneas de Salud final",
+        name,
+        file_id,
+        "image/png",
+        "OpenCV + Polígonos"
+    )
+
+    return True, file_id
+
+
+def _tc_evidencias_por_analisis(analisis_id):
+    """Devuelve evidencias guardadas para reconstruir las 4 imágenes del historial."""
+    if not analisis_id or not historial_google_configurado():
+        return []
+
+    _tc_asegurar_modelo_sheets()
+    _, sheets_service = obtener_google_clients()
+    spreadsheet_id = _secret_text("GSHEET_ID")
+
+    rows = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range="Evidencias!A2:I",
+    ).execute().get("values", [])
+
+    out = []
+    for row in rows:
+        row = list(row) + [""] * (9 - len(row))
+        if str(row[1]).strip() != str(analisis_id).strip():
+            continue
+        out.append({
+            "tipo": row[3],
+            "nombre": row[4],
+            "file_id": row[5],
+            "mime": row[6],
+            "fecha": row[7],
+            "fuente": row[8],
+        })
+    return out
 
 
 def _tc_guardar_poligonos_google(uploaded_image, zones, annotated):
@@ -9291,7 +9565,7 @@ st.markdown(
     <style>
     .tc-flow-wrap{
         display:grid;
-        grid-template-columns:repeat(5,1fr);
+        grid-template-columns:repeat(7,1fr);
         gap:8px;
         margin:.35rem 0 1rem 0;
     }
@@ -9364,8 +9638,10 @@ st.markdown(
       <div class="tc-flow-step active">{tr('① Captura', '① Capture')}</div>
       <div class="tc-flow-step {'active' if st.session_state.tc_captura_confirmada else ''}">{tr('② Inventario', '② Inventaire')}</div>
       <div class="tc-flow-step {'active' if st.session_state.tc_inventario_procesado else ''}">{tr('③ Validación', '③ Validation')}</div>
-      <div class="tc-flow-step {'active' if st.session_state.tc_inventario_confirmado else 'locked'}">{tr('④ Salud', '④ Santé')}</div>
-      <div class="tc-flow-step locked">{tr('⑤ Reporte', '⑤ Rapport')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.tc_inventario_confirmado else 'locked'}">{tr('④ Diagnóstico 1', '④ Diagnostic 1')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.get('tc_salud_procesada', False) else 'locked'}">{tr('⑤ Polígonos', '⑤ Polygones')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.get('tc_poligonos_procesados', False) else 'locked'}">{tr('⑥ Líneas', '⑥ Lignes')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.get('tc_lineas_visibles', False) else 'locked'}">{tr('⑦ Historial', '⑦ Historique')}</div>
     </div>
     """,
     unsafe_allow_html=True
@@ -9539,12 +9815,12 @@ with main_col:
         st.caption(
             tr(
                 "Primera etapa: detectar surcos, numerarlos únicamente arriba y separar slots ocupados/vacíos. El diagnóstico de salud permanece bloqueado.",
-                "Première étape : détecter les rangs, les numéroter au début et à la fin et séparer les emplacements occupés/vides. Le diagnostic de santé reste bloqué."
+                "Première étape : détecter les rangs, les numéroter uniquement en haut et séparer les emplacements occupés/vides. Le diagnostic de santé reste bloqué."
             )
         )
 
         st.markdown(
-            f"<div class='tc-row-number-demo'>01 ───────────────────────── 01</div>",
+            f"<div class='tc-row-number-demo'>01 ─────────────────────────</div>",
             unsafe_allow_html=True
         )
 
@@ -9883,6 +10159,8 @@ with main_col:
                     st.session_state.tc_salud_procesada = True
                     st.session_state.tc_poligonos_procesados = False
                     st.session_state.tc_lineas_visibles = False
+                    st.session_state.tc_lineas_resultado = None
+                    st.session_state.tc_lineas_imagen_file_id = ""
 
                     progress_salud.progress(
                         100,
@@ -10067,68 +10345,95 @@ with main_col:
     else:
         if not st.session_state.tc_lineas_visibles:
             if st.button(
-                tr("📏 Mostrar diagnóstico por líneas", "📏 Afficher le diagnostic par lignes"),
+                tr("📏 Generar diagnóstico final por líneas", "📏 Générer le diagnostic final par lignes"),
                 type="primary",
                 use_container_width=True,
                 key="tc_mostrar_lineas_final"
             ):
-                st.session_state.tc_lineas_visibles = True
-                st.rerun()
+                try:
+                    fuente = st.session_state.tc_inventario_fuente or ""
+                    up_lineas = next(
+                        (u for u in uploaded_images if u.name == fuente),
+                        uploaded_images[0]
+                    )
+
+                    line_result = _tc_generar_lineas_salud_final(
+                        up_lineas,
+                        st.session_state.tc_poligonos or []
+                    )
+
+                    st.session_state.tc_lineas_resultado = line_result
+                    st.session_state.tc_lineas_visibles = True
+
+                    if historial_google_configurado():
+                        try:
+                            ok_lin, fid_lin = _tc_guardar_lineas_salud_evidencia(
+                                up_lineas,
+                                line_result
+                            )
+                            if ok_lin:
+                                st.session_state.tc_lineas_imagen_file_id = fid_lin
+                        except Exception:
+                            pass
+
+                    st.rerun()
+                except Exception as exc:
+                    st.error(tr(
+                        f"No se pudo generar el Diagnóstico 3: {exc}",
+                        f"Impossible de générer le Diagnostic 3 : {exc}"
+                    ))
 
         if st.session_state.tc_lineas_visibles:
-            resultados = st.session_state.tc_resultados_base or []
-            if not resultados:
-                st.info(tr("No hay resultados de Salud.", "Aucun résultat de santé."))
-            else:
-                green_vals = [float(i.get("green_pct", 0.0) or 0.0) for i in resultados]
-                red_vals = [float(i.get("red_pct", 0.0) or 0.0) for i in resultados]
-                green_pct = float(np.mean(green_vals)) if green_vals else 0.0
-                red_pct = float(np.mean(red_vals)) if red_vals else 0.0
+            line_result = st.session_state.get("tc_lineas_resultado") or {}
+            annotated = line_result.get("annotated")
 
-                s1, s2 = st.columns(2)
+            if annotated is None:
+                st.info(tr("No hay resultado final de líneas.", "Aucun résultat final de lignes."))
+            else:
+                green_pct = float(line_result.get("green_pct", 0.0) or 0.0)
+                red_pct = float(line_result.get("red_pct", 0.0) or 0.0)
+
+                s1, s2, s3 = st.columns(3)
                 s1.metric(tr("Vegetación verde", "Végétation verte"), f"{green_pct:.1f}%")
                 s2.metric(tr("Afectación roja", "Affectation rouge"), f"{red_pct:.1f}%")
+                s3.metric(
+                    tr("Surcos usados", "Rangs utilisés"),
+                    int(line_result.get("count", 0) or 0)
+                )
 
-                for idx, item in enumerate(resultados):
-                    with st.container(border=True):
-                        st.markdown(f"**{item.get('name','')}**")
+                with st.container(border=True):
+                    c_original, c_proc = st.columns(2)
 
-                        c_original, c_proc = st.columns(2)
-                        with c_original:
-                            st.caption(tr("Imagen original", "Image originale"))
-                            try:
-                                fuente = st.session_state.tc_inventario_fuente or item.get("name", "")
-                                up = next((u for u in uploaded_images if u.name == fuente), uploaded_images[0])
-                                st.image(
-                                    Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
-                                    use_container_width=True
-                                )
-                            except Exception:
-                                pass
+                    with c_original:
+                        st.caption(tr("Imagen original", "Image originale"))
+                        try:
+                            fuente = st.session_state.tc_inventario_fuente or ""
+                            up = next(
+                                (u for u in uploaded_images if u.name == fuente),
+                                uploaded_images[0]
+                            )
+                            st.image(
+                                Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
+                                use_container_width=True
+                            )
+                        except Exception:
+                            pass
 
-                        with c_proc:
-                            st.caption(tr(
-                                "Imagen procesada — Líneas de Salud",
-                                "Image traitée — Lignes de santé"
-                            ))
-                            annotated = item.get("annotated")
-                            if annotated is not None:
-                                if isinstance(annotated, Image.Image):
-                                    st.image(annotated, use_container_width=True)
-                                else:
-                                    st.image(
-                                        cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
-                                        use_container_width=True
-                                    )
+                    with c_proc:
+                        st.caption(tr(
+                            "Imagen procesada — Líneas guiadas por Polígonos",
+                            "Image traitée — Lignes guidées par les polygones"
+                        ))
+                        st.image(
+                            cv2.cvtColor(np.asarray(annotated), cv2.COLOR_BGR2RGB),
+                            use_container_width=True
+                        )
 
-                        total_slots_item = int(item.get("total_slots", 0) or 0)
-                        green_slots_item = int(item.get("green_slots", 0) or 0)
-                        red_slots_item = int(item.get("red_slots", 0) or 0)
-                        if total_slots_item > 0:
-                            st.caption(tr(
-                                f"Salud por slots: {green_slots_item} verdes + {red_slots_item} rojos = {total_slots_item} posiciones evaluadas.",
-                                f"Santé par emplacements : {green_slots_item} verts + {red_slots_item} rouges = {total_slots_item} positions évaluées."
-                            ))
+                st.caption(tr(
+                    "Las líneas usan exactamente los surcos confirmados del Inventario. "
+                    "Los tramos que atraviesan los polígonos secos se muestran en rojo; el resto en verde.",
+                    "Les lignes utilisent exactement les rangs confirmés de l’Inventaire."
+                ))
 
 
 # ============================================================
@@ -10137,7 +10442,7 @@ with main_col:
 st.markdown("---")
 st.subheader(tr("📂 Historial por parcela", "📂 Historique par parcelle"))
 st.caption(tr(
-    "Consulta análisis anteriores y vuelve a abrir las imágenes originales, de Inventario y de Salud procesadas.",
+    "Consulta análisis anteriores y vuelve a abrir Original, Inventario, Polígonos y Líneas de Salud.",
     "Consultez les analyses précédentes et rouvrez les images originales, d’inventaire et de santé traitées."
 ))
 
@@ -10241,10 +10546,28 @@ else:
                         st.session_state.tc_hist_imagenes_id = registro.get("analisis_id", "")
 
                     if st.session_state.get("tc_hist_imagenes_id") == registro.get("analisis_id", ""):
+                        evidencias_extra = _tc_evidencias_por_analisis(
+                            registro.get("analisis_id", "")
+                        )
+
+                        polygon_file_id = ""
+                        lineas_file_id = ""
+
+                        for ev in evidencias_extra:
+                            tipo_ev = str(ev.get("tipo", "") or "").lower()
+                            if "polígono" in tipo_ev or "poligono" in tipo_ev:
+                                polygon_file_id = ev.get("file_id", "") or polygon_file_id
+                            if "líneas de salud final" in tipo_ev or "lineas de salud final" in tipo_ev:
+                                lineas_file_id = ev.get("file_id", "") or lineas_file_id
+
                         ids_img = [
                             (tr("Original", "Originale"), registro.get("imagen_original_file_id", "")),
                             (tr("Inventario procesado", "Inventaire traité"), registro.get("imagen_inventario_file_id", "")),
-                            (tr("Salud procesada", "Santé traitée"), registro.get("imagen_procesada_file_id", "")),
+                            (tr("Polígonos zonas secas", "Polygones zones sèches"), polygon_file_id),
+                            (
+                                tr("Líneas de Salud", "Lignes de santé"),
+                                lineas_file_id or registro.get("imagen_procesada_file_id", "")
+                            ),
                         ]
                         disponibles = [(t, fid) for t, fid in ids_img if fid]
                         if disponibles:
