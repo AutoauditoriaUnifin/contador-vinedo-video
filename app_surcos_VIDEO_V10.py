@@ -5415,6 +5415,14 @@ _estado_nuevo = {
     "tc_poligonos_guardados": False,
     "tc_lineas_visibles": False,
     "tc_salud_historial_id": "",
+    "tc_captura_maestra_bytes": None,
+    "tc_captura_maestra_nombre": "",
+    "tc_captura_maestra_metodo": "",
+    "tc_captura_maestra_error": "",
+    "tc_altura_captura_m": 0.0,
+    "tc_validaciones_muestreo": [],
+    "tc_segundo_vuelo_guardado": False,
+    "tc_nivel2_resultado": None,
 }
 
 for _k, _v in _estado_nuevo.items():
@@ -5443,6 +5451,124 @@ def _tc_reiniciar_parcela():
     st.session_state.tc_poligonos_guardados = False
     st.session_state.tc_lineas_visibles = False
     st.session_state.tc_salud_historial_id = ""
+    st.session_state.tc_captura_maestra_bytes = None
+    st.session_state.tc_captura_maestra_nombre = ""
+    st.session_state.tc_captura_maestra_metodo = ""
+    st.session_state.tc_captura_maestra_error = ""
+    st.session_state.tc_altura_captura_m = 0.0
+    st.session_state.tc_validaciones_muestreo = []
+    st.session_state.tc_segundo_vuelo_guardado = False
+    st.session_state.tc_nivel2_resultado = None
+
+
+
+# ============================================================
+# CAPTURA BASE / IMAGEN MAESTRA
+# ============================================================
+
+class _TCMemoryUpload:
+    """Objeto compatible con StreamlitUploadedFile para usar una imagen maestra en memoria."""
+    def __init__(self, data, name="captura_base_maestra.jpg", mime="image/jpeg"):
+        self._data = bytes(data)
+        self.name = str(name)
+        self.type = str(mime)
+
+    def getvalue(self):
+        return self._data
+
+
+def _tc_decode_upload(up):
+    arr = np.frombuffer(up.getvalue(), dtype=np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
+def _tc_encode_jpg(bgr, quality=93):
+    ok, enc = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+    if not ok:
+        raise RuntimeError("No se pudo codificar la Imagen Maestra.")
+    return enc.tobytes()
+
+
+def _tc_crear_imagen_maestra(uploaded_images):
+    """
+    Intenta construir una Imagen Maestra a partir de 1..N fotografías.
+    Si hay una sola, se usa directamente.
+    Si hay varias, intenta Stitcher SCANS y luego PANORAMA.
+    Nunca crea un collage falso: si no puede alinear las fotos, lo reporta.
+    """
+    if not uploaded_images:
+        raise RuntimeError("No hay fotografías para la Captura Base.")
+
+    if len(uploaded_images) == 1:
+        return uploaded_images[0].getvalue(), uploaded_images[0].name, "Fotografía única", ""
+
+    imgs = []
+    for up in uploaded_images:
+        img = _tc_decode_upload(up)
+        if img is not None:
+            # Limitar tamaño para mejorar estabilidad del stitcher.
+            h, w = img.shape[:2]
+            max_side = 1800
+            scale = min(1.0, max_side / float(max(h, w)))
+            if scale < 1.0:
+                img = cv2.resize(
+                    img,
+                    (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
+                    interpolation=cv2.INTER_AREA
+                )
+            imgs.append(img)
+
+    if len(imgs) < 2:
+        raise RuntimeError("No se pudieron abrir suficientes fotografías para unir la Captura Base.")
+
+    errores = []
+    modes = []
+    if hasattr(cv2, "Stitcher_SCANS"):
+        modes.append(("SCANS", cv2.Stitcher_SCANS))
+    if hasattr(cv2, "Stitcher_PANORAMA"):
+        modes.append(("PANORAMA", cv2.Stitcher_PANORAMA))
+
+    for mode_name, mode in modes:
+        try:
+            stitcher = cv2.Stitcher_create(mode)
+            status, pano = stitcher.stitch(imgs)
+            if status == cv2.Stitcher_OK and pano is not None and pano.size:
+                return (
+                    _tc_encode_jpg(pano),
+                    "captura_base_maestra.jpg",
+                    f"Imagen Maestra unida con OpenCV {mode_name}",
+                    ""
+                )
+            errores.append(f"{mode_name}: status {status}")
+        except Exception as exc:
+            errores.append(f"{mode_name}: {exc}")
+
+    # Respaldo responsable: usar la foto de mayor resolución, pero dejar claro que NO se logró unir.
+    valid = [(im.shape[0] * im.shape[1], im, up) for im, up in zip(imgs, uploaded_images[:len(imgs)])]
+    valid.sort(key=lambda x: x[0], reverse=True)
+    _, best_img, best_up = valid[0]
+
+    return (
+        _tc_encode_jpg(best_img),
+        f"referencia_{Path(best_up.name).stem}.jpg",
+        "Referencia individual (unión automática no disponible)",
+        "No fue posible alinear automáticamente todas las fotografías. "
+        "La app usará temporalmente la captura individual de mayor resolución. "
+        "Para una Imagen Maestra real, las fotografías deben tener suficiente traslape."
+    )
+
+
+def _tc_get_captura_base_upload(uploaded_images):
+    data = st.session_state.get("tc_captura_maestra_bytes")
+    if data:
+        return _TCMemoryUpload(
+            data,
+            st.session_state.get("tc_captura_maestra_nombre") or "captura_base_maestra.jpg",
+            "image/jpeg"
+        )
+    if uploaded_images:
+        return uploaded_images[0]
+    return None
 
 
 # ============================================================
@@ -8528,8 +8654,32 @@ TC_SHEETS = {
         "AreaM2", "Nivel", "SurcosRelacionados", "Estado", "Fecha"
     ],
     "Vuelos": [
-        "VueloID", "ParcelaID", "TipoVuelo", "Fecha", "AlturaM",
-        "KMLFileID", "Estado", "Observaciones"
+        "VueloID", "ParcelaID", "RegionID", "TipoVuelo", "Fecha", "AlturaM",
+        "AnguloCamara", "Recorrido", "KMLFileID", "Estado", "Observaciones"
+    ],
+    "CapturasBase": [
+        "CapturaBaseID", "ParcelaID", "Fecha", "NumeroFotos", "ImagenMaestraFileID",
+        "MetodoUnion", "AlturaM", "Estado", "Observaciones"
+    ],
+    "ValidacionMuestreo": [
+        "ValidacionID", "AnalisisID", "ParcelaID", "Surco", "TipoZona",
+        "ConteoIA", "ConteoReal", "ErrorPct", "QRInicio", "QRFin", "Fecha", "Observaciones"
+    ],
+    "RegionesCriticas": [
+        "RegionID", "AnalisisID", "ParcelaID", "NombreRegion", "PoligonoJSON",
+        "PrimerSurco", "UltimoSurco", "TramoAprox", "AreaVisualPct", "AreaM2",
+        "NivelVisual", "Caracteristica", "Confianza", "EstadoSeguimiento", "Fecha"
+    ],
+    "EvidenciasSeguimiento": [
+        "EvidenciaID", "VueloID", "RegionID", "ParcelaID", "TipoEvidencia",
+        "AlturaM", "AnguloCamara", "NombreArchivo", "DriveFileID", "Fecha", "Observaciones"
+    ],
+    "AnalisisNivel2": [
+        "AnalisisNivel2ID", "RegionID", "ParcelaID", "Fecha",
+        "CoberturaIrregular", "DiferenciasColor", "PerdidaContinuidad",
+        "SectoresSecos", "FallaRiegoVisible", "DanoLocalizado",
+        "PlagasEnfermedadesVisibles", "CondicionSuelo", "Confianza",
+        "RequiereRevisionAgronomica", "Observaciones"
     ],
 }
 
@@ -8598,6 +8748,124 @@ def _tc_append_row(sheet_name, row):
         body={"values": [row]},
     ).execute()
 
+
+
+def _tc_buscar_fila_historial(analisis_id):
+    """Devuelve el número de fila de HistorialTerroCore para un AnalisisID."""
+    if not analisis_id:
+        return None
+
+    _, sheets_service = obtener_google_clients()
+    spreadsheet_id = _secret_text("GSHEET_ID")
+
+    ids = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range="HistorialTerroCore!A2:A",
+    ).execute().get("values", [])
+
+    for row_number, row in enumerate(ids, start=2):
+        if row and str(row[0]).strip() == str(analisis_id).strip():
+            return row_number
+
+    return None
+
+
+def _tc_actualizar_historial_base_appsheet(
+    analisis_id,
+    nombre_original="",
+    ruta_procesada=""
+):
+    """
+    Conserva las dos imágenes base que ya mostraba AppSheet:
+      W = ImagenOriginalAppSheet
+      X = ImagenProcesadaAppSheet
+    """
+    target_row = _tc_buscar_fila_historial(analisis_id)
+    if not target_row:
+        return False
+
+    _, sheets_service = obtener_google_clients()
+    spreadsheet_id = _secret_text("GSHEET_ID")
+
+    if nombre_original:
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"HistorialTerroCore!W{target_row}",
+            valueInputOption="RAW",
+            body={"values": [[f"Originales/{nombre_original}"]]},
+        ).execute()
+
+    if ruta_procesada:
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"HistorialTerroCore!X{target_row}",
+            valueInputOption="RAW",
+            body={"values": [[str(ruta_procesada)]]},
+        ).execute()
+
+    return True
+
+
+def _tc_actualizar_historial_imagen_appsheet(
+    analisis_id,
+    tipo,
+    ruta_relativa="",
+    file_id=""
+):
+    """
+    Estructura REAL de HistorialTerroCore:
+
+      F  = ImagenInventarioFileID
+      G  = ImagenAnalisisFileID
+      H  = ImagenPoligonosFileID
+
+      W  = ImagenOriginalAppSheet
+      X  = ImagenProcesadaAppSheet
+      Y  = ImagenInventarioAppSheet
+      Z  = ImagenPoligonosAppSheet
+      AA = Parcelas
+      AB = ImagenAnalisisAppSheet
+
+    Esta función NO toca W/X para evitar borrar Original y Procesada.
+    """
+    target_row = _tc_buscar_fila_historial(analisis_id)
+    if not target_row:
+        return False
+
+    _, sheets_service = obtener_google_clients()
+    spreadsheet_id = _secret_text("GSHEET_ID")
+
+    tipo_norm = str(tipo or "").strip().lower()
+
+    if tipo_norm == "inventario":
+        col_ruta = "Y"
+        col_id = "F"
+    elif tipo_norm in ("poligonos", "polígonos"):
+        col_ruta = "Z"
+        col_id = "H"
+    elif tipo_norm in ("lineas", "líneas", "salud", "analisis", "análisis"):
+        col_ruta = "AB"
+        col_id = "G"
+    else:
+        return False
+
+    if ruta_relativa:
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"HistorialTerroCore!{col_ruta}{target_row}",
+            valueInputOption="RAW",
+            body={"values": [[str(ruta_relativa)]]},
+        ).execute()
+
+    if file_id:
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"HistorialTerroCore!{col_id}{target_row}",
+            valueInputOption="RAW",
+            body={"values": [[str(file_id)]]},
+        ).execute()
+
+    return True
 
 def _tc_safe_slug(value):
     value = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value or "Parcela").strip())
@@ -8844,6 +9112,39 @@ def _tc_guardar_analisis_estructurado(uploaded_image, tipo_analisis, processed_i
             "recomendaciones": registro["recomendaciones"],
             "nota_diagnostico": registro["nota_diagnostico"],
         })
+
+        # Mantener siempre visibles Original y Procesada en AppSheet.
+        ruta_procesada_appsheet = ""
+        if processed_file_id:
+            ruta_procesada_appsheet = (
+                f"Procesadas/{slug}_{analisis_id}_{tipo_analisis.lower()}_procesada.png"
+            )
+        elif inventory_file_id:
+            ruta_procesada_appsheet = (
+                f"Inventarios/{slug}_{analisis_id}_inventario.png"
+            )
+
+        _tc_actualizar_historial_base_appsheet(
+            analisis_id,
+            original_name,
+            ruta_procesada_appsheet
+        )
+
+        if inventory_file_id:
+            _tc_actualizar_historial_imagen_appsheet(
+                analisis_id,
+                "inventario",
+                f"Inventarios/{slug}_{analisis_id}_inventario.png",
+                inventory_file_id
+            )
+
+        if processed_file_id and tipo_analisis.lower() == "salud":
+            _tc_actualizar_historial_imagen_appsheet(
+                analisis_id,
+                "analisis",
+                f"Procesadas/{slug}_{analisis_id}_{tipo_analisis.lower()}_procesada.png",
+                processed_file_id
+            )
     except Exception:
         pass
 
@@ -8876,7 +9177,7 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
 
 
 # ============================================================
-# DIAGNÓSTICO 2 - POLÍGONOS DE ZONAS SECAS CON OPENCV
+# REGIONES CRÍTICAS - POLÍGONOS PARA SEGUIMIENTO CON OPENCV
 # ============================================================
 
 def _tc_mascara_parcela_desde_surcos(width, height):
@@ -9368,6 +9669,13 @@ def _tc_guardar_lineas_salud_evidencia(uploaded_image, result):
         "OpenCV + Polígonos"
     )
 
+    _tc_actualizar_historial_imagen_appsheet(
+        analisis_id,
+        "analisis",
+        f"LineasSalud/{name}",
+        file_id
+    )
+
     return True, file_id
 
 
@@ -9441,6 +9749,13 @@ def _tc_guardar_poligonos_google(uploaded_image, zones, annotated):
         file_id,
         "image/png",
         "OpenCV"
+    )
+
+    _tc_actualizar_historial_imagen_appsheet(
+        analisis_id,
+        "poligonos",
+        f"Poligonos/{nombre_img}",
+        file_id
     )
 
     for zone in zones:
@@ -9635,13 +9950,13 @@ st.markdown(
 st.markdown(
     f"""
     <div class="tc-flow-wrap">
-      <div class="tc-flow-step active">{tr('① Captura', '① Capture')}</div>
-      <div class="tc-flow-step {'active' if st.session_state.tc_captura_confirmada else ''}">{tr('② Inventario', '② Inventaire')}</div>
-      <div class="tc-flow-step {'active' if st.session_state.tc_inventario_procesado else ''}">{tr('③ Validación', '③ Validation')}</div>
-      <div class="tc-flow-step {'active' if st.session_state.tc_inventario_confirmado else 'locked'}">{tr('④ Diagnóstico 1', '④ Diagnostic 1')}</div>
-      <div class="tc-flow-step {'active' if st.session_state.get('tc_salud_procesada', False) else 'locked'}">{tr('⑤ Polígonos', '⑤ Polygones')}</div>
-      <div class="tc-flow-step {'active' if st.session_state.get('tc_poligonos_procesados', False) else 'locked'}">{tr('⑥ Líneas', '⑥ Lignes')}</div>
-      <div class="tc-flow-step {'active' if st.session_state.get('tc_lineas_visibles', False) else 'locked'}">{tr('⑦ Historial', '⑦ Historique')}</div>
+      <div class="tc-flow-step active">{tr('① Captura Base', '① Capture de base')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.tc_captura_confirmada else ''}">{tr('② Inventario visual', '② Inventaire visuel')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.tc_inventario_procesado else ''}">{tr('③ Validación QR', '③ Validation QR')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.get('tc_poligonos_procesados', False) else ''}">{tr('④ Regiones críticas', '④ Régions critiques')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.get('tc_segundo_vuelo_guardado', False) else 'locked'}">{tr('⑤ Segundo vuelo', '⑤ Deuxième vol')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.get('tc_nivel2_resultado') else 'locked'}">{tr('⑥ Análisis nivel 2', '⑥ Analyse niveau 2')}</div>
+      <div class="tc-flow-step {'active' if st.session_state.get('tc_lineas_visibles', False) else ''}">{tr('⑦ Historial', '⑦ Historique')}</div>
     </div>
     """,
     unsafe_allow_html=True
@@ -9698,8 +10013,8 @@ with side_col:
 
         uploaded_images = st.file_uploader(
             tr(
-                "Selecciona una o varias fotografías de la misma parcela",
-                "Sélectionnez une ou plusieurs photos de la même parcelle"
+                "Selecciona una, dos, tres o las fotografías necesarias para cubrir completamente la parcela",
+                "Sélectionnez le nombre de photos nécessaire pour couvrir complètement la parcelle"
             ),
             type=["jpg", "jpeg", "png"],
             accept_multiple_files=True,
@@ -9713,6 +10028,20 @@ with side_col:
             ),
             key="tc_misma_parcela"
         )
+
+        altura_captura = st.number_input(
+            tr("Altura del vuelo base (m) — opcional", "Hauteur du vol de base (m) — optionnel"),
+            min_value=0.0,
+            max_value=200.0,
+            value=float(st.session_state.get("tc_altura_captura_m", 0.0) or 0.0),
+            step=1.0,
+            help=tr(
+                "Durante las pruebas captura a distintas alturas y conserva la más alta que todavía permita distinguir surcos, continuidad, plantas y vacíos.",
+                "Pendant les essais, comparez plusieurs hauteurs et conservez la plus élevée qui permette encore de distinguer les rangs et les vides."
+            ),
+            key="tc_altura_captura_input"
+        )
+        st.session_state.tc_altura_captura_m = float(altura_captura or 0.0)
 
         if uploaded_images:
             st.caption(
@@ -9731,6 +10060,18 @@ with side_col:
         )
 
         if crear_captura:
+            try:
+                master_bytes, master_name, master_method, master_error = _tc_crear_imagen_maestra(uploaded_images)
+                st.session_state.tc_captura_maestra_bytes = master_bytes
+                st.session_state.tc_captura_maestra_nombre = master_name
+                st.session_state.tc_captura_maestra_metodo = master_method
+                st.session_state.tc_captura_maestra_error = master_error
+            except Exception as master_exc:
+                st.session_state.tc_captura_maestra_bytes = None
+                st.session_state.tc_captura_maestra_nombre = ""
+                st.session_state.tc_captura_maestra_metodo = ""
+                st.session_state.tc_captura_maestra_error = str(master_exc)
+
             st.session_state.tc_captura_confirmada = True
             st.session_state.tc_inventario_procesado = False
             st.session_state.tc_inventario_confirmado = False
@@ -9747,7 +10088,7 @@ with side_col:
             st.session_state.tc_inventario_historial_id = ""
             st.success(
                 tr(
-                    "✅ Captura base creada. Ya puedes analizar Inventario.",
+                    "✅ Captura Base creada. Esta misma referencia alimentará Inventario visual y Regiones críticas de forma independiente.",
                     "✅ Capture de base créée. Vous pouvez maintenant analyser l’inventaire."
                 )
             )
@@ -9782,12 +10123,23 @@ with main_col:
         st.subheader(tr("Captura Base de la Parcela", "Capture de base de la parcelle"))
         st.caption(
             tr(
-                "Esta captura será la referencia para Inventario y, después de confirmarlo, para Salud.",
-                "Cette capture servira de référence pour l’inventaire puis, après validation, pour la santé."
+                "La Captura Base es la referencia común para dos vertientes independientes: Inventario visual y Regiones críticas.",
+                "La capture de base est la référence commune de deux branches indépendantes : Inventaire visuel et Régions critiques."
             )
         )
 
+        if st.session_state.get("tc_captura_maestra_bytes"):
+            st.markdown(tr("#### Imagen Maestra de Parcela", "#### Image maîtresse de la parcelle"))
+            st.image(
+                st.session_state.tc_captura_maestra_bytes,
+                caption=st.session_state.get("tc_captura_maestra_metodo", ""),
+                use_container_width=True
+            )
+            if st.session_state.get("tc_captura_maestra_error"):
+                st.warning(st.session_state.tc_captura_maestra_error)
+
         if uploaded_images:
+            st.markdown(tr("#### Fotografías fuente", "#### Photographies source"))
             preview_cols = st.columns(min(3, len(uploaded_images)))
             for idx, up in enumerate(uploaded_images):
                 try:
@@ -9846,8 +10198,11 @@ with main_col:
             )
 
             try:
+                captura_base_up = _tc_get_captura_base_upload(uploaded_images)
+                if captura_base_up is None:
+                    raise RuntimeError("No existe Captura Base disponible.")
                 best_up, inv, errores_inventario = _tc_select_best_capture_opencv(
-                    uploaded_images
+                    [captura_base_up]
                 )
                 progress.progress(
                     92,
@@ -10033,7 +10388,7 @@ with main_col:
             st.session_state.tc_inventario_confirmado = True
             st.success(
                 tr(
-                    "Inventario confirmado. Diagnóstico de Salud desbloqueado.",
+                    "Inventario confirmado. La validación por muestreo y la vertiente de Regiones críticas permanecen separadas.",
                     "Inventaire confirmé. Diagnostic de santé déverrouillé."
                 )
             )
@@ -10058,28 +10413,125 @@ with main_col:
                     ))
             st.rerun()
 
+
     # --------------------------------------------------------
-    # DIAGNÓSTICO 1 - SALUD GENERAL
+    # VALIDACIÓN POR MUESTREO CON QR
     # --------------------------------------------------------
     st.markdown("---")
-    st.subheader(tr("Diagnóstico 1 · Salud general", "Diagnostic 1 · Santé générale"))
+    st.subheader(tr("Validación por muestreo con QR", "Validation par échantillonnage avec QR"))
+    st.caption(tr(
+        "No es necesario contar toda la parcela manualmente. Selecciona tramos cortos y compara el conteo real contra el conteo de la app.",
+        "Il n’est pas nécessaire de compter toute la parcelle manuellement. Validez quelques segments courts."
+    ))
 
-    if not st.session_state.tc_inventario_confirmado:
+    if not st.session_state.tc_inventario_procesado:
+        st.info(tr(
+            "Primero ejecuta Inventario visual para habilitar la comparación.",
+            "Exécutez d’abord l’Inventaire visuel."
+        ))
+    else:
+        v1, v2, v3 = st.columns(3)
+        with v1:
+            tipo_zona_val = st.selectbox(
+                tr("Tipo de tramo", "Type de segment"),
+                ["Vegetación densa", "Vegetación media", "Varios vacíos", "Sombra / difícil"],
+                key="tc_val_tipo_zona"
+            )
+        with v2:
+            conteo_ia_val = st.number_input(
+                tr("Conteo IA del tramo", "Comptage IA du segment"),
+                min_value=0, step=1, key="tc_val_ia"
+            )
+        with v3:
+            conteo_real_val = st.number_input(
+                tr("Conteo real", "Comptage réel"),
+                min_value=0, step=1, key="tc_val_real"
+            )
+
+        q1, q2, q3 = st.columns(3)
+        with q1:
+            qr_inicio = st.text_input("QR inicio", key="tc_qr_inicio")
+        with q2:
+            qr_fin = st.text_input("QR fin", key="tc_qr_fin")
+        with q3:
+            surco_val = st.text_input(tr("Surco", "Rang"), key="tc_val_surco")
+
+        if st.button(
+            tr("➕ Agregar validación", "➕ Ajouter la validation"),
+            use_container_width=True,
+            key="tc_agregar_validacion"
+        ):
+            real = int(conteo_real_val or 0)
+            ia = int(conteo_ia_val or 0)
+            error_pct = (abs(ia - real) / real * 100.0) if real > 0 else None
+            st.session_state.tc_validaciones_muestreo.append({
+                "Surco": surco_val,
+                "TipoZona": tipo_zona_val,
+                "ConteoIA": ia,
+                "ConteoReal": real,
+                "ErrorPct": error_pct,
+                "QRInicio": qr_inicio,
+                "QRFin": qr_fin,
+            })
+
+            if historial_google_configurado():
+                try:
+                    import uuid
+                    from datetime import datetime, timezone
+                    parcela_id = _tc_asegurar_parcela(st.session_state.tc_parcela_nombre)
+                    _tc_append_row("ValidacionMuestreo", [
+                        "VAL-" + uuid.uuid4().hex[:12].upper(),
+                        st.session_state.get("tc_inventario_historial_id", ""),
+                        parcela_id,
+                        surco_val,
+                        tipo_zona_val,
+                        ia,
+                        real,
+                        "" if error_pct is None else round(error_pct, 3),
+                        qr_inicio,
+                        qr_fin,
+                        datetime.now(timezone.utc).isoformat(),
+                        "",
+                    ])
+                except Exception:
+                    pass
+            st.rerun()
+
+        if st.session_state.tc_validaciones_muestreo:
+            df_val = pd.DataFrame(st.session_state.tc_validaciones_muestreo)
+            st.dataframe(df_val, use_container_width=True, hide_index=True)
+            valid_errors = [
+                float(r["ErrorPct"]) for r in st.session_state.tc_validaciones_muestreo
+                if r.get("ErrorPct") is not None
+            ]
+            if valid_errors:
+                st.metric(
+                    tr("Error medio de conteo", "Erreur moyenne de comptage"),
+                    f"{float(np.mean(valid_errors)):.1f}%"
+                )
+
+    # --------------------------------------------------------
+    # VERTIENTE 2 - ESTADO VISUAL GENERAL (SIN DIAGNÓSTICO CAUSAL)
+    # --------------------------------------------------------
+    st.markdown("---")
+    st.subheader(tr("Vertiente 2 · Estado visual de la parcela", "Branche 2 · État visuel de la parcelle"))
+
+    if not st.session_state.tc_captura_confirmada:
         st.info(
             tr(
-                "🔒 El diagnóstico está bloqueado. Primero confirma el Inventario.",
-                "🔒 Le diagnostic est verrouillé. Confirmez d’abord l’inventaire."
+                "🔒 Primero crea la Captura Base de la Parcela.",
+                "🔒 Créez d’abord la Capture de base de la parcelle."
             )
         )
     else:
         if not st.session_state.tc_salud_procesada:
             st.info(tr(
-                "✅ Inventario confirmado. El primer diagnóstico calcula el estado general de la vegetación sin mostrar todavía las líneas.",
+                "Esta vertiente es independiente del Inventario. Solo identifica diferencias visuales de cobertura, color y continuidad; no asigna todavía una causa agronómica.",
                 "✅ Inventaire confirmé. Le premier diagnostic calcule l’état général sans afficher encore les lignes."
             ))
 
             analizar_salud = st.button(
-                tr("🩺 Ejecutar Diagnóstico 1", "🩺 Exécuter le Diagnostic 1"),
+                tr("🛰️ Analizar estado visual", "🛰️ Analyser l’état visuel"),
                 type="primary",
                 use_container_width=True,
                 disabled=not uploaded_images,
@@ -10097,11 +10549,9 @@ with main_col:
                 )
 
                 try:
-                    fuente = st.session_state.tc_inventario_fuente or ""
-                    uploaded_image = next(
-                        (u for u in uploaded_images if u.name == fuente),
-                        uploaded_images[0]
-                    )
+                    uploaded_image = _tc_get_captura_base_upload(uploaded_images)
+                    if uploaded_image is None:
+                        raise RuntimeError("No existe Captura Base disponible.")
 
                     backend_result = _tc_analyze_health_opencv(uploaded_image)
 
@@ -10194,12 +10644,12 @@ with main_col:
 
                 diagnostico = str(item.get("diagnostico_visual", "") or "").strip()
                 if diagnostico:
-                    st.markdown(tr("**Diagnóstico visual**", "**Diagnostic visuel**"))
+                    st.markdown(tr("**Descripción visual preliminar**", "**Description visuelle préliminaire**"))
                     st.write(tr_diag_texto(diagnostico))
 
                 recomendaciones = item.get("recomendaciones_iniciales", []) or []
                 if recomendaciones:
-                    st.markdown(tr("**Recomendaciones iniciales**", "**Recommandations initiales**"))
+                    st.markdown(tr("**Siguiente inspección sugerida**", "**Inspection suivante suggérée**"))
                     for rec in recomendaciones:
                         st.markdown(f"- {tr_diag_texto(rec)}")
 
@@ -10208,33 +10658,31 @@ with main_col:
     # --------------------------------------------------------
     st.markdown("---")
     st.subheader(tr(
-        "Diagnóstico 2 · Polígonos de zonas secas",
-        "Diagnostic 2 · Polygones des zones sèches"
+        "Regiones críticas · Polígonos para seguimiento",
+        "Régions critiques · Polygones de suivi"
     ))
     st.caption(tr(
-        "OpenCV busca tierra expuesta y vegetación débil/seca sobre la imagen original y dibuja contornos azules, sin relleno.",
+        "OpenCV localiza regiones que se comportan visualmente distinto por cobertura, densidad o continuidad. El polígono indica dónde investigar; todavía no asigna una causa.",
         "OpenCV recherche le sol exposé et la végétation faible/sèche sur l’image originale et dessine des contours bleus."
     ))
 
-    if not st.session_state.tc_salud_procesada:
+    if not st.session_state.tc_captura_confirmada:
         st.info(tr(
-            "🔒 Primero ejecuta el Diagnóstico 1.",
-            "🔒 Exécutez d’abord le Diagnostic 1."
+            "🔒 Primero crea la Captura Base.",
+            "🔒 Créez d’abord la Capture de base."
         ))
     else:
         if not st.session_state.tc_poligonos_procesados:
             if st.button(
-                tr("🗺️ Generar polígonos de zonas secas", "🗺️ Générer les polygones des zones sèches"),
+                tr("🗺️ Detectar regiones críticas", "🗺️ Détecter les régions critiques"),
                 type="primary",
                 use_container_width=True,
                 key="tc_generar_poligonos_secos"
             ):
                 try:
-                    fuente = st.session_state.tc_inventario_fuente or ""
-                    uploaded_image = next(
-                        (u for u in uploaded_images if u.name == fuente),
-                        uploaded_images[0]
-                    )
+                    uploaded_image = _tc_get_captura_base_upload(uploaded_images)
+                    if uploaded_image is None:
+                        raise RuntimeError("No existe Captura Base disponible.")
 
                     zones, poly_img, dry_mask = _tc_detectar_zonas_secas_opencv(
                         uploaded_image
@@ -10285,7 +10733,7 @@ with main_col:
                 area_total = sum(float(z.get("area_visual_pct", 0.0) or 0.0) for z in zones)
                 m1, m2, m3 = st.columns(3)
                 m1.metric(tr("Zonas detectadas", "Zones détectées"), len(zones))
-                m2.metric(tr("Área visual seca", "Surface visuelle sèche"), f"{area_total:.1f}%")
+                m2.metric(tr("Área visual diferente", "Surface visuellement différente"), f"{area_total:.1f}%")
                 m3.metric(
                     tr("Surcos involucrados", "Rangs concernés"),
                     len(set(x for z in zones for x in z.get("surcos_relacionados", [])))
@@ -10324,16 +10772,181 @@ with main_col:
                     "Aucune zone sèche suffisamment grande n’a été détectée."
                 ))
 
+
+    # --------------------------------------------------------
+    # ETAPA 2 - SEGUNDO VUELO SOBRE REGIONES
+    # --------------------------------------------------------
+    st.markdown("---")
+    st.subheader(tr("Etapa 2 · Segundo vuelo sobre regiones", "Étape 2 · Deuxième vol sur les régions"))
+    st.caption(tr(
+        "Para cada polígono: cenital a 6 m, oblicuas −70°, −50° y −40° desde ambos lados y acercamiento 3–2 m únicamente cuando sea seguro.",
+        "Pour chaque polygone : vue zénithale à 6 m, vues obliques −70°, −50° et −40°, puis approche à 3–2 m si la sécurité le permet."
+    ))
+
+    if not st.session_state.tc_poligonos_procesados or not (st.session_state.tc_poligonos or []):
+        st.info(tr(
+            "Primero detecta al menos una Región crítica.",
+            "Détectez d’abord au moins une région critique."
+        ))
+    else:
+        zone_names = [z.get("nombre", f"Zona {i+1}") for i, z in enumerate(st.session_state.tc_poligonos)]
+        region_sel = st.selectbox(
+            tr("Región para seguimiento", "Région à suivre"),
+            zone_names,
+            key="tc_region_segundo_vuelo"
+        )
+
+        sv1, sv2, sv3 = st.columns(3)
+        with sv1:
+            altura_sv = st.number_input(
+                tr("Altura principal (m)", "Hauteur principale (m)"),
+                min_value=2.0, max_value=30.0, value=6.0, step=1.0,
+                key="tc_sv_altura"
+            )
+        with sv2:
+            angulo_sv = st.selectbox(
+                tr("Ángulo de cámara", "Angle caméra"),
+                ["−90° cenital", "−70° ligera oblicua", "−50° oblicua media", "−40° lateral"],
+                key="tc_sv_angulo"
+            )
+        with sv3:
+            recorrido_sv = st.selectbox(
+                tr("Recorrido", "Parcours"),
+                [
+                    "Longitudinal lado A",
+                    "Longitudinal lado B",
+                    "Frente",
+                    "Posterior",
+                    "Cenital final"
+                ],
+                key="tc_sv_recorrido"
+            )
+
+        evidencias_sv = st.file_uploader(
+            tr(
+                "Carga fotografías o video del segundo vuelo",
+                "Chargez les photos ou vidéos du deuxième vol"
+            ),
+            type=["jpg", "jpeg", "png", "mp4", "mov"],
+            accept_multiple_files=True,
+            key="tc_sv_evidencias"
+        )
+
+        if st.button(
+            tr("💾 Guardar segundo vuelo", "💾 Enregistrer le deuxième vol"),
+            use_container_width=True,
+            key="tc_guardar_segundo_vuelo"
+        ):
+            try:
+                import uuid
+                from datetime import datetime, timezone
+                parcela_id = _tc_asegurar_parcela(st.session_state.tc_parcela_nombre)
+                vuelo_id = "VUE-" + uuid.uuid4().hex[:12].upper()
+                fecha_now = datetime.now(timezone.utc).isoformat()
+
+                _tc_append_row("Vuelos", [
+                    vuelo_id,
+                    parcela_id,
+                    region_sel,
+                    "Seguimiento",
+                    fecha_now,
+                    float(altura_sv),
+                    angulo_sv,
+                    recorrido_sv,
+                    "",
+                    "Realizado" if evidencias_sv else "Programado",
+                    "",
+                ])
+
+                for ev in evidencias_sv or []:
+                    mime = ev.type or "application/octet-stream"
+                    file_id = subir_bytes_google_drive(
+                        ev.getvalue(),
+                        ev.name,
+                        mime,
+                        "Seguimiento"
+                    )
+                    _tc_append_row("EvidenciasSeguimiento", [
+                        "EVI-" + uuid.uuid4().hex[:12].upper(),
+                        vuelo_id,
+                        region_sel,
+                        parcela_id,
+                        "Video" if "video" in mime else "Fotografía",
+                        float(altura_sv),
+                        angulo_sv,
+                        ev.name,
+                        file_id,
+                        fecha_now,
+                        recorrido_sv,
+                    ])
+
+                st.session_state.tc_segundo_vuelo_guardado = True
+                st.success(tr(
+                    "✅ Segundo vuelo guardado y relacionado con la región.",
+                    "✅ Deuxième vol enregistré et lié à la région."
+                ))
+            except Exception as exc:
+                st.warning(str(exc))
+
+    # --------------------------------------------------------
+    # ETAPA 3 - ANÁLISIS VISUAL DE SEGUNDO NIVEL
+    # --------------------------------------------------------
+    st.markdown("---")
+    st.subheader(tr("Etapa 3 · Análisis visual de segundo nivel", "Étape 3 · Analyse visuelle de deuxième niveau"))
+    st.caption(tr(
+        "Este nivel utiliza el contexto de la región y las evidencias cercanas. Sigue siendo visual: no confirma por sí solo una causa de suelo, riego, nutrición o enfermedad.",
+        "Ce niveau reste visuel et ne confirme pas à lui seul une cause agronomique."
+    ))
+
+    if not st.session_state.tc_segundo_vuelo_guardado:
+        st.info(tr(
+            "Primero registra el segundo vuelo de una región.",
+            "Enregistrez d’abord le deuxième vol d’une région."
+        ))
+    else:
+        st.markdown(tr(
+            """
+            **La revisión de segundo nivel debe considerar:**
+            - cobertura irregular;
+            - diferencias de color;
+            - pérdida de continuidad;
+            - sectores secos;
+            - fallas de riego visibles;
+            - daño localizado;
+            - plagas o enfermedades visibles;
+            - condición observable del suelo;
+            - necesidad de revisión agronómica.
+            """,
+            """
+            **L’analyse de niveau 2 considère :** couverture, couleur, continuité, zones sèches,
+            irrigation visible, dommages localisés, symptômes visibles, sol et besoin d’une révision agronomique.
+            """
+        ))
+
+        if st.button(
+            tr("🔬 Preparar análisis de segundo nivel", "🔬 Préparer l’analyse de niveau 2"),
+            use_container_width=True,
+            key="tc_preparar_nivel2"
+        ):
+            st.session_state.tc_nivel2_resultado = {
+                "estado": "Preparado",
+                "nota": (
+                    "Revisión visual de segundo nivel preparada. "
+                    "La causa debe confirmarse con campo, humedad, raíces, hojas, riego, suelo o laboratorio cuando corresponda."
+                )
+            }
+            st.success(st.session_state.tc_nivel2_resultado["nota"])
+
     # --------------------------------------------------------
     # DIAGNÓSTICO 3 - LÍNEAS DE SALUD (AL FINAL)
     # --------------------------------------------------------
     st.markdown("---")
     st.subheader(tr(
-        "Diagnóstico 3 · Líneas de Salud",
+        "Vista final · Líneas sobre surcos",
         "Diagnostic 3 · Lignes de santé"
     ))
     st.caption(tr(
-        "Esta es la última vista: usa las líneas verde/rojo por surco para mostrar tramos vigorosos y afectados.",
+        "Vista de apoyo: las líneas usan los surcos confirmados y resaltan tramos que intersectan regiones críticas. No sustituye el análisis de segundo nivel.",
         "Dernière vue : lignes vertes/rouges par rang pour montrer les sections vigoureuses et affectées."
     ))
 
