@@ -5423,6 +5423,9 @@ _estado_nuevo = {
     "tc_validaciones_muestreo": [],
     "tc_segundo_vuelo_guardado": False,
     "tc_nivel2_resultado": None,
+    "tc_inventarios_multiples": [],
+    "tc_salud_multiples": [],
+    "tc_poligonos_multiples": [],
 }
 
 for _k, _v in _estado_nuevo.items():
@@ -5451,6 +5454,9 @@ def _tc_reiniciar_parcela():
     st.session_state.tc_poligonos_guardados = False
     st.session_state.tc_lineas_visibles = False
     st.session_state.tc_salud_historial_id = ""
+    st.session_state.tc_inventarios_multiples = []
+    st.session_state.tc_salud_multiples = []
+    st.session_state.tc_poligonos_multiples = []
     st.session_state.tc_captura_maestra_bytes = None
     st.session_state.tc_captura_maestra_nombre = ""
     st.session_state.tc_captura_maestra_metodo = ""
@@ -5556,6 +5562,35 @@ def _tc_crear_imagen_maestra(uploaded_images):
         "La app usará temporalmente la captura individual de mayor resolución. "
         "Para una Imagen Maestra real, las fotografías deben tener suficiente traslape."
     )
+
+
+def _tc_fuentes_para_analisis(uploaded_images):
+    """
+    Regla V12:
+    - 1 imagen: procesa esa imagen.
+    - Varias imágenes: procesa TODAS por separado.
+    La Imagen Maestra se conserva como referencia, pero no sustituye
+    el análisis individual de cada fotografía.
+    """
+    return list(uploaded_images or [])
+
+
+def _tc_find_multi(items, name):
+    for item in items or []:
+        if str(item.get("name", "")) == str(name):
+            return item
+    return None
+
+
+def _tc_image_rgb_for_streamlit(img):
+    if img is None:
+        return None
+    if isinstance(img, Image.Image):
+        return img
+    arr = np.asarray(img)
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        return cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+    return arr
 
 
 def _tc_get_captura_base_upload(uploaded_images):
@@ -10198,12 +10233,43 @@ with main_col:
             )
 
             try:
-                captura_base_up = _tc_get_captura_base_upload(uploaded_images)
-                if captura_base_up is None:
-                    raise RuntimeError("No existe Captura Base disponible.")
-                best_up, inv, errores_inventario = _tc_select_best_capture_opencv(
-                    [captura_base_up]
-                )
+                fuentes_inv = _tc_fuentes_para_analisis(uploaded_images)
+                if not fuentes_inv:
+                    raise RuntimeError("No existen fotografías para Inventario.")
+
+                resultados_inv_multi = []
+                errores_inventario = []
+
+                for i_fuente, fuente_up in enumerate(fuentes_inv, 1):
+                    progress.progress(
+                        min(88, 8 + int(75 * i_fuente / max(1, len(fuentes_inv)))),
+                        text=tr(
+                            f"OpenCV analiza Inventario {i_fuente}/{len(fuentes_inv)}: {fuente_up.name}",
+                            f"OpenCV analyse l’inventaire {i_fuente}/{len(fuentes_inv)} : {fuente_up.name}"
+                        )
+                    )
+                    try:
+                        _, inv_i, _ = _tc_select_best_capture_opencv([fuente_up])
+                        resultados_inv_multi.append({
+                            "name": fuente_up.name,
+                            "table": inv_i["table"],
+                            "image": inv_i["image"],
+                            "confidence": float(inv_i.get("confidence", 0.0)),
+                            "tracks": inv_i.get("tracks", []),
+                            "model": inv_i.get("model", "OpenCV local"),
+                            "debug": inv_i.get("debug", {}),
+                            "warnings": inv_i.get("warnings", []),
+                        })
+                    except Exception as exc_i:
+                        errores_inventario.append(f"{fuente_up.name}: {exc_i}")
+
+                if not resultados_inv_multi:
+                    raise RuntimeError("OpenCV no pudo terminar ninguna de las fotografías.")
+
+                # Mantener compatibilidad con el resto de la app usando la primera
+                # fotografía válida como estado primario.
+                principal = resultados_inv_multi[0]
+
                 progress.progress(
                     92,
                     text=tr(
@@ -10212,17 +10278,18 @@ with main_col:
                     )
                 )
 
+                st.session_state.tc_inventarios_multiples = resultados_inv_multi
                 st.session_state.tc_resultados_base = []
                 st.session_state.tc_salud_procesada = False
                 st.session_state.tc_inventario_confirmado = False
-                st.session_state.tc_tabla_inventario = inv["table"]
-                st.session_state.tc_inventario_imagen = inv["image"]
-                st.session_state.tc_inventario_fuente = best_up.name
-                st.session_state.tc_inventario_confianza = float(inv.get("confidence", 0.0))
-                st.session_state.tc_inventario_rows_ai = inv.get("tracks", [])
-                st.session_state.tc_inventario_modelo = inv.get("model", "OpenCV local")
-                st.session_state.tc_inventario_debug = inv.get("debug", {})
-                st.session_state.tc_inventario_warnings = inv.get("warnings", [])
+                st.session_state.tc_tabla_inventario = principal["table"]
+                st.session_state.tc_inventario_imagen = principal["image"]
+                st.session_state.tc_inventario_fuente = principal["name"]
+                st.session_state.tc_inventario_confianza = principal["confidence"]
+                st.session_state.tc_inventario_rows_ai = principal["tracks"]
+                st.session_state.tc_inventario_modelo = principal["model"]
+                st.session_state.tc_inventario_debug = principal["debug"]
+                st.session_state.tc_inventario_warnings = principal["warnings"]
                 st.session_state.tc_inventario_procesado = True
 
                 progress.progress(100, text=tr("Inventario terminado.", "Inventaire terminé."))
@@ -10303,7 +10370,7 @@ with main_col:
                 st.markdown(
                     tr(
                         "**Inventario limpio:** los números 01…N aparecen únicamente arriba de cada surco. No se muestran números abajo. Los slots se calculan en la tabla, pero no se dibujan sobre la fotografía.",
-                        "**Inventaire épuré :** les numéros 01…N apparaissent uniquement en haut et en bas de chaque rang. Les emplacements sont calculés dans le tableau sans être dessinés sur la photo."
+                        "**Inventaire épuré :** les numéros 01…N apparaissent uniquement en haut de chaque rang. Les emplacements sont calculés dans le tableau sans être dessinés sur la photo."
                     ),
                     unsafe_allow_html=True
                 )
@@ -10321,6 +10388,38 @@ with main_col:
                 "Les images vert/rouge du diagnostic ne sont pas affichées dans l’inventaire. Elles ne sont disponibles qu’après confirmation de cette étape."
             )
         )
+
+
+        inventarios_multi_ui = st.session_state.get("tc_inventarios_multiples", []) or []
+        if len(inventarios_multi_ui) > 1:
+            st.markdown(tr(
+                "#### Inventario por cada fotografía",
+                "#### Inventaire par photographie"
+            ))
+            st.caption(tr(
+                f"Se procesaron {len(inventarios_multi_ui)} fotografías. Cada imagen conserva su propio Inventario.",
+                f"{len(inventarios_multi_ui)} photographies ont été traitées."
+            ))
+            for idx_inv, inv_item in enumerate(inventarios_multi_ui, 1):
+                with st.expander(
+                    f"{idx_inv}. {inv_item.get('name','')}",
+                    expanded=(idx_inv == 1)
+                ):
+                    inv_img_i = inv_item.get("image")
+                    if inv_img_i is not None:
+                        st.image(
+                            _tc_image_rgb_for_streamlit(inv_img_i),
+                            use_container_width=True
+                        )
+                    tabla_i = inv_item.get("table")
+                    if isinstance(tabla_i, pd.DataFrame):
+                        slots_i, ocup_i, vac_i, _ = _tc_metricas_tabla(tabla_i.copy())
+                        mm1, mm2, mm3, mm4 = st.columns(4)
+                        mm1.metric("Surcos", len(tabla_i))
+                        mm2.metric("Slots", slots_i)
+                        mm3.metric("Ocupados", ocup_i)
+                        mm4.metric("Vacíos", vac_i)
+
 
         st.markdown(tr("#### Tabla automática por surco", "#### Tableau automatique par rang"))
         st.caption(tr(
@@ -10549,11 +10648,81 @@ with main_col:
                 )
 
                 try:
-                    uploaded_image = _tc_get_captura_base_upload(uploaded_images)
-                    if uploaded_image is None:
-                        raise RuntimeError("No existe Captura Base disponible.")
+                    fuentes_salud = _tc_fuentes_para_analisis(uploaded_images)
+                    if not fuentes_salud:
+                        raise RuntimeError("No existen fotografías para analizar.")
 
-                    backend_result = _tc_analyze_health_opencv(uploaded_image)
+                    resultados_salud = []
+                    for i_salud, uploaded_image in enumerate(fuentes_salud, 1):
+                        progress_salud.progress(
+                            min(88, 8 + int(75 * i_salud / max(1, len(fuentes_salud)))),
+                            text=tr(
+                                f"Analizando estado visual {i_salud}/{len(fuentes_salud)}: {uploaded_image.name}",
+                                f"Analyse visuelle {i_salud}/{len(fuentes_salud)} : {uploaded_image.name}"
+                            )
+                        )
+
+                        # Restaurar los tracks de Inventario correspondientes a esta foto.
+                        inv_match = _tc_find_multi(
+                            st.session_state.get("tc_inventarios_multiples", []),
+                            uploaded_image.name
+                        )
+                        if inv_match:
+                            st.session_state.tc_inventario_rows_ai = inv_match.get("tracks", [])
+                            st.session_state.tc_tabla_inventario = inv_match.get("table")
+                            st.session_state.tc_inventario_imagen = inv_match.get("image")
+
+                        backend_result = _tc_analyze_health_opencv(uploaded_image)
+
+                        historial_google_ok = False
+                        historial_google_info = ""
+                        try:
+                            historial_google_ok, historial_google_info = guardar_analisis_en_google(
+                                uploaded_image,
+                                backend_result
+                            )
+                        except Exception as historial_exc:
+                            historial_google_info = str(historial_exc)
+
+                        resultados_salud.append({
+                            "id": f"{i_salud}_{uploaded_image.name}",
+                            "name": uploaded_image.name,
+                            "count": int(backend_result.get("count", 0)),
+                            "green_pct": float(backend_result.get("green_pct", 0.0)),
+                            "red_pct": float(backend_result.get("red_pct", 0.0)),
+                            "green_slots": int(backend_result.get("green_slots", 0) or 0),
+                            "red_slots": int(backend_result.get("red_slots", 0) or 0),
+                            "total_slots": int(backend_result.get("total_slots", 0) or 0),
+                            "angle": float(backend_result.get("angle", 0.0)),
+                            "annotated": backend_result.get("annotated"),
+                            "ia_scene": backend_result.get("backend"),
+                            "result_url": backend_result.get("result_url"),
+                            "historial_google_guardado": historial_google_ok,
+                            "historial_google_info": historial_google_info,
+                            "analisis_id": (
+                                historial_google_info.get("analisis_id", "")
+                                if isinstance(historial_google_info, dict) else ""
+                            ),
+                            "zona_mas_afectada": backend_result.get("zona_mas_afectada", "No determinada"),
+                            "nivel_afectacion_visual": backend_result.get("nivel_afectacion_visual", "No determinado"),
+                            "diagnostico_visual": backend_result.get("diagnostico_visual", ""),
+                            "causas_probables": backend_result.get("causas_probables", []),
+                            "explicacion_nutrientes": backend_result.get("explicacion_nutrientes", ""),
+                            "recomendaciones_iniciales": backend_result.get("recomendaciones_iniciales", []),
+                            "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
+                            "detalle_zonas": backend_result.get("detalle_zonas", {}),
+                            "metodo": backend_result.get("metodo", "opencv-local"),
+                            "confidence": backend_result.get("confidence", 0.0),
+                        })
+
+                    if not resultados_salud:
+                        raise RuntimeError("No se generó ningún análisis visual.")
+
+                    ultimo_info = resultados_salud[0].get("historial_google_info")
+                    if isinstance(ultimo_info, dict):
+                        st.session_state.tc_salud_historial_id = str(
+                            ultimo_info.get("analisis_id", "") or ultimo_info.get("id", "")
+                        )
 
                     progress_salud.progress(
                         90,
@@ -10563,48 +10732,7 @@ with main_col:
                         )
                     )
 
-                    historial_google_ok = False
-                    historial_google_info = ""
-                    try:
-                        historial_google_ok, historial_google_info = guardar_analisis_en_google(
-                            uploaded_image,
-                            backend_result
-                        )
-                        if historial_google_ok and isinstance(historial_google_info, dict):
-                            st.session_state.tc_salud_historial_id = str(
-                                historial_google_info.get("analisis_id", "")
-                                or historial_google_info.get("id", "")
-                            )
-                    except Exception as historial_exc:
-                        historial_google_info = str(historial_exc)
-
-                    resultados_salud.append({
-                        "id": f"1_{uploaded_image.name}",
-                        "name": uploaded_image.name,
-                        "count": int(backend_result.get("count", 0)),
-                        "green_pct": float(backend_result.get("green_pct", 0.0)),
-                        "red_pct": float(backend_result.get("red_pct", 0.0)),
-                        "green_slots": int(backend_result.get("green_slots", 0) or 0),
-                        "red_slots": int(backend_result.get("red_slots", 0) or 0),
-                        "total_slots": int(backend_result.get("total_slots", 0) or 0),
-                        "angle": float(backend_result.get("angle", 0.0)),
-                        "annotated": backend_result.get("annotated"),
-                        "ia_scene": backend_result.get("backend"),
-                        "result_url": backend_result.get("result_url"),
-                        "historial_google_guardado": historial_google_ok,
-                        "historial_google_info": historial_google_info,
-                        "zona_mas_afectada": backend_result.get("zona_mas_afectada", "No determinada"),
-                        "nivel_afectacion_visual": backend_result.get("nivel_afectacion_visual", "No determinado"),
-                        "diagnostico_visual": backend_result.get("diagnostico_visual", ""),
-                        "causas_probables": backend_result.get("causas_probables", []),
-                        "explicacion_nutrientes": backend_result.get("explicacion_nutrientes", ""),
-                        "recomendaciones_iniciales": backend_result.get("recomendaciones_iniciales", []),
-                        "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
-                        "detalle_zonas": backend_result.get("detalle_zonas", {}),
-                        "metodo": backend_result.get("metodo", "opencv-local"),
-                        "confidence": backend_result.get("confidence", 0.0),
-                    })
-
+                    st.session_state.tc_salud_multiples = resultados_salud
                     st.session_state.tc_resultados_base = resultados_salud
                     st.session_state.tc_salud_procesada = True
                     st.session_state.tc_poligonos_procesados = False
@@ -10627,6 +10755,26 @@ with main_col:
         if st.session_state.tc_salud_procesada:
             resultados = st.session_state.tc_resultados_base or []
             if resultados:
+                if len(resultados) > 1:
+                    st.markdown(tr(
+                        "#### Análisis por cada fotografía",
+                        "#### Analyse par photographie"
+                    ))
+                    for idx_sal, item_sal in enumerate(resultados, 1):
+                        with st.expander(
+                            f"{idx_sal}. {item_sal.get('name','')}",
+                            expanded=(idx_sal == 1)
+                        ):
+                            sc1, sc2, sc3 = st.columns(3)
+                            sc1.metric("Verde", f"{float(item_sal.get('green_pct',0.0)):.1f}%")
+                            sc2.metric("Afectación", f"{float(item_sal.get('red_pct',0.0)):.1f}%")
+                            sc3.metric("Zona", tr_diag_texto(item_sal.get("zona_mas_afectada","—")))
+                            if item_sal.get("annotated") is not None:
+                                st.image(
+                                    _tc_image_rgb_for_streamlit(item_sal.get("annotated")),
+                                    use_container_width=True
+                                )
+
                 item = resultados[0]
                 c1, c2, c3 = st.columns(3)
                 c1.metric(
@@ -10680,29 +10828,67 @@ with main_col:
                 key="tc_generar_poligonos_secos"
             ):
                 try:
-                    uploaded_image = _tc_get_captura_base_upload(uploaded_images)
-                    if uploaded_image is None:
-                        raise RuntimeError("No existe Captura Base disponible.")
+                    fuentes_poly = _tc_fuentes_para_analisis(uploaded_images)
+                    if not fuentes_poly:
+                        raise RuntimeError("No existen fotografías para polígonos.")
 
-                    zones, poly_img, dry_mask = _tc_detectar_zonas_secas_opencv(
-                        uploaded_image
-                    )
+                    poly_multi = []
 
-                    st.session_state.tc_poligonos = zones
-                    st.session_state.tc_poligonos_imagen = poly_img
+                    for i_poly, uploaded_image in enumerate(fuentes_poly, 1):
+                        # Usar el Inventario correspondiente a la misma foto.
+                        inv_match = _tc_find_multi(
+                            st.session_state.get("tc_inventarios_multiples", []),
+                            uploaded_image.name
+                        )
+                        if inv_match:
+                            st.session_state.tc_inventario_rows_ai = inv_match.get("tracks", [])
+                            st.session_state.tc_tabla_inventario = inv_match.get("table")
+                            st.session_state.tc_inventario_imagen = inv_match.get("image")
+
+                        zones_i, poly_img_i, dry_mask_i = _tc_detectar_zonas_secas_opencv(
+                            uploaded_image
+                        )
+
+                        # Enlazar el polígono al AnalisisID de la MISMA foto.
+                        sal_match = _tc_find_multi(
+                            st.session_state.get("tc_salud_multiples", []),
+                            uploaded_image.name
+                        )
+                        if sal_match and sal_match.get("analisis_id"):
+                            st.session_state.tc_salud_historial_id = sal_match.get("analisis_id")
+
+                        guardado_i = False
+                        info_i = {}
+                        if zones_i and historial_google_configurado():
+                            try:
+                                ok_poly, info_poly = _tc_guardar_poligonos_google(
+                                    uploaded_image,
+                                    zones_i,
+                                    poly_img_i
+                                )
+                                guardado_i = bool(ok_poly)
+                                info_i = info_poly if isinstance(info_poly, dict) else {}
+                            except Exception:
+                                pass
+
+                        poly_multi.append({
+                            "name": uploaded_image.name,
+                            "zones": zones_i,
+                            "image": poly_img_i,
+                            "mask": dry_mask_i,
+                            "guardado": guardado_i,
+                            "info": info_i,
+                        })
+
+                    if not poly_multi:
+                        raise RuntimeError("No se pudieron generar polígonos.")
+
+                    principal_poly = poly_multi[0]
+                    st.session_state.tc_poligonos_multiples = poly_multi
+                    st.session_state.tc_poligonos = principal_poly["zones"]
+                    st.session_state.tc_poligonos_imagen = principal_poly["image"]
                     st.session_state.tc_poligonos_procesados = True
-                    st.session_state.tc_poligonos_guardados = False
-
-                    if zones and historial_google_configurado():
-                        try:
-                            ok_poly, info_poly = _tc_guardar_poligonos_google(
-                                uploaded_image,
-                                zones,
-                                poly_img
-                            )
-                            st.session_state.tc_poligonos_guardados = bool(ok_poly)
-                        except Exception:
-                            pass
+                    st.session_state.tc_poligonos_guardados = bool(principal_poly["guardado"])
 
                     st.rerun()
 
@@ -10715,6 +10901,26 @@ with main_col:
         if st.session_state.tc_poligonos_procesados:
             zones = st.session_state.tc_poligonos or []
             poly_img = st.session_state.tc_poligonos_imagen
+
+            polys_multi_ui = st.session_state.get("tc_poligonos_multiples", []) or []
+            if len(polys_multi_ui) > 1:
+                st.markdown(tr(
+                    "#### Polígonos por cada fotografía",
+                    "#### Polygones par photographie"
+                ))
+                for idx_p, p_item in enumerate(polys_multi_ui, 1):
+                    with st.expander(
+                        f"{idx_p}. {p_item.get('name','')}",
+                        expanded=(idx_p == 1)
+                    ):
+                        if p_item.get("image") is not None:
+                            st.image(
+                                _tc_image_rgb_for_streamlit(p_item.get("image")),
+                                use_container_width=True
+                            )
+                        st.caption(
+                            f"Zonas detectadas: {len(p_item.get('zones', []) or [])}"
+                        )
 
             if poly_img is not None:
                 st.markdown(tr(
@@ -11049,6 +11255,76 @@ with main_col:
                 ))
 
 
+
+# ============================================================
+# RESUMEN VISUAL FINAL - ORIGINAL + 3 PROCESADAS
+# ============================================================
+st.markdown("---")
+st.subheader(tr(
+    "Resumen final · 4 imágenes por fotografía",
+    "Résumé final · 4 images par photographie"
+))
+st.caption(tr(
+    "Para cada fotografía cargada se muestran: Original, Inventario, Análisis visual y Polígonos.",
+    "Pour chaque photographie : Originale, Inventaire, Analyse visuelle et Polygones."
+))
+
+if uploaded_images:
+    inv_multi_final = st.session_state.get("tc_inventarios_multiples", []) or []
+    sal_multi_final = st.session_state.get("tc_salud_multiples", []) or st.session_state.get("tc_resultados_base", []) or []
+    pol_multi_final = st.session_state.get("tc_poligonos_multiples", []) or []
+
+    for idx_final, up_final in enumerate(uploaded_images, 1):
+        inv_f = _tc_find_multi(inv_multi_final, up_final.name)
+        sal_f = _tc_find_multi(sal_multi_final, up_final.name)
+        pol_f = _tc_find_multi(pol_multi_final, up_final.name)
+
+        with st.container(border=True):
+            st.markdown(f"### {idx_final}. {up_final.name}")
+
+            c_orig, c_inv, c_ana, c_pol = st.columns(4)
+
+            with c_orig:
+                st.caption(tr("1. Original", "1. Originale"))
+                try:
+                    st.image(
+                        Image.open(io.BytesIO(up_final.getvalue())).convert("RGB"),
+                        use_container_width=True
+                    )
+                except Exception:
+                    st.info("—")
+
+            with c_inv:
+                st.caption(tr("2. Inventario", "2. Inventaire"))
+                if inv_f and inv_f.get("image") is not None:
+                    st.image(
+                        _tc_image_rgb_for_streamlit(inv_f.get("image")),
+                        use_container_width=True
+                    )
+                else:
+                    st.info(tr("Pendiente", "En attente"))
+
+            with c_ana:
+                st.caption(tr("3. Análisis", "3. Analyse"))
+                if sal_f and sal_f.get("annotated") is not None:
+                    st.image(
+                        _tc_image_rgb_for_streamlit(sal_f.get("annotated")),
+                        use_container_width=True
+                    )
+                else:
+                    st.info(tr("Pendiente", "En attente"))
+
+            with c_pol:
+                st.caption(tr("4. Polígonos", "4. Polygones"))
+                if pol_f and pol_f.get("image") is not None:
+                    st.image(
+                        _tc_image_rgb_for_streamlit(pol_f.get("image")),
+                        use_container_width=True
+                    )
+                else:
+                    st.info(tr("Pendiente", "En attente"))
+
+
 # ============================================================
 # HISTORIAL TERRACORE - GOOGLE SHEETS + GOOGLE DRIVE
 # ============================================================
@@ -11164,23 +11440,24 @@ else:
                         )
 
                         polygon_file_id = ""
-                        lineas_file_id = ""
+                        analisis_file_id = registro.get("imagen_procesada_file_id", "")
 
                         for ev in evidencias_extra:
                             tipo_ev = str(ev.get("tipo", "") or "").lower()
                             if "polígono" in tipo_ev or "poligono" in tipo_ev:
                                 polygon_file_id = ev.get("file_id", "") or polygon_file_id
-                            if "líneas de salud final" in tipo_ev or "lineas de salud final" in tipo_ev:
-                                lineas_file_id = ev.get("file_id", "") or lineas_file_id
+                            if (
+                                "salud procesado" in tipo_ev
+                                or "análisis procesado" in tipo_ev
+                                or "analisis procesado" in tipo_ev
+                            ):
+                                analisis_file_id = ev.get("file_id", "") or analisis_file_id
 
                         ids_img = [
-                            (tr("Original", "Originale"), registro.get("imagen_original_file_id", "")),
-                            (tr("Inventario procesado", "Inventaire traité"), registro.get("imagen_inventario_file_id", "")),
-                            (tr("Polígonos zonas secas", "Polygones zones sèches"), polygon_file_id),
-                            (
-                                tr("Líneas de Salud", "Lignes de santé"),
-                                lineas_file_id or registro.get("imagen_procesada_file_id", "")
-                            ),
+                            (tr("1. Original", "1. Originale"), registro.get("imagen_original_file_id", "")),
+                            (tr("2. Inventario", "2. Inventaire"), registro.get("imagen_inventario_file_id", "")),
+                            (tr("3. Análisis", "3. Analyse"), analisis_file_id),
+                            (tr("4. Polígonos", "4. Polygones"), polygon_file_id),
                         ]
                         disponibles = [(t, fid) for t, fid in ids_img if fid]
                         if disponibles:
