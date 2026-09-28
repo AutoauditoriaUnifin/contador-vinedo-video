@@ -5409,6 +5409,12 @@ _estado_nuevo = {
     "tc_salud_procesada": False,
     "tc_inventario_historial_guardado": False,
     "tc_inventario_historial_id": "",
+    "tc_poligonos_procesados": False,
+    "tc_poligonos": [],
+    "tc_poligonos_imagen": None,
+    "tc_poligonos_guardados": False,
+    "tc_lineas_visibles": False,
+    "tc_salud_historial_id": "",
 }
 
 for _k, _v in _estado_nuevo.items():
@@ -5431,6 +5437,12 @@ def _tc_reiniciar_parcela():
     st.session_state.tc_salud_procesada = False
     st.session_state.tc_inventario_historial_guardado = False
     st.session_state.tc_inventario_historial_id = ""
+    st.session_state.tc_poligonos_procesados = False
+    st.session_state.tc_poligonos = []
+    st.session_state.tc_poligonos_imagen = None
+    st.session_state.tc_poligonos_guardados = False
+    st.session_state.tc_lineas_visibles = False
+    st.session_state.tc_salud_historial_id = ""
 
 
 # ============================================================
@@ -8862,6 +8874,334 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
     )
 
 
+
+# ============================================================
+# DIAGNÓSTICO 2 - POLÍGONOS DE ZONAS SECAS CON OPENCV
+# ============================================================
+
+def _tc_mascara_parcela_desde_surcos(width, height):
+    """Crea una máscara aproximada de la parcela usando la geometría confirmada de Inventario."""
+    rows = st.session_state.get("tc_inventario_rows_ai", []) or []
+    pts_all = []
+    for row in rows:
+        pts = row.get("points", None)
+        if pts is None or len(pts) < 2:
+            pts_norm = row.get("points_norm", []) or []
+            pts = []
+            for p in pts_norm:
+                if isinstance(p, (list, tuple)) and len(p) >= 2:
+                    x = float(p[0]) / 1000.0 * max(1, width - 1)
+                    y = float(p[1]) / 1000.0 * max(1, height - 1)
+                    pts.append([x, y])
+        pts = np.asarray(pts, dtype=np.float32)
+        if len(pts) >= 2:
+            pts_all.append(pts)
+
+    mask = np.zeros((height, width), dtype=np.uint8)
+    if pts_all:
+        all_pts = np.vstack(pts_all)
+        hull = cv2.convexHull(np.rint(all_pts).astype(np.int32))
+        cv2.fillConvexPoly(mask, hull, 255)
+
+        # margen para incluir extremos/cabeceras del viñedo
+        k = max(9, int(round(min(width, height) * 0.025)))
+        if k % 2 == 0:
+            k += 1
+        k = min(k, 61)
+        mask = cv2.dilate(
+            mask,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)),
+            iterations=1
+        )
+    else:
+        # Respaldo: excluir solo una franja pequeña del borde.
+        mask[:] = 255
+        margin = max(2, int(min(width, height) * 0.015))
+        mask[:margin, :] = 0
+        mask[-margin:, :] = 0
+        mask[:, :margin] = 0
+        mask[:, -margin:] = 0
+
+    return mask
+
+
+def _tc_detectar_zonas_secas_opencv(uploaded_image):
+    """
+    Detecta regiones con:
+      - vegetación local baja,
+      - suelo marrón/tierra visible,
+      - continuidad espacial.
+    Devuelve polígonos azules SIN relleno, como la referencia del usuario.
+    """
+    pil = Image.open(io.BytesIO(uploaded_image.getvalue())).convert("RGB")
+    rgb = np.asarray(pil)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    h, w = bgr.shape[:2]
+
+    # Vegetación verde ya usada por TerraCore.
+    green = mascara_verde(bgr).astype(np.uint8)
+
+    # Densidad local de vegetación.
+    sigma = max(4.0, min(h, w) * 0.012)
+    green_density = cv2.GaussianBlur(
+        green.astype(np.float32),
+        (0, 0),
+        sigmaX=sigma,
+        sigmaY=sigma
+    )
+
+    # Suelo/tierra visible: tonos marrón-beige y baja dominancia verde.
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    hh, ss, vv = cv2.split(hsv)
+
+    rgbf = rgb.astype(np.float32)
+    r = rgbf[:, :, 0]
+    g = rgbf[:, :, 1]
+    b = rgbf[:, :, 2]
+
+    soil = (
+        (hh >= 4) & (hh <= 38) &
+        (ss >= 18) & (ss <= 210) &
+        (vv >= 35) & (vv <= 245) &
+        (r >= g * 0.90) &
+        (g >= b * 0.78)
+    ).astype(np.uint8)
+
+    soil_density = cv2.GaussianBlur(
+        soil.astype(np.float32),
+        (0, 0),
+        sigmaX=sigma * 0.85,
+        sigmaY=sigma * 0.85
+    )
+
+    # Zonas secas: poca vegetación + bastante tierra visible.
+    dry_score = (
+        np.clip(1.0 - green_density, 0.0, 1.0) * 0.62
+        + np.clip(soil_density, 0.0, 1.0) * 0.38
+    )
+
+    parcela_mask = _tc_mascara_parcela_desde_surcos(w, h)
+
+    candidate = (
+        (dry_score >= 0.58) &
+        (green_density <= 0.38) &
+        (soil_density >= 0.23) &
+        (parcela_mask > 0)
+    ).astype(np.uint8) * 255
+
+    # Agrupar franjas secas cercanas en manchas/polígonos más amplios.
+    close_k = max(9, int(round(min(w, h) * 0.020)))
+    if close_k % 2 == 0:
+        close_k += 1
+    close_k = min(close_k, 55)
+
+    candidate = cv2.morphologyEx(
+        candidate,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_k, close_k)),
+        iterations=2
+    )
+
+    open_k = max(3, int(round(min(w, h) * 0.006)))
+    if open_k % 2 == 0:
+        open_k += 1
+    open_k = min(open_k, 19)
+
+    candidate = cv2.morphologyEx(
+        candidate,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_k, open_k)),
+        iterations=1
+    )
+
+    contours, _ = cv2.findContours(
+        candidate,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    img_area = float(max(1, w * h))
+    min_area = img_area * 0.0010
+    max_area = img_area * 0.40
+
+    zones = []
+    for cnt in contours:
+        area = float(cv2.contourArea(cnt))
+        if area < min_area or area > max_area:
+            continue
+
+        peri = float(cv2.arcLength(cnt, True))
+        eps = max(2.0, peri * 0.010)
+        poly = cv2.approxPolyDP(cnt, eps, True)
+        if len(poly) < 3:
+            continue
+
+        x, y, bw, bh = cv2.boundingRect(poly)
+        area_pct = 100.0 * area / img_area
+
+        # Evita manchas casi cuadradas diminutas que suelen ser ruido.
+        if bw < w * 0.018 or bh < h * 0.018:
+            continue
+
+        pts_norm = []
+        for px, py in poly.reshape(-1, 2):
+            pts_norm.append([
+                int(round(float(px) / max(1, w - 1) * 1000)),
+                int(round(float(py) / max(1, h - 1) * 1000))
+            ])
+
+        # Relacionar con surcos por intersección/proximidad.
+        related = []
+        rows = st.session_state.get("tc_inventario_rows_ai", []) or []
+        for idx, row in enumerate(rows, 1):
+            pts = row.get("points", None)
+            if pts is None or len(pts) < 2:
+                pts_norm_row = row.get("points_norm", []) or []
+                pts = np.array([
+                    [
+                        float(p[0]) / 1000.0 * max(1, w - 1),
+                        float(p[1]) / 1000.0 * max(1, h - 1)
+                    ]
+                    for p in pts_norm_row
+                    if isinstance(p, (list, tuple)) and len(p) >= 2
+                ], dtype=np.float32)
+            else:
+                pts = np.asarray(pts, dtype=np.float32)
+
+            if len(pts) < 2:
+                continue
+
+            hit = False
+            for px, py in pts[::max(1, len(pts)//30)]:
+                dist = cv2.pointPolygonTest(poly, (float(px), float(py)), True)
+                if dist >= -max(5.0, min(w, h) * 0.006):
+                    hit = True
+                    break
+            if hit:
+                related.append(idx)
+
+        if area_pct >= 4.0:
+            nivel = "Alto"
+        elif area_pct >= 1.5:
+            nivel = "Medio"
+        else:
+            nivel = "Bajo"
+
+        zones.append({
+            "_poly_px": poly,
+            "area_visual_pct": area_pct,
+            "nivel": nivel,
+            "surcos_relacionados": related,
+            "poligono_normalizado_0_1000": pts_norm,
+            "bbox": [int(x), int(y), int(bw), int(bh)],
+        })
+
+    # Orden de arriba a abajo e izquierda a derecha.
+    zones.sort(key=lambda z: (z["bbox"][1], z["bbox"][0]))
+
+    # Mantener las zonas principales para evitar exceso de manchas pequeñas.
+    zones = sorted(zones, key=lambda z: z["area_visual_pct"], reverse=True)[:12]
+    zones.sort(key=lambda z: (z["bbox"][1], z["bbox"][0]))
+
+    annotated = bgr.copy()
+    for i, zone in enumerate(zones, 1):
+        zone["nombre"] = f"Zona {chr(64+i) if i <= 26 else i}"
+        poly = zone["_poly_px"]
+
+        # Azul brillante BGR, sin relleno.
+        cv2.polylines(
+            annotated,
+            [poly],
+            True,
+            (255, 150, 0),
+            max(3, int(round(min(w, h) / 300))),
+            cv2.LINE_AA
+        )
+
+    # quitar objetos privados antes de guardar en session/sheets
+    clean_zones = []
+    for z in zones:
+        z2 = {k:v for k,v in z.items() if not k.startswith("_")}
+        clean_zones.append(z2)
+
+    return clean_zones, annotated, candidate
+
+
+def _tc_guardar_poligonos_google(uploaded_image, zones, annotated):
+    """Guarda polígonos en ZonasDanadas y la imagen azul en Drive/Evidencias."""
+    if not historial_google_configurado():
+        return False, "Historial Google no configurado."
+    if not zones:
+        return False, "No hay polígonos para guardar."
+
+    import uuid
+    from datetime import datetime, timezone
+
+    _tc_asegurar_modelo_sheets()
+    parcela_nombre = str(st.session_state.get("tc_parcela_nombre", "") or "Sin nombre")
+    parcela_id = _tc_asegurar_parcela(parcela_nombre)
+    analisis_id = (
+        str(st.session_state.get("tc_salud_historial_id", "") or "")
+        or str(st.session_state.get("tc_inventario_historial_id", "") or "")
+        or "AN-POL-" + uuid.uuid4().hex[:12].upper()
+    )
+    fecha = datetime.now(timezone.utc).isoformat()
+
+    img_bytes = _tc_image_to_png_bytes(annotated)
+    nombre_img = (
+        f"{_tc_safe_slug(parcela_nombre)}_"
+        f"{analisis_id}_poligonos_zonas_secas.png"
+    )
+    file_id = subir_bytes_google_drive(
+        img_bytes,
+        nombre_img,
+        "image/png",
+        "Poligonos"
+    )
+
+    _tc_guardar_evidencia(
+        analisis_id,
+        parcela_id,
+        "Polígonos zonas secas",
+        nombre_img,
+        file_id,
+        "image/png",
+        "OpenCV"
+    )
+
+    for zone in zones:
+        zona_id = "ZD-" + uuid.uuid4().hex[:14].upper()
+        poly_json = json.dumps({
+            "sistema": "imagen_normalizada_0_1000",
+            "puntos": zone.get("poligono_normalizado_0_1000", []),
+            "area_visual_pct": round(float(zone.get("area_visual_pct", 0.0)), 4)
+        }, ensure_ascii=False, separators=(",", ":"))
+
+        _tc_append_row("ZonasDanadas", [
+            zona_id,
+            analisis_id,
+            parcela_id,
+            zone.get("nombre", ""),
+            poly_json,
+            "",
+            zone.get("nivel", ""),
+            ",".join(str(x) for x in zone.get("surcos_relacionados", [])),
+            "Detectada",
+            fecha,
+        ])
+
+    return True, {"analisis_id": analisis_id, "imagen_file_id": file_id}
+
+
+def _tc_poligonos_json(zones):
+    payload = {
+        "parcela": str(st.session_state.get("tc_parcela_nombre", "") or ""),
+        "sistema_coordenadas": "imagen_normalizada_0_1000",
+        "zonas": zones,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+
 def obtener_historial_terrocore(limite=300):
     """Lee la pestaña Analisis y devuelve registros estructurados."""
     _tc_asegurar_modelo_sheets()
@@ -9443,30 +9783,27 @@ with main_col:
             st.rerun()
 
     # --------------------------------------------------------
-    # SALUD - OCULTA HASTA CONFIRMAR INVENTARIO
+    # DIAGNÓSTICO 1 - SALUD GENERAL
     # --------------------------------------------------------
     st.markdown("---")
-    st.subheader(tr("Diagnóstico de Salud", "Diagnostic de santé"))
+    st.subheader(tr("Diagnóstico 1 · Salud general", "Diagnostic 1 · Santé générale"))
 
     if not st.session_state.tc_inventario_confirmado:
         st.info(
             tr(
-                "🔒 Salud está bloqueada. Primero confirma el Inventario.",
-                "🔒 Santé est verrouillée. Confirmez d’abord l’inventaire."
+                "🔒 El diagnóstico está bloqueado. Primero confirma el Inventario.",
+                "🔒 Le diagnostic est verrouillé. Confirmez d’abord l’inventaire."
             )
         )
     else:
-        # Salud se ejecuta como una etapa completamente independiente.
         if not st.session_state.tc_salud_procesada:
-            st.info(
-                tr(
-                    "✅ Inventario confirmado. Ya puedes ejecutar el diagnóstico de Salud sobre la misma captura base.",
-                    "✅ Inventaire confirmé. Vous pouvez maintenant exécuter le diagnostic de santé sur la même capture de base."
-                )
-            )
+            st.info(tr(
+                "✅ Inventario confirmado. El primer diagnóstico calcula el estado general de la vegetación sin mostrar todavía las líneas.",
+                "✅ Inventaire confirmé. Le premier diagnostic calcule l’état général sans afficher encore les lignes."
+            ))
 
             analizar_salud = st.button(
-                tr("🩺 Analizar Salud", "🩺 Analyser la santé"),
+                tr("🩺 Ejecutar Diagnóstico 1", "🩺 Exécuter le Diagnostic 1"),
                 type="primary",
                 use_container_width=True,
                 disabled=not uploaded_images,
@@ -9478,8 +9815,8 @@ with main_col:
                 progress_salud = st.progress(
                     5,
                     text=tr(
-                        "OpenCV está analizando la vegetación y los tramos afectados...",
-                        "OpenCV analyse la végétation et les sections affectées..."
+                        "OpenCV está analizando vegetación y afectación...",
+                        "OpenCV analyse la végétation et l’affectation..."
                     )
                 )
 
@@ -9489,14 +9826,14 @@ with main_col:
                         (u for u in uploaded_images if u.name == fuente),
                         uploaded_images[0]
                     )
-                    backend_result = _tc_analyze_health_opencv(
-                        uploaded_image
-                    )
+
+                    backend_result = _tc_analyze_health_opencv(uploaded_image)
+
                     progress_salud.progress(
                         90,
                         text=tr(
-                            "Guardando resultado y preparando diagnóstico...",
-                            "Enregistrement du résultat et préparation du diagnostic..."
+                            "Preparando diagnóstico general...",
+                            "Préparation du diagnostic général..."
                         )
                     )
 
@@ -9507,6 +9844,11 @@ with main_col:
                             uploaded_image,
                             backend_result
                         )
+                        if historial_google_ok and isinstance(historial_google_info, dict):
+                            st.session_state.tc_salud_historial_id = str(
+                                historial_google_info.get("analisis_id", "")
+                                or historial_google_info.get("id", "")
+                            )
                     except Exception as historial_exc:
                         historial_google_info = str(historial_exc)
 
@@ -9539,22 +9881,204 @@ with main_col:
 
                     st.session_state.tc_resultados_base = resultados_salud
                     st.session_state.tc_salud_procesada = True
-                    progress_salud.progress(100, text=tr("Salud terminada.", "Santé terminée."))
+                    st.session_state.tc_poligonos_procesados = False
+                    st.session_state.tc_lineas_visibles = False
+
+                    progress_salud.progress(
+                        100,
+                        text=tr("Diagnóstico 1 terminado.", "Diagnostic 1 terminé.")
+                    )
                     st.rerun()
 
                 except Exception as exc:
-                    st.error(
-                        tr(
-                            f"No se pudo analizar Salud con OpenCV: {exc}",
-                            f"Impossible d’analyser la santé avec OpenCV : {exc}"
-                        )
-                    )
+                    st.error(tr(
+                        f"No se pudo ejecutar el Diagnóstico 1: {exc}",
+                        f"Impossible d’exécuter le Diagnostic 1 : {exc}"
+                    ))
 
         if st.session_state.tc_salud_procesada:
             resultados = st.session_state.tc_resultados_base or []
+            if resultados:
+                item = resultados[0]
+                c1, c2, c3 = st.columns(3)
+                c1.metric(
+                    tr("Vegetación verde", "Végétation verte"),
+                    f"{float(item.get('green_pct',0.0)):.1f}%"
+                )
+                c2.metric(
+                    tr("Afectación", "Affectation"),
+                    f"{float(item.get('red_pct',0.0)):.1f}%"
+                )
+                c3.metric(
+                    tr("Zona más afectada", "Zone la plus touchée"),
+                    tr_diag_texto(item.get("zona_mas_afectada", "—"))
+                )
 
+                diagnostico = str(item.get("diagnostico_visual", "") or "").strip()
+                if diagnostico:
+                    st.markdown(tr("**Diagnóstico visual**", "**Diagnostic visuel**"))
+                    st.write(tr_diag_texto(diagnostico))
+
+                recomendaciones = item.get("recomendaciones_iniciales", []) or []
+                if recomendaciones:
+                    st.markdown(tr("**Recomendaciones iniciales**", "**Recommandations initiales**"))
+                    for rec in recomendaciones:
+                        st.markdown(f"- {tr_diag_texto(rec)}")
+
+    # --------------------------------------------------------
+    # DIAGNÓSTICO 2 - POLÍGONOS DE ZONAS SECAS
+    # --------------------------------------------------------
+    st.markdown("---")
+    st.subheader(tr(
+        "Diagnóstico 2 · Polígonos de zonas secas",
+        "Diagnostic 2 · Polygones des zones sèches"
+    ))
+    st.caption(tr(
+        "OpenCV busca tierra expuesta y vegetación débil/seca sobre la imagen original y dibuja contornos azules, sin relleno.",
+        "OpenCV recherche le sol exposé et la végétation faible/sèche sur l’image originale et dessine des contours bleus."
+    ))
+
+    if not st.session_state.tc_salud_procesada:
+        st.info(tr(
+            "🔒 Primero ejecuta el Diagnóstico 1.",
+            "🔒 Exécutez d’abord le Diagnostic 1."
+        ))
+    else:
+        if not st.session_state.tc_poligonos_procesados:
+            if st.button(
+                tr("🗺️ Generar polígonos de zonas secas", "🗺️ Générer les polygones des zones sèches"),
+                type="primary",
+                use_container_width=True,
+                key="tc_generar_poligonos_secos"
+            ):
+                try:
+                    fuente = st.session_state.tc_inventario_fuente or ""
+                    uploaded_image = next(
+                        (u for u in uploaded_images if u.name == fuente),
+                        uploaded_images[0]
+                    )
+
+                    zones, poly_img, dry_mask = _tc_detectar_zonas_secas_opencv(
+                        uploaded_image
+                    )
+
+                    st.session_state.tc_poligonos = zones
+                    st.session_state.tc_poligonos_imagen = poly_img
+                    st.session_state.tc_poligonos_procesados = True
+                    st.session_state.tc_poligonos_guardados = False
+
+                    if zones and historial_google_configurado():
+                        try:
+                            ok_poly, info_poly = _tc_guardar_poligonos_google(
+                                uploaded_image,
+                                zones,
+                                poly_img
+                            )
+                            st.session_state.tc_poligonos_guardados = bool(ok_poly)
+                        except Exception:
+                            pass
+
+                    st.rerun()
+
+                except Exception as exc:
+                    st.error(tr(
+                        f"No se pudieron generar los polígonos: {exc}",
+                        f"Impossible de générer les polygones : {exc}"
+                    ))
+
+        if st.session_state.tc_poligonos_procesados:
+            zones = st.session_state.tc_poligonos or []
+            poly_img = st.session_state.tc_poligonos_imagen
+
+            if poly_img is not None:
+                st.markdown(tr(
+                    "#### Imagen con polígonos azules",
+                    "#### Image avec polygones bleus"
+                ))
+                if isinstance(poly_img, Image.Image):
+                    st.image(poly_img, use_container_width=True)
+                else:
+                    st.image(
+                        cv2.cvtColor(np.asarray(poly_img), cv2.COLOR_BGR2RGB),
+                        use_container_width=True
+                    )
+
+            if zones:
+                area_total = sum(float(z.get("area_visual_pct", 0.0) or 0.0) for z in zones)
+                m1, m2, m3 = st.columns(3)
+                m1.metric(tr("Zonas detectadas", "Zones détectées"), len(zones))
+                m2.metric(tr("Área visual seca", "Surface visuelle sèche"), f"{area_total:.1f}%")
+                m3.metric(
+                    tr("Surcos involucrados", "Rangs concernés"),
+                    len(set(x for z in zones for x in z.get("surcos_relacionados", [])))
+                )
+
+                table_poly = pd.DataFrame([
+                    {
+                        tr("Zona", "Zone"): z.get("nombre", ""),
+                        tr("Nivel", "Niveau"): z.get("nivel", ""),
+                        tr("Área visual %", "Surface visuelle %"): round(float(z.get("area_visual_pct", 0.0)), 2),
+                        tr("Surcos", "Rangs"): ", ".join(
+                            f"{int(x):02d}" for x in z.get("surcos_relacionados", [])
+                        ) or "—"
+                    }
+                    for z in zones
+                ])
+                st.dataframe(table_poly, use_container_width=True, hide_index=True)
+
+                if st.session_state.tc_poligonos_guardados:
+                    st.success(tr(
+                        "✅ Polígonos guardados en Google Sheets y Google Drive.",
+                        "✅ Polygones enregistrés dans Google Sheets et Google Drive."
+                    ))
+
+                st.download_button(
+                    tr("⬇️ Descargar polígonos JSON", "⬇️ Télécharger les polygones JSON"),
+                    data=_tc_poligonos_json(zones),
+                    file_name=f"{_tc_safe_slug(st.session_state.get('tc_parcela_nombre','Parcela'))}_poligonos_zonas_secas.json",
+                    mime="application/json",
+                    use_container_width=True,
+                    key="tc_descargar_poligonos_secos_json"
+                )
+            else:
+                st.warning(tr(
+                    "No se detectaron zonas secas suficientemente grandes con los parámetros actuales.",
+                    "Aucune zone sèche suffisamment grande n’a été détectée."
+                ))
+
+    # --------------------------------------------------------
+    # DIAGNÓSTICO 3 - LÍNEAS DE SALUD (AL FINAL)
+    # --------------------------------------------------------
+    st.markdown("---")
+    st.subheader(tr(
+        "Diagnóstico 3 · Líneas de Salud",
+        "Diagnostic 3 · Lignes de santé"
+    ))
+    st.caption(tr(
+        "Esta es la última vista: usa las líneas verde/rojo por surco para mostrar tramos vigorosos y afectados.",
+        "Dernière vue : lignes vertes/rouges par rang pour montrer les sections vigoureuses et affectées."
+    ))
+
+    if not st.session_state.tc_poligonos_procesados:
+        st.info(tr(
+            "🔒 Primero termina el Diagnóstico 2 de Polígonos.",
+            "🔒 Terminez d’abord le Diagnostic 2 des polygones."
+        ))
+    else:
+        if not st.session_state.tc_lineas_visibles:
+            if st.button(
+                tr("📏 Mostrar diagnóstico por líneas", "📏 Afficher le diagnostic par lignes"),
+                type="primary",
+                use_container_width=True,
+                key="tc_mostrar_lineas_final"
+            ):
+                st.session_state.tc_lineas_visibles = True
+                st.rerun()
+
+        if st.session_state.tc_lineas_visibles:
+            resultados = st.session_state.tc_resultados_base or []
             if not resultados:
-                st.info(tr("No hay resultados para mostrar.", "Aucun résultat à afficher."))
+                st.info(tr("No hay resultados de Salud.", "Aucun résultat de santé."))
             else:
                 green_vals = [float(i.get("green_pct", 0.0) or 0.0) for i in resultados]
                 red_vals = [float(i.get("red_pct", 0.0) or 0.0) for i in resultados]
@@ -9562,10 +10086,8 @@ with main_col:
                 red_pct = float(np.mean(red_vals)) if red_vals else 0.0
 
                 s1, s2 = st.columns(2)
-                with s1:
-                    st.metric(tr("Vegetación verde", "Végétation verte"), f"{green_pct:.1f}%")
-                with s2:
-                    st.metric(tr("Afectación roja", "Affectation rouge"), f"{red_pct:.1f}%")
+                s1.metric(tr("Vegetación verde", "Végétation verte"), f"{green_pct:.1f}%")
+                s2.metric(tr("Afectación roja", "Affectation rouge"), f"{red_pct:.1f}%")
 
                 for idx, item in enumerate(resultados):
                     with st.container(border=True):
@@ -9583,8 +10105,12 @@ with main_col:
                                 )
                             except Exception:
                                 pass
+
                         with c_proc:
-                            st.caption(tr("Imagen procesada — Salud", "Image traitée — Santé"))
+                            st.caption(tr(
+                                "Imagen procesada — Líneas de Salud",
+                                "Image traitée — Lignes de santé"
+                            ))
                             annotated = item.get("annotated")
                             if annotated is not None:
                                 if isinstance(annotated, Image.Image):
@@ -9595,38 +10121,14 @@ with main_col:
                                         use_container_width=True
                                     )
 
-                        d1, d2, d3 = st.columns(3)
-                        with d1:
-                            st.metric(tr("Verde", "Vert"), f"{float(item.get('green_pct',0.0)):.1f}%")
-                        with d2:
-                            st.metric(tr("Rojo", "Rouge"), f"{float(item.get('red_pct',0.0)):.1f}%")
-                        with d3:
-                            st.metric(
-                                tr("Zona más afectada", "Zone la plus touchée"),
-                                tr_diag_texto(item.get("zona_mas_afectada", "—"))
-                            )
-
                         total_slots_item = int(item.get("total_slots", 0) or 0)
                         green_slots_item = int(item.get("green_slots", 0) or 0)
                         red_slots_item = int(item.get("red_slots", 0) or 0)
                         if total_slots_item > 0:
-                            st.caption(
-                                tr(
-                                    f"Salud por slots: {green_slots_item} verdes + {red_slots_item} rojos = {total_slots_item} posiciones evaluadas.",
-                                    f"Santé par emplacements : {green_slots_item} verts + {red_slots_item} rouges = {total_slots_item} positions évaluées."
-                                )
-                            )
-
-                        diagnostico = str(item.get("diagnostico_visual", "") or "").strip()
-                        if diagnostico:
-                            st.markdown(tr("**Diagnóstico visual**", "**Diagnostic visuel**"))
-                            st.write(tr_diag_texto(diagnostico))
-
-                        recomendaciones = item.get("recomendaciones_iniciales", []) or []
-                        if recomendaciones:
-                            st.markdown(tr("**Recomendaciones iniciales**", "**Recommandations initiales**"))
-                            for rec in recomendaciones:
-                                st.markdown(f"- {tr_diag_texto(rec)}")
+                            st.caption(tr(
+                                f"Salud por slots: {green_slots_item} verdes + {red_slots_item} rojos = {total_slots_item} posiciones evaluadas.",
+                                f"Santé par emplacements : {green_slots_item} verts + {red_slots_item} rouges = {total_slots_item} positions évaluées."
+                            ))
 
 
 # ============================================================
