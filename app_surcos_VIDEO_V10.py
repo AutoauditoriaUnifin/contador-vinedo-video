@@ -10084,38 +10084,88 @@ with main_col:
                     with st.container(border=True):
                         st.markdown(f"**{item.get('name','')}**")
 
-                        c_original, c_poly, c_proc = st.columns(3)
-                        with c_original:
-                            st.caption(tr("Imagen original", "Image originale"))
+                        # ======================================================
+                        # ANÁLISIS 1 — IMAGEN ORIGINAL
+                        # SOLO cambia la presentación. No modifica el análisis.
+                        # ======================================================
+                        with st.container(border=True):
+                            st.markdown(
+                                f"### {tr('Análisis 1 — Imagen original', 'Analyse 1 — Image originale')}"
+                            )
                             try:
                                 fuente = st.session_state.tc_inventario_fuente or item.get("name", "")
-                                up = next((u for u in uploaded_images if u.name == fuente), uploaded_images[0])
+                                up = next(
+                                    (u for u in uploaded_images if u.name == fuente),
+                                    uploaded_images[0]
+                                )
                                 st.image(
                                     Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
                                     use_container_width=True
                                 )
                             except Exception:
                                 pass
-                        with c_poly:
-                            st.caption(tr("Polígonos — secos y vacíos", "Polygones — secs et vides"))
+
+                        # ======================================================
+                        # ANÁLISIS 2 — POLÍGONOS
+                        # Conserva exactamente la misma polygon_image.
+                        # ======================================================
+                        with st.container(border=True):
+                            st.markdown(
+                                f"### {tr('Análisis 2 — Polígonos', 'Analyse 2 — Polygones')}"
+                            )
+                            st.caption(
+                                tr(
+                                    "Polígonos — secos y vacíos",
+                                    "Polygones — secs et vides"
+                                )
+                            )
+
                             polygon_image = item.get("polygon_image")
+
                             if polygon_image is not None:
                                 if isinstance(polygon_image, Image.Image):
-                                    st.image(polygon_image, use_container_width=True)
-                                else:
                                     st.image(
-                                        cv2.cvtColor(polygon_image, cv2.COLOR_BGR2RGB),
+                                        polygon_image,
                                         use_container_width=True
                                     )
-                        with c_proc:
-                            st.caption(tr("Imagen procesada — Salud", "Image traitée — Santé"))
-                            annotated = item.get("annotated")
-                            if annotated is not None:
-                                if isinstance(annotated, Image.Image):
-                                    st.image(annotated, use_container_width=True)
                                 else:
                                     st.image(
-                                        cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+                                        cv2.cvtColor(
+                                            polygon_image,
+                                            cv2.COLOR_BGR2RGB
+                                        ),
+                                        use_container_width=True
+                                    )
+
+                        # ======================================================
+                        # ANÁLISIS 3 — IMAGEN PROCESADA / SALUD
+                        # Conserva exactamente la misma imagen annotated.
+                        # ======================================================
+                        with st.container(border=True):
+                            st.markdown(
+                                f"### {tr('Análisis 3 — Imagen procesada — Salud', 'Analyse 3 — Image traitée — Santé')}"
+                            )
+                            st.caption(
+                                tr(
+                                    "Imagen procesada — Salud",
+                                    "Image traitée — Santé"
+                                )
+                            )
+
+                            annotated = item.get("annotated")
+
+                            if annotated is not None:
+                                if isinstance(annotated, Image.Image):
+                                    st.image(
+                                        annotated,
+                                        use_container_width=True
+                                    )
+                                else:
+                                    st.image(
+                                        cv2.cvtColor(
+                                            annotated,
+                                            cv2.COLOR_BGR2RGB
+                                        ),
                                         use_container_width=True
                                     )
 
