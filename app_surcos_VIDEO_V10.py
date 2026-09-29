@@ -4,6 +4,7 @@ import json
 import os
 import csv
 import math
+import gc
 import zipfile
 import tempfile
 import requests
@@ -652,22 +653,26 @@ def crear_mascara_exclusion_ia(datos_ia, width, height):
 HISTORIAL_SHEET_NAME = "HistorialTerroCore"
 
 HISTORIAL_HEADERS = [
-    "ID",
-    "Fecha",
-    "Nombre",
-    "ImagenOriginalFileID",
-    "ImagenProcesadaFileID",
-    "Surcos",
-    "VerdePct",
-    "RojoPct",
-    "AmarilloPct",
-    "NivelVisual",
-    "ZonaMasAfectada",
-    "DiagnosticoVisual",
-    "CausasProbables",
-    "ExplicacionNutrientes",
-    "Recomendaciones",
-    "NotaDiagnostico",
+    "ID",                       # A
+    "Fecha",                    # B
+    "Nombre",                   # C
+    "ImagenOriginalFileID",     # D
+    "ImagenProcesadaFileID",    # E
+    "ImagenInventarioFileID",   # F
+    "ImagenAnalisisFileID",     # G
+    "ImagenPoligonosFileID",    # H
+    "Surcos",                   # I
+    "VerdePct",                 # J
+    "RojoPct",                  # K
+    "AmarilloPct",              # L
+    "NivelVisual",              # M
+    "ZonaMasAfectada",          # N
+    "DiagnosticoVisual",        # O
+    "CausasProbables",          # P
+    "ExplicacionNutrientes",    # Q
+    "Recomendaciones",          # R
+    "NotaDiagnostico",          # S
+    "LegacyExtra",              # T
 ]
 
 
@@ -917,7 +922,7 @@ def _asegurar_hoja_historial():
             }
         ).execute()
 
-    rango_header = f"{HISTORIAL_SHEET_NAME}!A1:P1"
+    rango_header = f"{HISTORIAL_SHEET_NAME}!A1:T1"
 
     actual = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
@@ -942,34 +947,40 @@ def guardar_registro_google_sheets(registro):
 
     spreadsheet_id = _secret_text("GSHEET_ID")
 
+    # Estructura fija A:T. Los FileID procesados F:G:H se llenan después
+    # con _tc_actualizar_historial_imagen_appsheet().
     row = [[
-        registro.get("id", ""),
-        registro.get("fecha", ""),
-        registro.get("nombre", ""),
-        registro.get("imagen_original_file_id", ""),
-        registro.get("imagen_procesada_file_id", ""),
-        int(registro.get("surcos", 0) or 0),
-        float(registro.get("verde_pct", 0.0) or 0.0),
-        float(registro.get("rojo_pct", 0.0) or 0.0),
-        float(registro.get("amarillo_pct", 0.0) or 0.0),
-        registro.get("nivel_visual", ""),
-        registro.get("zona_mas_afectada", ""),
-        registro.get("diagnostico_visual", ""),
+        registro.get("id", ""),                           # A ID
+        registro.get("fecha", ""),                        # B Fecha
+        registro.get("nombre", ""),                       # C Nombre
+        registro.get("imagen_original_file_id", ""),      # D Original
+        registro.get("imagen_procesada_file_id", ""),     # E Procesada base
+        registro.get("imagen_inventario_file_id", ""),    # F Inventario
+        registro.get("imagen_analisis_file_id", ""),      # G Análisis
+        registro.get("imagen_poligonos_file_id", ""),     # H Polígonos
+        int(registro.get("surcos", 0) or 0),              # I Surcos
+        float(registro.get("verde_pct", 0.0) or 0.0),     # J Verde
+        float(registro.get("rojo_pct", 0.0) or 0.0),      # K Rojo
+        float(registro.get("amarillo_pct", 0.0) or 0.0), # L Amarillo
+        registro.get("nivel_visual", ""),                 # M Nivel
+        registro.get("zona_mas_afectada", ""),            # N Zona
+        registro.get("diagnostico_visual", ""),            # O Diagnóstico
         json.dumps(
             registro.get("causas_probables", []),
             ensure_ascii=False
-        ),
-        registro.get("explicacion_nutrientes", ""),
+        ),                                                 # P Causas
+        registro.get("explicacion_nutrientes", ""),        # Q Explicación
         json.dumps(
             registro.get("recomendaciones", []),
             ensure_ascii=False
-        ),
-        registro.get("nota_diagnostico", ""),
+        ),                                                 # R Recomendaciones
+        registro.get("nota_diagnostico", ""),              # S Nota
+        "",                                                 # T LegacyExtra
     ]]
 
     sheets_service.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
-        range=f"{HISTORIAL_SHEET_NAME}!A:P",
+        range=f"{HISTORIAL_SHEET_NAME}!A:T",
         valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
         body={"values": row},
@@ -5426,6 +5437,7 @@ _estado_nuevo = {
     "tc_inventarios_multiples": [],
     "tc_salud_multiples": [],
     "tc_poligonos_multiples": [],
+    "tc_nombres_fotos": {},
 }
 
 for _k, _v in _estado_nuevo.items():
@@ -5457,6 +5469,7 @@ def _tc_reiniciar_parcela():
     st.session_state.tc_inventarios_multiples = []
     st.session_state.tc_salud_multiples = []
     st.session_state.tc_poligonos_multiples = []
+    st.session_state.tc_nombres_fotos = {}
     st.session_state.tc_captura_maestra_bytes = None
     st.session_state.tc_captura_maestra_nombre = ""
     st.session_state.tc_captura_maestra_metodo = ""
@@ -5562,6 +5575,90 @@ def _tc_crear_imagen_maestra(uploaded_images):
         "La app usará temporalmente la captura individual de mayor resolución. "
         "Para una Imagen Maestra real, las fotografías deben tener suficiente traslape."
     )
+
+
+
+def _tc_nombre_foto(original_name):
+    """Nombre visible definido por el usuario; conserva el nombre original como respaldo."""
+    nombres = st.session_state.get("tc_nombres_fotos", {}) or {}
+    custom = str(nombres.get(str(original_name), "") or "").strip()
+    return custom or str(original_name)
+
+
+def _tc_compact_image_bytes(image, max_side=1280, quality=82):
+    """
+    Comprime una imagen de OpenCV/PIL a JPEG para session_state.
+    Evita guardar matrices BGR/RGB completas de varias fotografías.
+    """
+    if image is None:
+        return b""
+
+    if isinstance(image, Image.Image):
+        rgb = np.asarray(image.convert("RGB"))
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    else:
+        bgr = np.asarray(image, dtype=np.uint8)
+
+    h, w = bgr.shape[:2]
+    scale = min(1.0, float(max_side) / float(max(h, w)))
+    if scale < 1.0:
+        bgr = cv2.resize(
+            bgr,
+            (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
+            interpolation=cv2.INTER_AREA
+        )
+
+    ok, enc = cv2.imencode(
+        ".jpg",
+        bgr,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
+    )
+    if not ok:
+        raise RuntimeError("No se pudo comprimir la imagen procesada.")
+    return enc.tobytes()
+
+
+def _tc_image_bytes_to_bgr(data):
+    if not data:
+        return None
+    arr = np.frombuffer(data, dtype=np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
+def _tc_image_bytes_for_streamlit(data):
+    if not data:
+        return None
+    return Image.open(io.BytesIO(data)).convert("RGB")
+
+
+def _tc_actualizar_historial_nombre_foto(analisis_id, nombre_foto):
+    """Guarda el nombre amigable de la fotografía en HistorialTerroCore!AC."""
+    if not analisis_id or not nombre_foto or not historial_google_configurado():
+        return False
+
+    target_row = _tc_buscar_fila_historial(analisis_id)
+    if not target_row:
+        return False
+
+    _, sheets_service = obtener_google_clients()
+    spreadsheet_id = _secret_text("GSHEET_ID")
+
+    # AC = NombreFoto. El Google Sheet ya tiene esta columna.
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range="HistorialTerroCore!AC1",
+        valueInputOption="RAW",
+        body={"values": [["NombreFoto"]]},
+    ).execute()
+
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"HistorialTerroCore!AC{target_row}",
+        valueInputOption="RAW",
+        body={"values": [[str(nombre_foto)]]},
+    ).execute()
+    return True
+
 
 
 def _tc_fuentes_para_analisis(uploaded_images):
@@ -8848,11 +8945,31 @@ def _tc_actualizar_historial_imagen_appsheet(
     file_id=""
 ):
     """
-    Estructura REAL de HistorialTerroCore:
+    Estructura FIJA de HistorialTerroCore:
 
+      D  = ImagenOriginalFileID
+      E  = ImagenProcesadaFileID
       F  = ImagenInventarioFileID
       G  = ImagenAnalisisFileID
       H  = ImagenPoligonosFileID
+      I  = Surcos
+      J  = VerdePct
+      K  = RojoPct
+      L  = AmarilloPct
+      M  = NivelVisual
+      N  = ZonaMasAfectada
+      O  = DiagnosticoVisual
+      P  = CausasProbables
+      Q  = ExplicacionNutrientes
+      R  = Recomendaciones
+      S  = NotaDiagnostico
+
+      W  = ImagenOriginalAppSheet
+      X  = ImagenProcesadaAppSheet
+      Y  = ImagenInventarioAppSheet
+      Z  = ImagenPoligonosAppSheet
+      AA = Parcelas
+      AB = ImagenAnalisisAppSheet
 
       W  = ImagenOriginalAppSheet
       X  = ImagenProcesadaAppSheet
@@ -9077,6 +9194,7 @@ def _tc_guardar_analisis_estructurado(uploaded_image, tipo_analisis, processed_i
         "tipo_analisis": tipo_analisis,
         "metodo": str(backend_result.get("metodo", "OpenCV local") or "OpenCV local"),
         "nombre": original_name,
+        "nombre_foto": _tc_nombre_foto(original_name),
         "imagen_original_file_id": original_file_id,
         "imagen_inventario_file_id": inventory_file_id,
         "imagen_procesada_file_id": processed_file_id,
@@ -9132,7 +9250,7 @@ def _tc_guardar_analisis_estructurado(uploaded_image, tipo_analisis, processed_i
         guardar_registro_google_sheets({
             "id": analisis_id,
             "fecha": fecha_analisis,
-            "nombre": f"{parcela_nombre} | {original_name}",
+            "nombre": f"{parcela_nombre} | {registro['nombre_foto']}",
             "imagen_original_file_id": original_file_id,
             "imagen_procesada_file_id": processed_file_id or inventory_file_id,
             "surcos": surcos,
@@ -9163,6 +9281,11 @@ def _tc_guardar_analisis_estructurado(uploaded_image, tipo_analisis, processed_i
             analisis_id,
             original_name,
             ruta_procesada_appsheet
+        )
+
+        _tc_actualizar_historial_nombre_foto(
+            analisis_id,
+            registro.get("nombre_foto", original_name)
         )
 
         if inventory_file_id:
@@ -10086,6 +10209,44 @@ with side_col:
                 )
             )
 
+            st.markdown(tr(
+                "#### Nombre para cada fotografía",
+                "#### Nom pour chaque photographie"
+            ))
+            st.caption(tr(
+                "Este nombre será el que verás en la app y se guardará en Google Sheets en la columna NombreFoto. El nombre original del archivo se conserva.",
+                "Ce nom sera affiché dans l’application et enregistré dans Google Sheets."
+            ))
+
+            nombres_actuales = dict(st.session_state.get("tc_nombres_fotos", {}) or {})
+            for idx_nombre, up_nombre in enumerate(uploaded_images, 1):
+                default_nombre = nombres_actuales.get(up_nombre.name, "")
+                nuevo_nombre = st.text_input(
+                    tr(
+                        f"Foto {idx_nombre} · Nombre",
+                        f"Photo {idx_nombre} · Nom"
+                    ),
+                    value=default_nombre,
+                    placeholder=tr(
+                        f"Ej. Parcela Norte - Sector {idx_nombre}",
+                        f"Ex. Parcelle Nord - Secteur {idx_nombre}"
+                    ),
+                    key=f"tc_nombre_foto_{idx_nombre}_{abs(hash(up_nombre.name)) % 1000000}",
+                    help=tr(
+                        f"Archivo original: {up_nombre.name}",
+                        f"Fichier original : {up_nombre.name}"
+                    )
+                )
+                nombres_actuales[up_nombre.name] = str(nuevo_nombre or "").strip()
+
+            st.session_state.tc_nombres_fotos = nombres_actuales
+
+        if uploaded_images and len(uploaded_images) > 1:
+            st.info(tr(
+                "Modo multifoto optimizado: la app procesa una fotografía a la vez y conserva miniaturas comprimidas para evitar saturar la memoria de Streamlit.",
+                "Mode multi-photo optimisé : les photos sont traitées une par une avec des aperçus compressés."
+            ))
+
         crear_captura = st.button(
             tr("📷 Crear captura base", "📷 Créer la capture de base"),
             type="primary",
@@ -10250,16 +10411,28 @@ with main_col:
                     )
                     try:
                         _, inv_i, _ = _tc_select_best_capture_opencv([fuente_up])
+                        inv_preview_bytes = _tc_compact_image_bytes(
+                            inv_i["image"],
+                            max_side=1280,
+                            quality=82
+                        )
                         resultados_inv_multi.append({
                             "name": fuente_up.name,
+                            "display_name": _tc_nombre_foto(fuente_up.name),
                             "table": inv_i["table"],
-                            "image": inv_i["image"],
+                            "image_bytes": inv_preview_bytes,
                             "confidence": float(inv_i.get("confidence", 0.0)),
                             "tracks": inv_i.get("tracks", []),
                             "model": inv_i.get("model", "OpenCV local"),
-                            "debug": inv_i.get("debug", {}),
+                            # debug completo puede contener matrices; conservar solo texto/escalares.
+                            "debug": {
+                                str(k): v for k, v in (inv_i.get("debug", {}) or {}).items()
+                                if isinstance(v, (str, int, float, bool, type(None)))
+                            },
                             "warnings": inv_i.get("warnings", []),
                         })
+                        del inv_i
+                        gc.collect()
                     except Exception as exc_i:
                         errores_inventario.append(f"{fuente_up.name}: {exc_i}")
 
@@ -10283,7 +10456,7 @@ with main_col:
                 st.session_state.tc_salud_procesada = False
                 st.session_state.tc_inventario_confirmado = False
                 st.session_state.tc_tabla_inventario = principal["table"]
-                st.session_state.tc_inventario_imagen = principal["image"]
+                st.session_state.tc_inventario_imagen = _tc_image_bytes_to_bgr(principal.get("image_bytes"))
                 st.session_state.tc_inventario_fuente = principal["name"]
                 st.session_state.tc_inventario_confianza = principal["confidence"]
                 st.session_state.tc_inventario_rows_ai = principal["tracks"]
@@ -10342,7 +10515,8 @@ with main_col:
             st.metric(tr("Vacíos", "Vides"), total_vacios)
 
         confianza_inv = float(st.session_state.tc_inventario_confianza or 0.0)
-        fuente_inv = st.session_state.tc_inventario_fuente or "—"
+        fuente_inv_raw = st.session_state.tc_inventario_fuente or "—"
+        fuente_inv = _tc_nombre_foto(fuente_inv_raw) if fuente_inv_raw != "—" else "—"
         st.caption(
             tr(
                 f"Inventario detectado localmente con OpenCV. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
@@ -10402,13 +10576,13 @@ with main_col:
             ))
             for idx_inv, inv_item in enumerate(inventarios_multi_ui, 1):
                 with st.expander(
-                    f"{idx_inv}. {inv_item.get('name','')}",
+                    f"{idx_inv}. {inv_item.get('display_name') or inv_item.get('name','')}",
                     expanded=(idx_inv == 1)
                 ):
-                    inv_img_i = inv_item.get("image")
-                    if inv_img_i is not None:
+                    inv_img_bytes = inv_item.get("image_bytes")
+                    if inv_img_bytes:
                         st.image(
-                            _tc_image_rgb_for_streamlit(inv_img_i),
+                            _tc_image_bytes_for_streamlit(inv_img_bytes),
                             use_container_width=True
                         )
                     tabla_i = inv_item.get("table")
@@ -10670,7 +10844,9 @@ with main_col:
                         if inv_match:
                             st.session_state.tc_inventario_rows_ai = inv_match.get("tracks", [])
                             st.session_state.tc_tabla_inventario = inv_match.get("table")
-                            st.session_state.tc_inventario_imagen = inv_match.get("image")
+                            st.session_state.tc_inventario_imagen = _tc_image_bytes_to_bgr(
+                                inv_match.get("image_bytes")
+                            )
 
                         backend_result = _tc_analyze_health_opencv(uploaded_image)
 
@@ -10684,9 +10860,15 @@ with main_col:
                         except Exception as historial_exc:
                             historial_google_info = str(historial_exc)
 
+                        annotated_preview_bytes = _tc_compact_image_bytes(
+                            backend_result.get("annotated"),
+                            max_side=1280,
+                            quality=82
+                        )
                         resultados_salud.append({
                             "id": f"{i_salud}_{uploaded_image.name}",
                             "name": uploaded_image.name,
+                            "display_name": _tc_nombre_foto(uploaded_image.name),
                             "count": int(backend_result.get("count", 0)),
                             "green_pct": float(backend_result.get("green_pct", 0.0)),
                             "red_pct": float(backend_result.get("red_pct", 0.0)),
@@ -10694,9 +10876,7 @@ with main_col:
                             "red_slots": int(backend_result.get("red_slots", 0) or 0),
                             "total_slots": int(backend_result.get("total_slots", 0) or 0),
                             "angle": float(backend_result.get("angle", 0.0)),
-                            "annotated": backend_result.get("annotated"),
-                            "ia_scene": backend_result.get("backend"),
-                            "result_url": backend_result.get("result_url"),
+                            "annotated_bytes": annotated_preview_bytes,
                             "historial_google_guardado": historial_google_ok,
                             "historial_google_info": historial_google_info,
                             "analisis_id": (
@@ -10714,6 +10894,11 @@ with main_col:
                             "metodo": backend_result.get("metodo", "opencv-local"),
                             "confidence": backend_result.get("confidence", 0.0),
                         })
+                        # Liberar matrices grandes antes de continuar con la siguiente foto.
+                        st.session_state.tc_inventario_imagen = None
+                        backend_result.pop("annotated", None)
+                        del backend_result
+                        gc.collect()
 
                     if not resultados_salud:
                         raise RuntimeError("No se generó ningún análisis visual.")
@@ -10762,16 +10947,16 @@ with main_col:
                     ))
                     for idx_sal, item_sal in enumerate(resultados, 1):
                         with st.expander(
-                            f"{idx_sal}. {item_sal.get('name','')}",
+                            f"{idx_sal}. {item_sal.get('display_name') or item_sal.get('name','')}",
                             expanded=(idx_sal == 1)
                         ):
                             sc1, sc2, sc3 = st.columns(3)
                             sc1.metric("Verde", f"{float(item_sal.get('green_pct',0.0)):.1f}%")
                             sc2.metric("Afectación", f"{float(item_sal.get('red_pct',0.0)):.1f}%")
                             sc3.metric("Zona", tr_diag_texto(item_sal.get("zona_mas_afectada","—")))
-                            if item_sal.get("annotated") is not None:
+                            if item_sal.get("annotated_bytes"):
                                 st.image(
-                                    _tc_image_rgb_for_streamlit(item_sal.get("annotated")),
+                                    _tc_image_bytes_for_streamlit(item_sal.get("annotated_bytes")),
                                     use_container_width=True
                                 )
 
@@ -10843,7 +11028,9 @@ with main_col:
                         if inv_match:
                             st.session_state.tc_inventario_rows_ai = inv_match.get("tracks", [])
                             st.session_state.tc_tabla_inventario = inv_match.get("table")
-                            st.session_state.tc_inventario_imagen = inv_match.get("image")
+                            st.session_state.tc_inventario_imagen = _tc_image_bytes_to_bgr(
+                                inv_match.get("image_bytes")
+                            )
 
                         zones_i, poly_img_i, dry_mask_i = _tc_detectar_zonas_secas_opencv(
                             uploaded_image
@@ -10871,14 +11058,22 @@ with main_col:
                             except Exception:
                                 pass
 
+                        poly_preview_bytes = _tc_compact_image_bytes(
+                            poly_img_i,
+                            max_side=1280,
+                            quality=82
+                        )
                         poly_multi.append({
                             "name": uploaded_image.name,
+                            "display_name": _tc_nombre_foto(uploaded_image.name),
                             "zones": zones_i,
-                            "image": poly_img_i,
-                            "mask": dry_mask_i,
+                            "image_bytes": poly_preview_bytes,
                             "guardado": guardado_i,
                             "info": info_i,
                         })
+                        st.session_state.tc_inventario_imagen = None
+                        del poly_img_i, dry_mask_i
+                        gc.collect()
 
                     if not poly_multi:
                         raise RuntimeError("No se pudieron generar polígonos.")
@@ -10886,7 +11081,7 @@ with main_col:
                     principal_poly = poly_multi[0]
                     st.session_state.tc_poligonos_multiples = poly_multi
                     st.session_state.tc_poligonos = principal_poly["zones"]
-                    st.session_state.tc_poligonos_imagen = principal_poly["image"]
+                    st.session_state.tc_poligonos_imagen = _tc_image_bytes_to_bgr(principal_poly.get("image_bytes"))
                     st.session_state.tc_poligonos_procesados = True
                     st.session_state.tc_poligonos_guardados = bool(principal_poly["guardado"])
 
@@ -10910,12 +11105,12 @@ with main_col:
                 ))
                 for idx_p, p_item in enumerate(polys_multi_ui, 1):
                     with st.expander(
-                        f"{idx_p}. {p_item.get('name','')}",
+                        f"{idx_p}. {p_item.get('display_name') or p_item.get('name','')}",
                         expanded=(idx_p == 1)
                     ):
-                        if p_item.get("image") is not None:
+                        if p_item.get("image_bytes"):
                             st.image(
-                                _tc_image_rgb_for_streamlit(p_item.get("image")),
+                                _tc_image_bytes_for_streamlit(p_item.get("image_bytes")),
                                 use_container_width=True
                             )
                         st.caption(
@@ -11280,7 +11475,7 @@ if uploaded_images:
         pol_f = _tc_find_multi(pol_multi_final, up_final.name)
 
         with st.container(border=True):
-            st.markdown(f"### {idx_final}. {up_final.name}")
+            st.markdown(f"### {idx_final}. {_tc_nombre_foto(up_final.name)}")
 
             c_orig, c_inv, c_ana, c_pol = st.columns(4)
 
@@ -11296,9 +11491,9 @@ if uploaded_images:
 
             with c_inv:
                 st.caption(tr("2. Inventario", "2. Inventaire"))
-                if inv_f and inv_f.get("image") is not None:
+                if inv_f and inv_f.get("image_bytes"):
                     st.image(
-                        _tc_image_rgb_for_streamlit(inv_f.get("image")),
+                        _tc_image_bytes_for_streamlit(inv_f.get("image_bytes")),
                         use_container_width=True
                     )
                 else:
@@ -11306,9 +11501,9 @@ if uploaded_images:
 
             with c_ana:
                 st.caption(tr("3. Análisis", "3. Analyse"))
-                if sal_f and sal_f.get("annotated") is not None:
+                if sal_f and sal_f.get("annotated_bytes"):
                     st.image(
-                        _tc_image_rgb_for_streamlit(sal_f.get("annotated")),
+                        _tc_image_bytes_for_streamlit(sal_f.get("annotated_bytes")),
                         use_container_width=True
                     )
                 else:
@@ -11316,9 +11511,9 @@ if uploaded_images:
 
             with c_pol:
                 st.caption(tr("4. Polígonos", "4. Polygones"))
-                if pol_f and pol_f.get("image") is not None:
+                if pol_f and pol_f.get("image_bytes"):
                     st.image(
-                        _tc_image_rgb_for_streamlit(pol_f.get("image")),
+                        _tc_image_bytes_for_streamlit(pol_f.get("image_bytes")),
                         use_container_width=True
                     )
                 else:
