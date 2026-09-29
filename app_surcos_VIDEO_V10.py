@@ -2,6 +2,19 @@ import io
 import base64
 import json
 import os
+
+# ============================================================
+# ESTABILIDAD STREAMLIT CLOUD / OPENCV
+# Limita hilos de librerías nativas para evitar cierres por
+# segmentation fault en contenedores con recursos limitados.
+# NO modifica la lógica del análisis.
+# ============================================================
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("OPENCV_OPENCL_RUNTIME", "disabled")
 import csv
 import math
 import zipfile
@@ -11,6 +24,16 @@ import re
 from pathlib import Path
 
 import cv2
+
+# OpenCV estable para ejecución en servidor/headless.
+try:
+    cv2.setNumThreads(1)
+except Exception:
+    pass
+try:
+    cv2.ocl.setUseOpenCL(False)
+except Exception:
+    pass
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -1515,7 +1538,7 @@ with header_logo_col:
     if LOGO_PATH.exists():
         st.image(
             str(LOGO_PATH),
-            use_container_width=True
+            width="stretch"
         )
 
 with header_text_col:
@@ -9558,7 +9581,7 @@ with side_col:
         if st.button(
             "🇪🇸 ES Español",
             key="lang_es_inventario",
-            use_container_width=True,
+            width="stretch",
             disabled=st.session_state.idioma_terrocore == "ES"
         ):
             st.session_state.idioma_terrocore = "ES"
@@ -9568,7 +9591,7 @@ with side_col:
         if st.button(
             "🇫🇷 FR Français",
             key="lang_fr_inventario",
-            use_container_width=True,
+            width="stretch",
             disabled=st.session_state.idioma_terrocore == "FR"
         ):
             st.session_state.idioma_terrocore = "FR"
@@ -9624,7 +9647,7 @@ with side_col:
         crear_captura = st.button(
             tr("📷 Crear captura base", "📷 Créer la capture de base"),
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=(not uploaded_images or not misma_parcela or not parcela_nombre.strip()),
             key="tc_crear_captura"
         )
@@ -9661,7 +9684,7 @@ with side_col:
 
     if st.button(
         tr("🔄 Nueva parcela / Nuevo análisis", "🔄 Nouvelle parcelle / Nouvelle analyse"),
-        use_container_width=True,
+        width="stretch",
         key="tc_reiniciar"
     ):
         _tc_reiniciar_parcela()
@@ -9692,7 +9715,7 @@ with main_col:
                         st.image(
                             Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
                             caption=up.name,
-                            use_container_width=True
+                            width="stretch"
                         )
                 except Exception as exc:
                     st.warning(f"{up.name}: {exc}")
@@ -9724,7 +9747,7 @@ with main_col:
         analizar_inventario = st.button(
             tr("🌿 Analizar Inventario", "🌿 Analyser l’inventaire"),
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=(not st.session_state.tc_captura_confirmada or not uploaded_images),
             key="tc_analizar_inventario"
         )
@@ -9850,11 +9873,11 @@ with main_col:
                     unsafe_allow_html=True
                 )
                 if isinstance(inv_image, Image.Image):
-                    st.image(inv_image, use_container_width=True)
+                    st.image(inv_image, width="stretch")
                 else:
                     st.image(
                         cv2.cvtColor(inv_image, cv2.COLOR_BGR2RGB),
-                        use_container_width=True
+                        width="stretch"
                     )
 
         st.caption(
@@ -9872,7 +9895,7 @@ with main_col:
 
         edited = st.data_editor(
             tabla_actual,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             num_rows="fixed",
             key="tc_editor_inventario",
@@ -9923,7 +9946,7 @@ with main_col:
         if st.button(
             tr("✅ Confirmar Inventario", "✅ Confirmer l’inventaire"),
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=(not inventario_valido),
             key="tc_confirmar_inventario"
         ):
@@ -9962,7 +9985,7 @@ with main_col:
             analizar_salud = st.button(
                 tr("🩺 Analizar Salud", "🩺 Analyser la santé"),
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=not uploaded_images,
                 key="tc_analizar_salud"
             )
@@ -10100,7 +10123,7 @@ with main_col:
                                 )
                                 st.image(
                                     Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
-                                    use_container_width=True
+                                    width="stretch"
                                 )
                             except Exception:
                                 pass
@@ -10126,7 +10149,7 @@ with main_col:
                                 if isinstance(polygon_image, Image.Image):
                                     st.image(
                                         polygon_image,
-                                        use_container_width=True
+                                        width="stretch"
                                     )
                                 else:
                                     st.image(
@@ -10134,7 +10157,7 @@ with main_col:
                                             polygon_image,
                                             cv2.COLOR_BGR2RGB
                                         ),
-                                        use_container_width=True
+                                        width="stretch"
                                     )
 
                         # ======================================================
@@ -10158,7 +10181,7 @@ with main_col:
                                 if isinstance(annotated, Image.Image):
                                     st.image(
                                         annotated,
-                                        use_container_width=True
+                                        width="stretch"
                                     )
                                 else:
                                     st.image(
@@ -10166,7 +10189,7 @@ with main_col:
                                             annotated,
                                             cv2.COLOR_BGR2RGB
                                         ),
-                                        use_container_width=True
+                                        width="stretch"
                                     )
 
                         d1, d2, d3 = st.columns(3)
@@ -10241,7 +10264,7 @@ with st.expander(
                         tr("Rojo %", "Rouge %"): registro.get("rojo_pct", 0.0),
                         tr("Zona más afectada", "Zone la plus touchée"): tr_diag_texto(registro.get("zona_mas_afectada", "")),
                     })
-                st.dataframe(pd.DataFrame(filas_historial), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(filas_historial), width="stretch", hide_index=True)
                 st.caption(
                     tr(
                         "Este historial conserva tu estructura actual. En la siguiente etapa podemos agregar ParcelaID para agrupar análisis por parcela y fecha.",
