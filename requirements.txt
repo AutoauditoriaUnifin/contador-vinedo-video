@@ -1,4 +1,4 @@
-astreamlit
+streamlit
 opencv-python-headless
 numpy
 Pillow
@@ -10,6 +10,7 @@ requests
 python-dotenv
 google-api-python-client
 google-auth
+google-auth-httplib2
 fastapi
 uvicorn[standard]
 python-multipart
