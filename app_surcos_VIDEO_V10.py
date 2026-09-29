@@ -2,6 +2,18 @@ import io
 import base64
 import json
 import os
+
+# ============================================================
+# ESTABILIDAD STREAMLIT CLOUD / OPENCV
+# ============================================================
+# Evita sobreasignación de hilos nativos (OpenCV/OpenBLAS/MKL/OMP),
+# una causa común de cierres tipo "free(): corrupted unsorted chunks"
+# en contenedores con memoria limitada.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 import csv
 import math
 import gc
@@ -12,6 +24,16 @@ import re
 from pathlib import Path
 
 import cv2
+
+# OpenCV estable en Streamlit Cloud.
+try:
+    cv2.setNumThreads(1)
+except Exception:
+    pass
+try:
+    cv2.ocl.setUseOpenCL(False)
+except Exception:
+    pass
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -1526,7 +1548,7 @@ with header_logo_col:
     if LOGO_PATH.exists():
         st.image(
             str(LOGO_PATH),
-            use_container_width=True
+            width="stretch"
         )
 
 with header_text_col:
@@ -5496,9 +5518,34 @@ class _TCMemoryUpload:
         return self._data
 
 
-def _tc_decode_upload(up):
+def _tc_decode_upload(up, max_side=2200):
+    """
+    Decodifica una imagen a BGR y limita la copia de trabajo.
+    El archivo original NO se modifica ni se reemplaza.
+    """
     arr = np.frombuffer(up.getvalue(), dtype=np.uint8)
-    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    del arr
+
+    if img is None:
+        return None
+
+    img = np.ascontiguousarray(img)
+
+    h, w = img.shape[:2]
+    largest = max(h, w)
+    if largest > int(max_side):
+        scale = float(max_side) / float(largest)
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        img = cv2.resize(
+            img,
+            (new_w, new_h),
+            interpolation=cv2.INTER_AREA
+        )
+        img = np.ascontiguousarray(img)
+
+    return img
 
 
 def _tc_encode_jpg(bgr, quality=93):
@@ -5510,184 +5557,63 @@ def _tc_encode_jpg(bgr, quality=93):
 
 def _tc_crear_imagen_maestra(uploaded_images):
     """
-    Intenta construir una Imagen Maestra a partir de 1..N fotografías.
-    Si hay una sola, se usa directamente.
-    Si hay varias, intenta Stitcher SCANS y luego PANORAMA.
-    Nunca crea un collage falso: si no puede alinear las fotos, lo reporta.
+    Imagen Maestra segura para Streamlit Cloud.
+
+    IMPORTANTE:
+    V14/V15 procesa TODAS las fotografías individualmente, por lo que no es
+    necesario ejecutar cv2.Stitcher (una operación nativa pesada que puede
+    provocar cierres del proceso en contenedores de memoria limitada).
+
+    - 1 foto: se utiliza directamente.
+    - Varias fotos: se conserva como referencia la de mayor resolución.
+      Todas las fotos siguen analizándose una por una en Inventario,
+      Estado visual y Polígonos.
     """
     if not uploaded_images:
         raise RuntimeError("No hay fotografías para la Captura Base.")
 
     if len(uploaded_images) == 1:
-        return uploaded_images[0].getvalue(), uploaded_images[0].name, "Fotografía única", ""
-
-    imgs = []
-    for up in uploaded_images:
-        img = _tc_decode_upload(up)
-        if img is not None:
-            # Limitar tamaño para mejorar estabilidad del stitcher.
-            h, w = img.shape[:2]
-            max_side = 1800
-            scale = min(1.0, max_side / float(max(h, w)))
-            if scale < 1.0:
-                img = cv2.resize(
-                    img,
-                    (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
-                    interpolation=cv2.INTER_AREA
-                )
-            imgs.append(img)
-
-    if len(imgs) < 2:
-        raise RuntimeError("No se pudieron abrir suficientes fotografías para unir la Captura Base.")
-
-    errores = []
-    modes = []
-    if hasattr(cv2, "Stitcher_SCANS"):
-        modes.append(("SCANS", cv2.Stitcher_SCANS))
-    if hasattr(cv2, "Stitcher_PANORAMA"):
-        modes.append(("PANORAMA", cv2.Stitcher_PANORAMA))
-
-    for mode_name, mode in modes:
-        try:
-            stitcher = cv2.Stitcher_create(mode)
-            status, pano = stitcher.stitch(imgs)
-            if status == cv2.Stitcher_OK and pano is not None and pano.size:
-                return (
-                    _tc_encode_jpg(pano),
-                    "captura_base_maestra.jpg",
-                    f"Imagen Maestra unida con OpenCV {mode_name}",
-                    ""
-                )
-            errores.append(f"{mode_name}: status {status}")
-        except Exception as exc:
-            errores.append(f"{mode_name}: {exc}")
-
-    # Respaldo responsable: usar la foto de mayor resolución, pero dejar claro que NO se logró unir.
-    valid = [(im.shape[0] * im.shape[1], im, up) for im, up in zip(imgs, uploaded_images[:len(imgs)])]
-    valid.sort(key=lambda x: x[0], reverse=True)
-    _, best_img, best_up = valid[0]
-
-    return (
-        _tc_encode_jpg(best_img),
-        f"referencia_{Path(best_up.name).stem}.jpg",
-        "Referencia individual (unión automática no disponible)",
-        "No fue posible alinear automáticamente todas las fotografías. "
-        "La app usará temporalmente la captura individual de mayor resolución. "
-        "Para una Imagen Maestra real, las fotografías deben tener suficiente traslape."
-    )
-
-
-
-def _tc_nombre_foto(original_name):
-    """Nombre visible definido por el usuario; conserva el nombre original como respaldo."""
-    nombres = st.session_state.get("tc_nombres_fotos", {}) or {}
-    custom = str(nombres.get(str(original_name), "") or "").strip()
-    return custom or str(original_name)
-
-
-def _tc_compact_image_bytes(image, max_side=1280, quality=82):
-    """
-    Comprime una imagen de OpenCV/PIL a JPEG para session_state.
-    Evita guardar matrices BGR/RGB completas de varias fotografías.
-    """
-    if image is None:
-        return b""
-
-    if isinstance(image, Image.Image):
-        rgb = np.asarray(image.convert("RGB"))
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    else:
-        bgr = np.asarray(image, dtype=np.uint8)
-
-    h, w = bgr.shape[:2]
-    scale = min(1.0, float(max_side) / float(max(h, w)))
-    if scale < 1.0:
-        bgr = cv2.resize(
-            bgr,
-            (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
-            interpolation=cv2.INTER_AREA
+        return (
+            uploaded_images[0].getvalue(),
+            uploaded_images[0].name,
+            "Fotografía única",
+            ""
         )
 
-    ok, enc = cv2.imencode(
-        ".jpg",
-        bgr,
-        [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
+    best_up = None
+    best_pixels = -1
+
+    for up in uploaded_images:
+        try:
+            arr = np.frombuffer(up.getvalue(), dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is None:
+                continue
+            h, w = img.shape[:2]
+            pixels = int(h) * int(w)
+            if pixels > best_pixels:
+                best_pixels = pixels
+                best_up = up
+            del img, arr
+        except Exception:
+            continue
+
+    gc.collect()
+
+    if best_up is None:
+        best_up = uploaded_images[0]
+
+    return (
+        best_up.getvalue(),
+        best_up.name,
+        "Referencia principal (multifoto segura)",
+        (
+            f"Se cargaron {len(uploaded_images)} fotografías. "
+            "La app analizará todas por separado. "
+            "La Imagen Maestra solo se usa como referencia visual para evitar "
+            "uniones pesadas de OpenCV en Streamlit Cloud."
+        )
     )
-    if not ok:
-        raise RuntimeError("No se pudo comprimir la imagen procesada.")
-    return enc.tobytes()
-
-
-def _tc_image_bytes_to_bgr(data):
-    if not data:
-        return None
-    arr = np.frombuffer(data, dtype=np.uint8)
-    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
-
-
-def _tc_image_bytes_for_streamlit(data):
-    if not data:
-        return None
-    return Image.open(io.BytesIO(data)).convert("RGB")
-
-
-def _tc_actualizar_historial_nombre_foto(analisis_id, nombre_foto):
-    """Guarda el nombre amigable de la fotografía en HistorialTerroCore!AC."""
-    if not analisis_id or not nombre_foto or not historial_google_configurado():
-        return False
-
-    target_row = _tc_buscar_fila_historial(analisis_id)
-    if not target_row:
-        return False
-
-    _, sheets_service = obtener_google_clients()
-    spreadsheet_id = _secret_text("GSHEET_ID")
-
-    # AC = NombreFoto. El Google Sheet ya tiene esta columna.
-    sheets_service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range="HistorialTerroCore!AC1",
-        valueInputOption="RAW",
-        body={"values": [["NombreFoto"]]},
-    ).execute()
-
-    sheets_service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range=f"HistorialTerroCore!AC{target_row}",
-        valueInputOption="RAW",
-        body={"values": [[str(nombre_foto)]]},
-    ).execute()
-    return True
-
-
-
-def _tc_fuentes_para_analisis(uploaded_images):
-    """
-    Regla V12:
-    - 1 imagen: procesa esa imagen.
-    - Varias imágenes: procesa TODAS por separado.
-    La Imagen Maestra se conserva como referencia, pero no sustituye
-    el análisis individual de cada fotografía.
-    """
-    return list(uploaded_images or [])
-
-
-def _tc_find_multi(items, name):
-    for item in items or []:
-        if str(item.get("name", "")) == str(name):
-            return item
-    return None
-
-
-def _tc_image_rgb_for_streamlit(img):
-    if img is None:
-        return None
-    if isinstance(img, Image.Image):
-        return img
-    arr = np.asarray(img)
-    if arr.ndim == 3 and arr.shape[2] == 3:
-        return cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
-    return arr
 
 
 def _tc_get_captura_base_upload(uploaded_images):
@@ -10132,7 +10058,7 @@ with side_col:
         if st.button(
             "🇪🇸 ES Español",
             key="lang_es_inventario",
-            use_container_width=True,
+            width="stretch",
             disabled=st.session_state.idioma_terrocore == "ES"
         ):
             st.session_state.idioma_terrocore = "ES"
@@ -10142,7 +10068,7 @@ with side_col:
         if st.button(
             "🇫🇷 FR Français",
             key="lang_fr_inventario",
-            use_container_width=True,
+            width="stretch",
             disabled=st.session_state.idioma_terrocore == "FR"
         ):
             st.session_state.idioma_terrocore = "FR"
@@ -10243,14 +10169,14 @@ with side_col:
 
         if uploaded_images and len(uploaded_images) > 1:
             st.info(tr(
-                "Modo multifoto optimizado: la app procesa una fotografía a la vez y conserva miniaturas comprimidas para evitar saturar la memoria de Streamlit.",
-                "Mode multi-photo optimisé : les photos sont traitées une par une avec des aperçus compressés."
+                "Modo multifoto estable: la app procesa una fotografía a la vez, limita la resolución de trabajo y conserva miniaturas comprimidas. La foto original se mantiene intacta en Drive.",
+                "Mode multi-photo stable : traitement photo par photo, résolution de travail limitée et aperçus compressés."
             ))
 
         crear_captura = st.button(
             tr("📷 Crear captura base", "📷 Créer la capture de base"),
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=(not uploaded_images or not misma_parcela or not parcela_nombre.strip()),
             key="tc_crear_captura"
         )
@@ -10301,7 +10227,7 @@ with side_col:
 
     if st.button(
         tr("🔄 Nueva parcela / Nuevo análisis", "🔄 Nouvelle parcelle / Nouvelle analyse"),
-        use_container_width=True,
+        width="stretch",
         key="tc_reiniciar"
     ):
         _tc_reiniciar_parcela()
@@ -10329,7 +10255,7 @@ with main_col:
             st.image(
                 st.session_state.tc_captura_maestra_bytes,
                 caption=st.session_state.get("tc_captura_maestra_metodo", ""),
-                use_container_width=True
+                width="stretch"
             )
             if st.session_state.get("tc_captura_maestra_error"):
                 st.warning(st.session_state.tc_captura_maestra_error)
@@ -10343,7 +10269,7 @@ with main_col:
                         st.image(
                             Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
                             caption=up.name,
-                            use_container_width=True
+                            width="stretch"
                         )
                 except Exception as exc:
                     st.warning(f"{up.name}: {exc}")
@@ -10375,7 +10301,7 @@ with main_col:
         analizar_inventario = st.button(
             tr("🌿 Analizar Inventario", "🌿 Analyser l’inventaire"),
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=(not st.session_state.tc_captura_confirmada or not uploaded_images),
             key="tc_analizar_inventario"
         )
@@ -10432,7 +10358,7 @@ with main_col:
                             "warnings": inv_i.get("warnings", []),
                         })
                         del inv_i
-                        gc.collect()
+                        _tc_liberar_memoria_opencv()
                     except Exception as exc_i:
                         errores_inventario.append(f"{fuente_up.name}: {exc_i}")
 
@@ -10549,11 +10475,11 @@ with main_col:
                     unsafe_allow_html=True
                 )
                 if isinstance(inv_image, Image.Image):
-                    st.image(inv_image, use_container_width=True)
+                    st.image(inv_image, width="stretch")
                 else:
                     st.image(
                         cv2.cvtColor(inv_image, cv2.COLOR_BGR2RGB),
-                        use_container_width=True
+                        width="stretch"
                     )
 
         st.caption(
@@ -10583,7 +10509,7 @@ with main_col:
                     if inv_img_bytes:
                         st.image(
                             _tc_image_bytes_for_streamlit(inv_img_bytes),
-                            use_container_width=True
+                            width="stretch"
                         )
                     tabla_i = inv_item.get("table")
                     if isinstance(tabla_i, pd.DataFrame):
@@ -10603,7 +10529,7 @@ with main_col:
 
         edited = st.data_editor(
             tabla_actual,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             num_rows="fixed",
             key="tc_editor_inventario",
@@ -10654,7 +10580,7 @@ with main_col:
         if st.button(
             tr("✅ Confirmar Inventario", "✅ Confirmer l’inventaire"),
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=(not inventario_valido),
             key="tc_confirmar_inventario"
         ):
@@ -10731,7 +10657,7 @@ with main_col:
 
         if st.button(
             tr("➕ Agregar validación", "➕ Ajouter la validation"),
-            use_container_width=True,
+            width="stretch",
             key="tc_agregar_validacion"
         ):
             real = int(conteo_real_val or 0)
@@ -10772,7 +10698,7 @@ with main_col:
 
         if st.session_state.tc_validaciones_muestreo:
             df_val = pd.DataFrame(st.session_state.tc_validaciones_muestreo)
-            st.dataframe(df_val, use_container_width=True, hide_index=True)
+            st.dataframe(df_val, width="stretch", hide_index=True)
             valid_errors = [
                 float(r["ErrorPct"]) for r in st.session_state.tc_validaciones_muestreo
                 if r.get("ErrorPct") is not None
@@ -10806,7 +10732,7 @@ with main_col:
             analizar_salud = st.button(
                 tr("🛰️ Analizar estado visual", "🛰️ Analyser l’état visuel"),
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=not uploaded_images,
                 key="tc_analizar_salud"
             )
@@ -10898,7 +10824,7 @@ with main_col:
                         st.session_state.tc_inventario_imagen = None
                         backend_result.pop("annotated", None)
                         del backend_result
-                        gc.collect()
+                        _tc_liberar_memoria_opencv()
 
                     if not resultados_salud:
                         raise RuntimeError("No se generó ningún análisis visual.")
@@ -10957,7 +10883,7 @@ with main_col:
                             if item_sal.get("annotated_bytes"):
                                 st.image(
                                     _tc_image_bytes_for_streamlit(item_sal.get("annotated_bytes")),
-                                    use_container_width=True
+                                    width="stretch"
                                 )
 
                 item = resultados[0]
@@ -11009,7 +10935,7 @@ with main_col:
             if st.button(
                 tr("🗺️ Detectar regiones críticas", "🗺️ Détecter les régions critiques"),
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 key="tc_generar_poligonos_secos"
             ):
                 try:
@@ -11073,7 +10999,7 @@ with main_col:
                         })
                         st.session_state.tc_inventario_imagen = None
                         del poly_img_i, dry_mask_i
-                        gc.collect()
+                        _tc_liberar_memoria_opencv()
 
                     if not poly_multi:
                         raise RuntimeError("No se pudieron generar polígonos.")
@@ -11111,7 +11037,7 @@ with main_col:
                         if p_item.get("image_bytes"):
                             st.image(
                                 _tc_image_bytes_for_streamlit(p_item.get("image_bytes")),
-                                use_container_width=True
+                                width="stretch"
                             )
                         st.caption(
                             f"Zonas detectadas: {len(p_item.get('zones', []) or [])}"
@@ -11123,11 +11049,11 @@ with main_col:
                     "#### Image avec polygones bleus"
                 ))
                 if isinstance(poly_img, Image.Image):
-                    st.image(poly_img, use_container_width=True)
+                    st.image(poly_img, width="stretch")
                 else:
                     st.image(
                         cv2.cvtColor(np.asarray(poly_img), cv2.COLOR_BGR2RGB),
-                        use_container_width=True
+                        width="stretch"
                     )
 
             if zones:
@@ -11151,7 +11077,7 @@ with main_col:
                     }
                     for z in zones
                 ])
-                st.dataframe(table_poly, use_container_width=True, hide_index=True)
+                st.dataframe(table_poly, width="stretch", hide_index=True)
 
                 if st.session_state.tc_poligonos_guardados:
                     st.success(tr(
@@ -11164,7 +11090,7 @@ with main_col:
                     data=_tc_poligonos_json(zones),
                     file_name=f"{_tc_safe_slug(st.session_state.get('tc_parcela_nombre','Parcela'))}_poligonos_zonas_secas.json",
                     mime="application/json",
-                    use_container_width=True,
+                    width="stretch",
                     key="tc_descargar_poligonos_secos_json"
                 )
             else:
@@ -11235,7 +11161,7 @@ with main_col:
 
         if st.button(
             tr("💾 Guardar segundo vuelo", "💾 Enregistrer le deuxième vol"),
-            use_container_width=True,
+            width="stretch",
             key="tc_guardar_segundo_vuelo"
         ):
             try:
@@ -11326,7 +11252,7 @@ with main_col:
 
         if st.button(
             tr("🔬 Preparar análisis de segundo nivel", "🔬 Préparer l’analyse de niveau 2"),
-            use_container_width=True,
+            width="stretch",
             key="tc_preparar_nivel2"
         ):
             st.session_state.tc_nivel2_resultado = {
@@ -11361,7 +11287,7 @@ with main_col:
             if st.button(
                 tr("📏 Generar diagnóstico final por líneas", "📏 Générer le diagnostic final par lignes"),
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 key="tc_mostrar_lineas_final"
             ):
                 try:
@@ -11428,7 +11354,7 @@ with main_col:
                             )
                             st.image(
                                 Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
-                                use_container_width=True
+                                width="stretch"
                             )
                         except Exception:
                             pass
@@ -11440,7 +11366,7 @@ with main_col:
                         ))
                         st.image(
                             cv2.cvtColor(np.asarray(annotated), cv2.COLOR_BGR2RGB),
-                            use_container_width=True
+                            width="stretch"
                         )
 
                 st.caption(tr(
@@ -11484,7 +11410,7 @@ if uploaded_images:
                 try:
                     st.image(
                         Image.open(io.BytesIO(up_final.getvalue())).convert("RGB"),
-                        use_container_width=True
+                        width="stretch"
                     )
                 except Exception:
                     st.info("—")
@@ -11494,7 +11420,7 @@ if uploaded_images:
                 if inv_f and inv_f.get("image_bytes"):
                     st.image(
                         _tc_image_bytes_for_streamlit(inv_f.get("image_bytes")),
-                        use_container_width=True
+                        width="stretch"
                     )
                 else:
                     st.info(tr("Pendiente", "En attente"))
@@ -11504,7 +11430,7 @@ if uploaded_images:
                 if sal_f and sal_f.get("annotated_bytes"):
                     st.image(
                         _tc_image_bytes_for_streamlit(sal_f.get("annotated_bytes")),
-                        use_container_width=True
+                        width="stretch"
                     )
                 else:
                     st.info(tr("Pendiente", "En attente"))
@@ -11514,7 +11440,7 @@ if uploaded_images:
                 if pol_f and pol_f.get("image_bytes"):
                     st.image(
                         _tc_image_bytes_for_streamlit(pol_f.get("image_bytes")),
-                        use_container_width=True
+                        width="stretch"
                     )
                 else:
                     st.info(tr("Pendiente", "En attente"))
@@ -11582,7 +11508,7 @@ else:
                     tr("Verde %", "Vert %"): r.get("verde_pct", 0.0),
                     tr("Rojo %", "Rouge %"): r.get("rojo_pct", 0.0),
                 })
-            st.dataframe(pd.DataFrame(filas_historial), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(filas_historial), width="stretch", hide_index=True)
 
             if filtrados:
                 opciones = {}
@@ -11624,7 +11550,7 @@ else:
 
                     if st.button(
                         tr("🖼️ Cargar imágenes de este análisis", "🖼️ Charger les images de cette analyse"),
-                        use_container_width=True,
+                        width="stretch",
                         key="tc_hist_cargar_imagenes"
                     ):
                         st.session_state.tc_hist_imagenes_id = registro.get("analisis_id", "")
@@ -11663,13 +11589,13 @@ else:
                                         img_bytes = _tc_descargar_imagen_historial(fid)
                                         if img_bytes:
                                             st.caption(titulo)
-                                            st.image(img_bytes, use_container_width=True)
+                                            st.image(img_bytes, width="stretch")
                                             st.download_button(
                                                 tr("Descargar", "Télécharger"),
                                                 data=img_bytes,
                                                 file_name=f"{registro.get('analisis_id','analisis')}_{_tc_safe_slug(titulo)}.png",
                                                 mime="image/png",
-                                                use_container_width=True,
+                                                width="stretch",
                                                 key=f"tc_hist_dl_{registro.get('analisis_id','')}_{fid}"
                                             )
                                     except Exception as img_exc:
