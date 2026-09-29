@@ -8568,6 +8568,11 @@ def _tg_guardar_extras_historial(registro):
         "ImagenProcesadaURL": registro.get("imagen_procesada_url", ""),
         "ImagenOriginalAppSheet": registro.get("imagen_original_appsheet", ""),
         "ImagenProcesadaAppSheet": registro.get("imagen_procesada_appsheet", ""),
+
+        # SOLO IDs nuevos. Los links de AppSheet se generan con fórmulas
+        # directamente en Google Sheets y NO se escriben desde Python.
+        "ImagenInventarioFileID": registro.get("imagen_inventario_file_id", ""),
+        "ImagenPoligonosFileID": registro.get("imagen_poligonos_file_id", ""),
     }
 
     data = []
@@ -8718,6 +8723,8 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
 
     nombre_original = f"{base_nombre}{extension_original}"
     nombre_procesada = f"{base_nombre}_procesada.png"
+    nombre_inventario = f"{base_nombre}_inventario.png"
+    nombre_poligonos = f"{base_nombre}_poligonos.png"
 
     # --------------------------------------------------------
     # GUARDAR ORIGINAL CON NOMBRE NUEVO
@@ -8760,6 +8767,55 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
     )
 
     # --------------------------------------------------------
+    # SUBIR INVENTARIO Y POLÍGONOS YA GENERADOS
+    # --------------------------------------------------------
+    def _tg_a_png_bytes(imagen):
+        if imagen is None:
+            return None
+
+        if isinstance(imagen, Image.Image):
+            _buf = io.BytesIO()
+            imagen.convert("RGB").save(_buf, format="PNG", optimize=True)
+            return _buf.getvalue()
+
+        _arr = np.asarray(imagen)
+        if _arr.size == 0:
+            return None
+
+        _ok, _enc = cv2.imencode(".png", _arr)
+        if not _ok:
+            return None
+
+        return _enc.tobytes()
+
+    inventario_file_id = ""
+    poligonos_file_id = ""
+
+    # Inventario ya calculado y mostrado en la app.
+    _inventario_img = st.session_state.get("tc_inventario_imagen")
+    _inventario_bytes = _tg_a_png_bytes(_inventario_img)
+
+    if _inventario_bytes:
+        inventario_file_id = subir_bytes_google_drive(
+            _inventario_bytes,
+            nombre_inventario,
+            "image/png",
+            "Inventarios",
+        )
+
+    # Polígonos ya calculados por la lógica actual.
+    _poligonos_img = backend_result.get("polygon_image")
+    _poligonos_bytes = _tg_a_png_bytes(_poligonos_img)
+
+    if _poligonos_bytes:
+        poligonos_file_id = subir_bytes_google_drive(
+            _poligonos_bytes,
+            nombre_poligonos,
+            "image/png",
+            "Poligonos",
+        )
+
+    # --------------------------------------------------------
     # REGISTRO COMPLETO
     # --------------------------------------------------------
     backend_data = backend_result.get("backend") or {}
@@ -8780,6 +8836,10 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
 
         "imagen_original_file_id": original_file_id,
         "imagen_procesada_file_id": processed_file_id,
+
+        # IDs que se guardan en Q y R del HistorialTerroCore.
+        "imagen_inventario_file_id": inventario_file_id,
+        "imagen_poligonos_file_id": poligonos_file_id,
 
         "imagen_original_url":
             f"https://drive.google.com/file/d/{original_file_id}/view",
