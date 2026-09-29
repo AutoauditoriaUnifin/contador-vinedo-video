@@ -7511,121 +7511,6 @@ def _tg_point_on_polyline(points, frac):
     return points[-1]
 
 
-def _tg_straighten_points_norm(points_norm, target_points=None):
-    """Convierte una trayectoria ruidosa en un eje recto que siga el surco.
-    Mantiene la orientación general y evita saltos laterales a otra hilera.
-    """
-    pts = []
-    for p in points_norm or []:
-        q = _tg_norm_point(p)
-        if q is not None:
-            pts.append([float(q[0]), float(q[1])])
-    if len(pts) < 2:
-        return pts
-
-    arr = np.asarray(pts, dtype=np.float32)
-    center = np.mean(arr, axis=0)
-    centered = arr - center
-
-    try:
-        _, _, vt = np.linalg.svd(centered, full_matrices=False)
-        direction = vt[0].astype(np.float32)
-    except Exception:
-        direction = (arr[-1] - arr[0]).astype(np.float32)
-
-    norm = float(np.linalg.norm(direction))
-    if norm < 1e-6:
-        direction = (arr[-1] - arr[0]).astype(np.float32)
-        norm = float(np.linalg.norm(direction))
-    if norm < 1e-6:
-        return [[float(p[0]), float(p[1])] for p in arr]
-    direction = direction / norm
-
-    # Mantener el sentido visual del primer al último punto.
-    ref = arr[-1] - arr[0]
-    if float(np.dot(direction, ref)) < 0:
-        direction = -direction
-
-    proj = np.dot(centered, direction)
-    t0 = float(np.min(proj))
-    t1 = float(np.max(proj))
-    if abs(t1 - t0) < 1e-6:
-        t0, t1 = -1.0, 1.0
-
-    n = int(target_points or max(2, min(8, len(arr))))
-    ts = np.linspace(t0, t1, n)
-    out = []
-    for t in ts:
-        p = center + direction * float(t)
-        out.append([
-            _tg_clamp(float(p[0]), 0.0, 1000.0),
-            _tg_clamp(float(p[1]), 0.0, 1000.0),
-        ])
-    return out
-
-
-def _tg_group_consecutive(indices):
-    vals = sorted(set(int(i) for i in indices if int(i) > 0))
-    if not vals:
-        return []
-    groups = [[vals[0]]]
-    for v in vals[1:]:
-        if v == groups[-1][-1] + 1:
-            groups[-1].append(v)
-        else:
-            groups.append([v])
-    return groups
-
-
-def _tg_slot_positions(row, full_size):
-    w, h = full_size
-    pts = _tg_norm_to_px(row.get("points_norm", []), w, h)
-    count = int(row.get("slot_count", 0) or 0)
-    if len(pts) < 2 or count <= 0:
-        return []
-    if count == 1:
-        return [_tg_point_on_polyline(pts, 0.5)]
-    return [_tg_point_on_polyline(pts, i / float(count - 1)) for i in range(count)]
-
-
-def _tg_red_polygons_from_indices(positions, red_indices, band_half_width=7.0, cap_extra=3.0):
-    """Crea polígonos alineados al surco para grupos rojos contiguos."""
-    if not positions or not red_indices:
-        return []
-    n = len(positions)
-    polys = []
-    for group in _tg_group_consecutive(red_indices):
-        i0 = max(1, int(group[0])) - 1
-        i1 = min(n, int(group[-1])) - 1
-        p0 = np.asarray(positions[i0], dtype=np.float32)
-        p1 = np.asarray(positions[i1], dtype=np.float32)
-
-        prev_pt = np.asarray(positions[max(0, i0 - 1)], dtype=np.float32)
-        next_pt = np.asarray(positions[min(n - 1, i1 + 1)], dtype=np.float32)
-        tangent = next_pt - prev_pt
-        tn = float(np.linalg.norm(tangent))
-        if tn < 1e-6:
-            tangent = p1 - p0
-            tn = float(np.linalg.norm(tangent))
-        if tn < 1e-6:
-            tangent = np.array([0.0, 1.0], dtype=np.float32)
-            tn = 1.0
-        tangent = tangent / tn
-        normal = np.array([-tangent[1], tangent[0]], dtype=np.float32)
-
-        start_pt = p0 - tangent * float(cap_extra)
-        end_pt = p1 + tangent * float(cap_extra)
-        hw = float(max(4.0, band_half_width))
-        poly = [
-            tuple((start_pt + normal * hw).tolist()),
-            tuple((end_pt + normal * hw).tolist()),
-            tuple((end_pt - normal * hw).tolist()),
-            tuple((start_pt - normal * hw).tolist()),
-        ]
-        polys.append(poly)
-    return polys
-
-
 def _tg_sort_rows(rows):
     if not rows:
         return []
@@ -7688,11 +7573,10 @@ def _tg_sanitize_rows(data):
                 pts.append(q)
         if len(pts) < 2:
             continue
-        # Limitar ruido en geometría devuelta por el modelo y volverla recta.
+        # Limitar ruido en geometría devuelta por el modelo.
         if len(pts) > 14:
             step = (len(pts) - 1) / 11.0
             pts = [pts[int(round(i * step))] for i in range(12)]
-        pts = _tg_straighten_points_norm(pts, target_points=min(8, max(2, len(pts))))
         try:
             confidence = _tg_clamp(item.get("confidence", 0.6), 0.0, 1.0)
         except Exception:
@@ -7911,7 +7795,7 @@ Imagen 2 = las mismas hileras marcadas Rxx.
 Analiza SOLO estos IDs: {ids}.
 
 Para cada Rxx:
-1. sigue únicamente esa hilera, sin saltar a una vecina; la trayectoria final debe verse RECTA y centrada sobre el surco;
+1. sigue únicamente esa hilera, sin saltar a una vecina;
 2. determina el patrón repetitivo de posiciones reales de planta;
 3. slot_count = TOTAL de posiciones esperadas, incluyendo faltantes;
 4. vacant_indices = índices 1-based de posiciones CLARAMENTE sin planta;
@@ -7954,7 +7838,7 @@ Imagen 1 ORIGINAL, imagen 2 guía Rxx.
 Conteo preliminar: {json.dumps(prelim, ensure_ascii=False, separators=(',', ':'))}
 
 Revisa SOLO slot_count y vacant_indices.
-Corrige un conteo únicamente si el patrón repetitivo visible lo demuestra. Conserva la línea recta del eje del surco.
+Corrige un conteo únicamente si el patrón repetitivo visible lo demuestra.
 Una planta físicamente presente, aunque seca/débil, NO es vacante.
 No cambies geometría ni IDs. Devuelve todos los IDs.
 SOLO JSON:
@@ -7985,10 +7869,6 @@ SOLO JSON:
                 _tg_clamp(item.get("confidence", 0.6), 0.0, 1.0),
             )
 
-    # Enderezar nuevamente la geometría para asegurar líneas rectas y paralelas.
-    for r in final:
-        r["points_norm"] = _tg_straighten_points_norm(r.get("points_norm", []), target_points=6)
-
     for r in final:
         if int(r.get("slot_count", 0) or 0) < 2:
             r["needs_review"] = True
@@ -8013,7 +7893,6 @@ def _tg_draw_inventory(pil, rows):
 
     for row in rows:
         rid = int(row.get("id", 0) or 0)
-        row["points_norm"] = _tg_straighten_points_norm(row.get("points_norm", []), target_points=6)
         pts = _tg_norm_to_px(row.get("points_norm", []), w, h)
         if len(pts) < 2:
             continue
@@ -8133,7 +8012,7 @@ Imagen 1 = recorte ORIGINAL.
 Imagen 2 = guía Rxx con pequeñas referencias de posiciones de planta.
 Inventario confirmado: {json.dumps(spec, ensure_ascii=False, separators=(',', ':'))}
 
-Para CADA Rxx devuelve los índices 1-based que deben ser ROJOS. Mantén la evaluación sobre la MISMA línea recta del surco, sin saltar a otra hilera.
+Para CADA Rxx devuelve los índices 1-based que deben ser ROJOS.
 El resto serán VERDES.
 
 CRITERIO:
@@ -8226,16 +8105,12 @@ Devuelve SOLO JSON:
 
 def _tg_draw_health(pil, rows, health_map):
     img = pil.convert("RGB").copy()
-    draw = ImageDraw.Draw(img, "RGBA")
+    draw = ImageDraw.Draw(img)
     w, h = img.size
     font = ImageFont.load_default()
-    green = (25, 225, 55, 255)
-    red = (245, 45, 45, 255)
-    red_fill = (245, 45, 45, 92)
-    line_green = (35, 210, 70, 255)
-    line_red = (245, 45, 45, 255)
+    green = (25, 225, 55)
+    red = (245, 45, 45)
     width = max(2, int(round(min(w, h) / 520)))
-    poly_half = max(6.0, float(min(w, h)) / 115.0)
 
     total_slots = 0
     total_red = 0
@@ -8245,7 +8120,6 @@ def _tg_draw_health(pil, rows, health_map):
 
     for row in rows:
         rid = int(row.get("id", 0) or 0)
-        row["points_norm"] = _tg_straighten_points_norm(row.get("points_norm", []), target_points=6)
         count = int(row.get("slot_count", 0) or 0)
         pts = _tg_norm_to_px(row.get("points_norm", []), w, h)
         if len(pts) < 2 or count < 2:
@@ -8256,28 +8130,27 @@ def _tg_draw_health(pil, rows, health_map):
         red_indices = {i for i in red_indices if 1 <= i <= count}
         confs.append(float(health_map.get(rid, {}).get("confidence", 0.0) or 0.0))
 
-        positions = _tg_slot_positions(row, (w, h))
+        positions = [
+            _tg_point_on_polyline(pts, i / max(1, count - 1))
+            for i in range(count)
+        ]
         total_slots += count
         total_red += len(red_indices)
         total_green += max(0, count - len(red_indices))
 
-        # Línea base recta del surco.
-        xy = [(int(round(x)), int(round(y))) for x, y in pts]
-        draw.line(xy, fill=line_green, width=width)
+        # La línea entre dos slots es roja si cualquiera de los extremos es rojo.
+        for i in range(count - 1):
+            idx1, idx2 = i + 1, i + 2
+            p0, p1 = positions[i], positions[i + 1]
+            is_red = idx1 in red_indices or idx2 in red_indices
+            draw.line(
+                (int(p0[0]), int(p0[1]), int(p1[0]), int(p1[1])),
+                fill=red if is_red else green,
+                width=width,
+            )
 
-        # Polígonos rojos solo en plantas secas / vacíos.
-        polys = _tg_red_polygons_from_indices(positions, red_indices, band_half_width=poly_half, cap_extra=max(3.0, poly_half * 0.35))
-        for poly in polys:
-            draw.polygon(poly, fill=red_fill, outline=line_red)
-
-        # Dibujar pequeñas referencias de slots alineadas al surco.
-        for idx, p in enumerate(positions, 1):
-            x, y = float(p[0]), float(p[1])
-            if idx in red_indices:
-                draw.ellipse((x-2, y-2, x+2, y+2), fill=red, outline=red)
-                red_xy.append((x, y))
-            else:
-                draw.ellipse((x-1.5, y-1.5, x+1.5, y+1.5), fill=green, outline=green)
+        for idx in red_indices:
+            red_xy.append(positions[idx - 1])
 
         # Número SOLO ARRIBA.
         top = min(pts, key=lambda p: p[1])
@@ -8814,608 +8687,6 @@ NO excluyas huecos secos dentro de una hilera ni suelo normal entre hileras.
         return False, str(exc)
 
 
-
-# ============================================================
-# TERRACORE - MOTOR ACTIVO 100% OPENCV / NUMPY
-# ============================================================
-# Esta capa reemplaza el uso activo de Gemini/OpenAI en Inventario y Salud.
-# - OpenCV detecta los surcos.
-# - Cada surco se ajusta a UNA línea recta robusta.
-# - Los slots se distribuyen sobre esa misma línea: nunca saltan al vecino.
-# - Salud usa evidencia visual local de vegetación por slot.
-# - Vacíos / plantas secas se resaltan con segmentos y polígonos rojos.
-# - No se realiza ninguna llamada a APIs de IA.
-# ============================================================
-
-
-def _ocv_norm_points_from_px(points_px, w, h, n=6):
-    pts = np.asarray(points_px, dtype=np.float32).reshape(-1, 2)
-    if len(pts) < 2:
-        return []
-    if n < 2:
-        n = 2
-    a = pts[0]
-    b = pts[-1]
-    out = []
-    for t in np.linspace(0.0, 1.0, int(n)):
-        p = a * (1.0 - t) + b * t
-        out.append([
-            float(np.clip(p[0] / max(1.0, w - 1) * 1000.0, 0.0, 1000.0)),
-            float(np.clip(p[1] / max(1.0, h - 1) * 1000.0, 0.0, 1000.0)),
-        ])
-    return out
-
-
-def _ocv_fit_straight_track(points, spacing, w, h):
-    """Ajuste robusto a una sola línea, eliminando saltos laterales."""
-    pts = np.asarray(points, dtype=np.float32).reshape(-1, 2)
-    pts = pts[np.all(np.isfinite(pts), axis=1)]
-    if len(pts) < 4:
-        return None
-
-    def fit(arr):
-        line = cv2.fitLine(arr.reshape(-1, 1, 2), cv2.DIST_HUBER, 0, 0.01, 0.01)
-        vx, vy, x0, y0 = [float(v) for v in line.flatten()]
-        d = np.asarray([vx, vy], dtype=np.float32)
-        dn = float(np.linalg.norm(d))
-        if dn < 1e-6:
-            return None
-        d /= dn
-        c = np.asarray([x0, y0], dtype=np.float32)
-        return c, d
-
-    fitted = fit(pts)
-    if fitted is None:
-        return None
-    c, d = fitted
-    nvec = np.asarray([-d[1], d[0]], dtype=np.float32)
-    residual = np.dot(pts - c, nvec)
-    med = float(np.median(residual))
-    mad = float(np.median(np.abs(residual - med))) + 1e-6
-    corridor = max(3.0, min(max(5.0, float(spacing) * 0.42), 2.8 * mad + 3.0))
-    keep = np.abs(residual - med) <= corridor
-    if int(np.sum(keep)) >= max(5, int(len(pts) * 0.45)):
-        pts2 = pts[keep]
-        fitted2 = fit(pts2)
-        if fitted2 is not None:
-            c, d = fitted2
-            pts = pts2
-
-    # Mantener sentido del track original.
-    ref = np.asarray(points[-1], dtype=np.float32) - np.asarray(points[0], dtype=np.float32)
-    if float(np.dot(d, ref)) < 0:
-        d = -d
-
-    proj = np.dot(pts - c, d)
-    # Evita extremos espurios pero conserva casi todo el surco.
-    lo = float(np.percentile(proj, 1.0))
-    hi = float(np.percentile(proj, 99.0))
-    if hi - lo < max(24.0, float(spacing) * 2.5):
-        lo = float(np.min(proj))
-        hi = float(np.max(proj))
-    if hi <= lo:
-        return None
-
-    p0 = c + d * lo
-    p1 = c + d * hi
-    p0[0] = np.clip(p0[0], 0, w - 1); p0[1] = np.clip(p0[1], 0, h - 1)
-    p1[0] = np.clip(p1[0], 0, w - 1); p1[1] = np.clip(p1[1], 0, h - 1)
-
-    length = float(np.linalg.norm(p1 - p0))
-    if length < max(35.0, min(w, h) * 0.06):
-        return None
-
-    sampled = np.asarray([
-        p0 * (1.0 - t) + p1 * t
-        for t in np.linspace(0.0, 1.0, 80)
-    ], dtype=np.float32)
-    return sampled
-
-
-def _ocv_row_mid_and_dir(row, w, h):
-    pts = np.asarray(_tg_norm_to_px(row.get('points_norm', []), w, h), dtype=np.float32)
-    if len(pts) < 2:
-        return None, None
-    mid = (pts[0] + pts[-1]) * 0.5
-    d = pts[-1] - pts[0]
-    dn = float(np.linalg.norm(d))
-    if dn < 1e-6:
-        return mid, np.asarray([0.0, 1.0], dtype=np.float32)
-    return mid, d / dn
-
-
-def _ocv_regularize_rows(rows, w, h):
-    """Ordena, deduplica y rellena como máximo huecos pequeños de la rejilla."""
-    rows = _tg_sort_rows(rows)
-    if len(rows) < 2:
-        return rows
-
-    mids = []
-    dirs = []
-    for r in rows:
-        m, d = _ocv_row_mid_and_dir(r, w, h)
-        if m is not None:
-            mids.append(m); dirs.append(d)
-    if len(mids) != len(rows):
-        return rows
-
-    d = np.mean(np.asarray(dirs, dtype=np.float32), axis=0)
-    dn = float(np.linalg.norm(d)) or 1.0
-    d = d / dn
-    nvec = np.asarray([d[1], -d[0]], dtype=np.float32)
-    coords = np.asarray([float(np.dot(m, nvec)) for m in mids], dtype=np.float32)
-
-    # Orden definitivo transversal.
-    order = np.argsort(coords)
-    rows = [rows[int(i)] for i in order]
-    coords = coords[order]
-
-    gaps = np.diff(coords)
-    good = gaps[(gaps > 3.0)]
-    if len(good) == 0:
-        return _tg_sort_rows(rows)
-    med = float(np.median(good))
-
-    # Deduplicar líneas excesivamente cercanas.
-    kept = [rows[0]]
-    kept_coord = [float(coords[0])]
-    for i in range(1, len(rows)):
-        gap = float(coords[i] - kept_coord[-1])
-        if gap < med * 0.42:
-            # conservar la más larga/confiante
-            old = kept[-1]
-            old_conf = float(old.get('confidence', 0.0) or 0.0)
-            new_conf = float(rows[i].get('confidence', 0.0) or 0.0)
-            if new_conf > old_conf:
-                kept[-1] = rows[i]
-                kept_coord[-1] = float(coords[i])
-            continue
-        kept.append(rows[i]); kept_coord.append(float(coords[i]))
-
-    rows = kept
-    # Rellenar solo un hueco claramente equivalente a 2 o 3 pasos. Evita puentes grandes.
-    result = []
-    for i, r in enumerate(rows[:-1]):
-        result.append(r)
-        m0, _ = _ocv_row_mid_and_dir(r, w, h)
-        m1, _ = _ocv_row_mid_and_dir(rows[i+1], w, h)
-        if m0 is None or m1 is None:
-            continue
-        gap = abs(float(np.dot(m1 - m0, nvec)))
-        steps = int(round(gap / max(med, 1e-6)))
-        missing = max(0, steps - 1)
-        if missing <= 0 or missing > 2 or gap > med * 3.35:
-            continue
-        p0a = np.asarray(_tg_norm_to_px(r.get('points_norm', []), w, h), dtype=np.float32)
-        p1a = np.asarray(_tg_norm_to_px(rows[i+1].get('points_norm', []), w, h), dtype=np.float32)
-        if len(p0a) < 2 or len(p1a) < 2:
-            continue
-        for k in range(1, missing + 1):
-            alpha = k / float(missing + 1)
-            a = p0a[0] * (1-alpha) + p1a[0] * alpha
-            b = p0a[-1] * (1-alpha) + p1a[-1] * alpha
-            synth = {
-                'id': 0,
-                'confidence': 0.45,
-                'points_norm': _ocv_norm_points_from_px([a, b], w, h, n=6),
-                'slot_count': 0,
-                'vacant_indices': [],
-                'synthetic_dry_row': True,
-            }
-            result.append(synth)
-    result.append(rows[-1])
-    result = _tg_sort_rows(result)
-    for i, r in enumerate(result, 1):
-        r['id'] = i
-    return result
-
-
-def _ocv_inventory_from_file(uploaded_file):
-    pil = Image.open(io.BytesIO(uploaded_file.getvalue())).convert('RGB')
-    w, h = pil.size
-    base = analizar(pil, exclusion_mask=None)
-    response_map = np.asarray(base.get('response_map'), dtype=np.float32)
-    tracks_raw = list(base.get('tracks', []) or [])
-    if response_map.ndim != 2 or not tracks_raw:
-        raise RuntimeError('OpenCV no encontró trayectorias de surcos utilizables.')
-
-    # Una trayectoria por ID global: conserva la más larga.
-    by_index = {}
-    for track in tracks_raw:
-        idx = int(track.get('track_index', len(by_index) + 1))
-        old = by_index.get(idx)
-        if old is None or float(track.get('line_length', 0.0) or 0.0) > float(old.get('line_length', 0.0) or 0.0):
-            by_index[idx] = track
-
-    rows = []
-    straight_tracks = []
-    for idx in sorted(by_index):
-        track = by_index[idx]
-        spacing = float(track.get('spacing', 18.0) or 18.0)
-        straight = _ocv_fit_straight_track(track.get('points', []), spacing, w, h)
-        if straight is None:
-            continue
-        straight_track = dict(track)
-        straight_track['points'] = straight
-        straight_tracks.append(straight_track)
-        rows.append({
-            'id': len(rows) + 1,
-            'confidence': 0.72,
-            'points_norm': _ocv_norm_points_from_px([straight[0], straight[-1]], w, h, n=6),
-            'slot_count': 0,
-            'vacant_indices': [],
-            'row_spacing_px': spacing,
-            '_track': straight_track,
-        })
-
-    if len(rows) < 4:
-        raise RuntimeError('OpenCV encontró muy pocos surcos. Usa una imagen más cenital o con mayor cobertura.')
-
-    rows = _ocv_regularize_rows(rows, w, h)
-
-    # Reconstruir tracks de filas sintetizadas y calcular pitch común.
-    candidate_pitches = []
-    for r in rows:
-        pts_px = np.asarray(_tg_norm_to_px(r.get('points_norm', []), w, h), dtype=np.float32)
-        if len(pts_px) < 2:
-            continue
-        spacing = float(r.get('row_spacing_px', 18.0) or 18.0)
-        sampled = np.asarray([_tg_point_on_polyline(pts_px.tolist(), t) for t in np.linspace(0, 1, 80)], dtype=np.float32)
-        ds, prof, _ = _tc_sample_map_along_track(response_map, sampled, spacing, step_px=2.0)
-        if len(ds) >= 8:
-            p, c = _tc_estimar_pitch_slots(ds, prof, spacing)
-            if np.isfinite(p) and p > 3:
-                candidate_pitches.append(float(p))
-
-    forced_pitch = float(np.median(candidate_pitches)) if candidate_pitches else None
-
-    # Calcular slots sobre la MISMA línea recta.
-    confs = []
-    for r in rows:
-        pts_px = np.asarray(_tg_norm_to_px(r.get('points_norm', []), w, h), dtype=np.float32)
-        spacing = float(r.get('row_spacing_px', 18.0) or 18.0)
-        sampled = np.asarray([_tg_point_on_polyline(pts_px.tolist(), t) for t in np.linspace(0, 1, 90)], dtype=np.float32)
-        local_track = {
-            'points': sampled,
-            'spacing': spacing,
-        }
-        slots, pitch_used, conf = _tc_slots_track(response_map, local_track, forced_pitch=forced_pitch)
-        if r.get('synthetic_dry_row') and len(slots) < 2 and forced_pitch:
-            length = float(np.linalg.norm(pts_px[-1] - pts_px[0]))
-            count = max(2, int(round(length / max(5.0, forced_pitch))) + 1)
-            positions = [_tg_point_on_polyline(pts_px.tolist(), t) for t in np.linspace(0, 1, count)]
-            slots = [{'point': p, 'occupied': False, 'score': 0.0} for p in positions]
-            conf = 0.40
-        r['slot_count'] = int(len(slots))
-        r['vacant_indices'] = [i + 1 for i, s in enumerate(slots) if not bool(s.get('occupied', False))]
-        r['slot_confidence'] = float(conf)
-        r['pitch_px'] = float(pitch_used if len(slots) else (forced_pitch or 0.0))
-        confs.append(float(conf))
-
-    # Dibujo de inventario: línea recta + puntos pequeños perfectamente alineados.
-    band_h = max(46, int(round(h * 0.065)))
-    canvas = Image.new('RGB', (w, h + band_h), (91, 37, 46))
-    canvas.paste(pil, (0, band_h))
-    draw = ImageDraw.Draw(canvas)
-    font = ImageFont.load_default()
-    table = []
-
-    for r in rows:
-        rid = int(r['id'])
-        pts_px = _tg_norm_to_px(r.get('points_norm', []), w, h)
-        if len(pts_px) < 2:
-            continue
-        a, b = pts_px[0], pts_px[-1]
-        draw.line((a[0], a[1] + band_h, b[0], b[1] + band_h), fill=(245,245,245), width=max(1, int(min(w,h)/950)))
-        count = int(r.get('slot_count', 0) or 0)
-        vacant = set(_tg_clean_indices(r.get('vacant_indices', []), count))
-        positions = _tg_slot_positions(r, (w,h))
-        for idx, p in enumerate(positions, 1):
-            x = float(p[0]); y = float(p[1] + band_h)
-            if idx in vacant:
-                fill = (255, 150, 35)
-                rr = 2.4
-            else:
-                fill = (40, 195, 255)
-                rr = 1.9
-            draw.ellipse((x-rr, y-rr, x+rr, y+rr), fill=fill)
-
-        top = a if a[1] <= b[1] else b
-        label = f'{rid:02d}'
-        bbox = draw.textbbox((0,0), label, font=font)
-        tw = bbox[2]-bbox[0]
-        tx = int(np.clip(top[0]-tw/2, 1, max(1,w-tw-2)))
-        ty = 5 if rid % 2 else 20
-        draw.text((tx,ty), label, fill=(255,255,255), font=font, stroke_width=2, stroke_fill=(35,20,25))
-
-        occ = max(0, count - len(vacant))
-        table.append({
-            tr('Surco','Rang'): label,
-            tr('Slots','Emplacements'): count,
-            tr('Ocupados','Occupés'): occ,
-            tr('Vacíos','Vides'): len(vacant),
-            tr('Confianza','Confiance'): round(float(r.get('slot_confidence',0.0))*100.0,1),
-            tr('Estado','État'): tr('OpenCV','OpenCV'),
-        })
-        r.pop('_track', None)
-
-    return {
-        'pil': pil,
-        'rows': rows,
-        'image': canvas,
-        'table': pd.DataFrame(table),
-        'count': len(rows),
-        'confidence': float(np.mean(confs)) if confs else 0.0,
-        'coverage_score': 1.0,
-        'model': 'OpenCV local',
-        'warnings': [],
-        'debug': {'pitch_px': float(forced_pitch or 0.0), 'motor': 'opencv-only'},
-    }
-
-
-def _ocv_green_score_patch(bgr, x, y, radius):
-    h, w = bgr.shape[:2]
-    r = max(2, int(radius))
-    x0 = max(0, int(round(x)) - r); x1 = min(w, int(round(x)) + r + 1)
-    y0 = max(0, int(round(y)) - r); y1 = min(h, int(round(y)) + r + 1)
-    crop = bgr[y0:y1, x0:x1]
-    if crop.size == 0:
-        return 0.0, 0.0
-    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).astype(np.float32)
-    rr, gg, bb = rgb[:,:,0], rgb[:,:,1], rgb[:,:,2]
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    hh, ss, vv = cv2.split(hsv)
-    exg = 2.0*gg - rr - bb
-    ngr = (gg-rr)/(gg+rr+1e-6)
-    green = (exg > 5.0) & (ngr > -0.02) & (hh >= 18) & (hh <= 115) & (ss >= 12) & (vv >= 20) & (gg >= rr*0.86) & (gg >= bb*0.86)
-    # Marrón/amarillento/seco aproximado; se usa solo como evidencia adicional.
-    dry = (hh >= 5) & (hh <= 38) & (ss >= 25) & (vv >= 25) & (~green)
-    return float(np.mean(green)), float(np.mean(dry))
-
-
-def _ocv_classify_health(pil, rows):
-    bgr = cv2.cvtColor(np.asarray(pil.convert('RGB')), cv2.COLOR_RGB2BGR)
-    h, w = bgr.shape[:2]
-    health_map = {}
-    all_confs = []
-
-    for r in rows:
-        rid = int(r.get('id', 0) or 0)
-        count = int(r.get('slot_count', 0) or 0)
-        positions = _tg_slot_positions(r, (w,h))
-        if count < 2 or len(positions) != count:
-            health_map[rid] = {'red_indices': [], 'confidence': 0.0}
-            continue
-        spacing = float(r.get('row_spacing_px', 18.0) or 18.0)
-        radius = max(3, int(round(spacing * 0.28)))
-        g_scores = []
-        d_scores = []
-        for p in positions:
-            gs, ds = _ocv_green_score_patch(bgr, p[0], p[1], radius)
-            g_scores.append(gs); d_scores.append(ds)
-        g_arr = np.asarray(g_scores, dtype=np.float32)
-        d_arr = np.asarray(d_scores, dtype=np.float32)
-        positive = g_arr[g_arr > 0.005]
-        healthy_ref = float(np.percentile(positive, 72)) if len(positive) >= 4 else float(np.max(g_arr) if len(g_arr) else 0.0)
-        # Umbral adaptable: planta claramente por debajo del vigor local.
-        green_thr = max(0.025, healthy_ref * 0.36)
-        vacant = set(_tg_clean_indices(r.get('vacant_indices', []), count))
-        red = set(vacant)
-        for i, (gs, ds) in enumerate(zip(g_arr, d_arr), 1):
-            if i in vacant:
-                continue
-            # Seca/débil: verde bajo y evidencia seca/terreno suficiente.
-            if gs < green_thr and (ds > 0.18 or gs < green_thr * 0.55):
-                red.add(i)
-        # Suavizar microhuecos: un solo slot verde encerrado por rojos se considera afectado.
-        for i in range(2, count):
-            if i not in red and (i-1) in red and (i+1) in red:
-                red.add(i)
-        contrast = float(np.std(g_arr)/(np.mean(g_arr)+1e-6)) if len(g_arr) else 0.0
-        conf = float(np.clip(0.58 + min(0.32, contrast*0.45), 0.45, 0.90))
-        health_map[rid] = {
-            'red_indices': sorted(red),
-            'confidence': conf,
-            'green_threshold': green_thr,
-        }
-        all_confs.append(conf)
-    return health_map, (float(np.mean(all_confs)) if all_confs else 0.0)
-
-
-def _ocv_draw_health_and_polygons(pil, rows, health_map):
-    base = pil.convert('RGB')
-    w, h = base.size
-    analysis = base.copy()
-    polygons = base.copy()
-    draw_a = ImageDraw.Draw(analysis, 'RGBA')
-    draw_p = ImageDraw.Draw(polygons, 'RGBA')
-    font = ImageFont.load_default()
-    total = red_total = 0
-    red_xy = []
-    line_w = max(2, int(round(min(w,h)/600)))
-
-    # Estimar ancho de polígono a partir de separación entre surcos.
-    mids = []
-    for r in rows:
-        pts = _tg_norm_to_px(r.get('points_norm', []), w, h)
-        if len(pts) >= 2:
-            mids.append(_tg_point_on_polyline(pts, 0.5))
-    row_gap = 14.0
-    if len(mids) > 2:
-        arr = np.asarray(mids, dtype=np.float32)
-        arr = arr[np.argsort(arr[:,0])]
-        ds = np.linalg.norm(np.diff(arr, axis=0), axis=1)
-        ds = ds[ds > 3]
-        if len(ds): row_gap = float(np.median(ds))
-    half_width = max(4.0, row_gap * 0.28)
-
-    for r in rows:
-        rid = int(r.get('id',0) or 0)
-        count = int(r.get('slot_count',0) or 0)
-        pts = _tg_norm_to_px(r.get('points_norm', []), w, h)
-        if len(pts) < 2 or count < 2:
-            continue
-        positions = _tg_slot_positions(r, (w,h))
-        red_indices = set(health_map.get(rid,{}).get('red_indices', []))
-        red_indices.update(_tg_clean_indices(r.get('vacant_indices', []), count))
-        red_indices = {i for i in red_indices if 1 <= i <= count}
-        total += count; red_total += len(red_indices)
-
-        # Línea base recta verde.
-        a, b = pts[0], pts[-1]
-        draw_a.line((a[0],a[1],b[0],b[1]), fill=(25,220,55,255), width=line_w)
-
-        # Tramos rojos rectos por grupos contiguos.
-        for group in _tg_group_consecutive(red_indices):
-            i0 = max(1, group[0]) - 1
-            i1 = min(count, group[-1]) - 1
-            p0 = positions[i0]; p1 = positions[i1]
-            draw_a.line((p0[0],p0[1],p1[0],p1[1]), fill=(245,45,45,255), width=max(line_w+1,3))
-
-        # Polígonos sobre plantas secas / vacíos.
-        for poly in _tg_red_polygons_from_indices(positions, red_indices, band_half_width=half_width, cap_extra=max(3.0,half_width*0.4)):
-            draw_p.polygon(poly, fill=(245,45,45,80), outline=(245,45,45,235))
-            draw_a.polygon(poly, fill=(245,45,45,35), outline=(245,45,45,190))
-
-        # Puntos exactamente sobre la línea recta.
-        for idx, p in enumerate(positions, 1):
-            x,y = float(p[0]),float(p[1])
-            if idx in red_indices:
-                rr=2.2; col=(245,45,45,255); red_xy.append((x,y))
-            else:
-                rr=1.6; col=(25,225,55,255)
-            draw_a.ellipse((x-rr,y-rr,x+rr,y+rr), fill=col)
-
-        top = a if a[1] <= b[1] else b
-        label = f'{rid:02d}'
-        draw_a.text((int(top[0])-6, max(0,int(top[1])-13)), label, fill=(255,255,255,255), font=font, stroke_width=2, stroke_fill=(35,20,25,255))
-
-    green_total = max(0, total-red_total)
-    green_pct = 100.0*green_total/total if total else 0.0
-    red_pct = 100.0*red_total/total if total else 0.0
-    return {
-        'annotated': analysis,
-        'polygon_image': polygons,
-        'green_pct': green_pct,
-        'red_pct': red_pct,
-        'green_slots': green_total,
-        'red_slots': red_total,
-        'total_slots': total,
-        'red_xy': red_xy,
-    }
-
-
-def _ocv_select_best_capture(uploaded_images):
-    """Selecciona la mejor captura y procesa Inventario usando SOLO OpenCV."""
-    candidates = []
-    errors = []
-    for up in uploaded_images:
-        try:
-            inv = _ocv_inventory_from_file(up)
-            score = float(inv.get('confidence',0.0))*0.45 + min(1.0,float(inv.get('count',0))/90.0)*0.55
-            candidates.append((score, up, inv))
-        except Exception as exc:
-            errors.append(f'{up.name}: {exc}')
-    if not candidates:
-        raise RuntimeError(' | '.join(errors) if errors else 'OpenCV no pudo analizar la captura.')
-    candidates.sort(key=lambda x:x[0], reverse=True)
-    _, up, inv = candidates[0]
-    return up, inv, errors
-
-
-def _ocv_analyze_health(uploaded_image, rows):
-    """Analiza Salud usando SOLO OpenCV sobre la geometría confirmada."""
-    pil = Image.open(io.BytesIO(uploaded_image.getvalue())).convert('RGB')
-    if not rows:
-        raise RuntimeError('No hay geometría de Inventario confirmada.')
-    # Asegurar que cada trayectoria siga siendo recta.
-    for r in rows:
-        r['points_norm'] = _tg_straighten_points_norm(r.get('points_norm', []), target_points=6)
-    health_map, conf = _ocv_classify_health(pil, rows)
-    visual = _ocv_draw_health_and_polygons(pil, rows, health_map)
-
-    red_pct = float(visual['red_pct'])
-    if red_pct < 15:
-        nivel = 'bajo'
-    elif red_pct < 35:
-        nivel = 'medio'
-    else:
-        nivel = 'alto'
-    zona = _tg_zone_fallback(pil, visual.get('red_xy', []))
-    diagnostico = (
-        f'OpenCV detectó {visual["red_slots"]} posiciones afectadas o vacías de '
-        f'{visual["total_slots"]} slots evaluados ({red_pct:.1f}% rojo). '
-        'Los polígonos rojos señalan zonas con baja evidencia de vegetación, plantas secas o vacíos.'
-    )
-    recomendaciones = [
-        'Revisar en campo los polígonos rojos y confirmar si corresponden a planta seca o faltante.',
-        'Comparar el mismo surco en una captura posterior para validar persistencia de la afectación.',
-    ]
-    result = {
-        'count': len(rows),
-        'green_pct': float(visual['green_pct']),
-        'red_pct': red_pct,
-        'green_slots': int(visual['green_slots']),
-        'red_slots': int(visual['red_slots']),
-        'total_slots': int(visual['total_slots']),
-        'angle': 0.0,
-        'annotated': visual['annotated'],
-        'polygon_image': visual['polygon_image'],
-        'result_url': '',
-        'zona_mas_afectada': zona,
-        'nivel_afectacion_visual': nivel,
-        'diagnostico_visual': diagnostico,
-        'causas_probables': [],
-        'explicacion_nutrientes': 'El análisis OpenCV es visual y no identifica nutrientes ni enfermedades.',
-        'recomendaciones_iniciales': recomendaciones,
-        'nota_diagnostico': 'Diagnóstico visual automático por OpenCV; confirmar en campo.',
-        'detalle_zonas': {},
-        'metodo': 'opencv-only-straight-rows',
-        'confidence': float(conf),
-        'health_map': health_map,
-    }
-    result['backend'] = {
-        'metodo': 'opencv-only-straight-rows',
-        'analisis': {
-            'surcos_estimados': result['count'],
-            'verde_pct': result['green_pct'],
-            'rojo_pct': result['red_pct'],
-            'zona_mas_afectada': result['zona_mas_afectada'],
-            'nivel_afectacion_visual': result['nivel_afectacion_visual'],
-            'diagnostico_visual': result['diagnostico_visual'],
-            'causas_probables': [],
-            'explicacion_nutrientes': result['explicacion_nutrientes'],
-            'recomendaciones_iniciales': result['recomendaciones_iniciales'],
-            'nota_diagnostico': result['nota_diagnostico'],
-            'total_slots': result['total_slots'],
-            'green_slots': result['green_slots'],
-            'red_slots': result['red_slots'],
-        }
-    }
-    return result
-
-
-# Alias de compatibilidad para bloques antiguos; ambos apuntan al motor local.
-def _tc_select_best_capture_openai(uploaded_images):
-    return _ocv_select_best_capture(uploaded_images)
-
-
-def _tc_analyze_health_openai(uploaded_image, rows):
-    return _ocv_analyze_health(uploaded_image, rows)
-
-
-def analizar_pil_con_ia(pil_img):
-    """Compatibilidad del flujo legado/video sin llamar IA externa."""
-    return True, {
-        'es_vinedo': True,
-        'hay_camino': False,
-        'hay_techo': False,
-        'hay_construccion': False,
-        'analizar_surcos': True,
-        'resumen': 'Modo local OpenCV: sin exclusión por IA.',
-        'zonas_excluir': [],
-    }
-
 # ------------------------------------------------------------
 # ESTILOS ADICIONALES: SOLO COMPLEMENTAN EL DISEÑO ORIGINAL
 # ------------------------------------------------------------
@@ -9675,7 +8946,7 @@ with main_col:
         )
 
         st.markdown(
-            f"<div class='tc-row-number-demo'>01 ─────────────────────────</div>",
+            f"<div class='tc-row-number-demo'>01 ───────────────────────── 01</div>",
             unsafe_allow_html=True
         )
 
@@ -9689,26 +8960,26 @@ with main_col:
 
         if analizar_inventario and uploaded_images:
             # ========================================================
-            # INVENTARIO 100% OPENCV LOCAL
-            # Sin Gemini/OpenAI: detección, slots y validación visual local.
+            # INVENTARIO 100% OPENAI VISION
+            # OpenCV solo dibuja; no detecta ni clasifica.
             # ========================================================
             progress = st.progress(
                 5,
                 text=tr(
-                    "OpenCV está detectando y enderezando los surcos...",
-                    "OpenCV détecte et redresse les rangs..."
+                    "Gemini está revisando la parcela y cada surco...",
+                    "Gemini examine la parcelle et chaque rang..."
                 )
             )
 
             try:
-                best_up, inv, errores_inventario = _ocv_select_best_capture(
+                best_up, inv, errores_inventario = _tc_select_best_capture_openai(
                     uploaded_images
                 )
                 progress.progress(
                     92,
                     text=tr(
-                        "OpenCV está alineando slots ocupados y vacíos...",
-                        "OpenCV aligne les emplacements occupés et vides..."
+                        "La IA está terminando slots ocupados y vacíos...",
+                        "L’IA termine les emplacements occupés et vides..."
                     )
                 )
 
@@ -9720,7 +8991,7 @@ with main_col:
                 st.session_state.tc_inventario_fuente = best_up.name
                 st.session_state.tc_inventario_confianza = float(inv.get("confidence", 0.0))
                 st.session_state.tc_inventario_rows_ai = inv.get("rows", [])
-                st.session_state.tc_inventario_modelo = inv.get("model", "OpenCV local")
+                st.session_state.tc_inventario_modelo = inv.get("model", f"Gemini ({_tg_gemini_model()})")
                 st.session_state.tc_inventario_debug = inv.get("debug", {})
                 st.session_state.tc_inventario_warnings = inv.get("warnings", [])
                 st.session_state.tc_inventario_procesado = True
@@ -9728,8 +8999,8 @@ with main_col:
                 progress.progress(100, text=tr("Inventario terminado.", "Inventaire terminé."))
                 st.success(
                     tr(
-                        "✅ Inventario terminado únicamente con OpenCV local.",
-                        "✅ Inventaire terminé uniquement avec OpenCV local."
+                        "✅ Inventario terminado únicamente con Gemini.",
+                        "✅ Inventaire terminé uniquement avec Gemini."
                     )
                 )
                 if errores_inventario:
@@ -9744,8 +9015,8 @@ with main_col:
                 st.session_state.tc_inventario_warnings = []
                 st.error(
                     tr(
-                        f"No se pudo terminar el Inventario con OpenCV: {exc}",
-                        f"Impossible de terminer l’inventaire avec OpenCV : {exc}"
+                        f"No se pudo terminar el Inventario con IA: {exc}",
+                        f"Impossible de terminer l’inventaire avec l’IA : {exc}"
                     )
                 )
 
@@ -9778,7 +9049,7 @@ with main_col:
         fuente_inv = st.session_state.tc_inventario_fuente or "—"
         st.caption(
             tr(
-                f"Inventario identificado únicamente con OpenCV. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
+                f"Inventario identificado únicamente con Gemini. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
                 f"Inventaire automatique calculé à partir de la présence visuelle, séparé du diagnostic de santé. Image de référence : {fuente_inv}. Confiance moyenne : {confianza_inv*100:.1f} %."
             )
         )
@@ -9786,8 +9057,8 @@ with main_col:
         warnings_inv = st.session_state.get("tc_inventario_warnings", []) or []
         if warnings_inv:
             st.warning(tr(
-                "OpenCV terminó la parcela, pero hay uno o más surcos que requieren revisión manual.",
-                "OpenCV a terminé la parcelle, mais un ou plusieurs rangs nécessitent une vérification manuelle."
+                "La IA terminó la parcela, pero hay uno o más surcos que requieren revisión. No se canceló todo el Inventario.",
+                "L’IA a terminé la parcelle, mais un ou plusieurs rangs nécessitent une vérification. L’inventaire complet n’a pas été annulé."
             ))
             with st.expander(tr("Surcos a revisar", "Rangs à vérifier"), expanded=False):
                 for warning_msg in warnings_inv:
@@ -9824,8 +9095,8 @@ with main_col:
 
         st.markdown(tr("#### Tabla automática por surco", "#### Tableau automatique par rang"))
         st.caption(tr(
-            "OpenCV sigue cada hilera recta y llena Slots, Ocupados y Vacíos. Los puntos permanecen sobre el mismo surco sin saltar al vecino.",
-            "OpenCV suit chaque rang droit et remplit Emplacements, Occupés et Vides."
+            "Gemini revisa cada hilera y llena Slots, Ocupados y Vacíos. Puedes corregir un valor antes de confirmar si la revisión visual lo requiere.",
+            "Gemini examine chaque rang et remplit Emplacements, Occupés et Vides. Vous pouvez corriger une valeur avant confirmation."
         ))
 
         edited = st.data_editor(
@@ -9930,8 +9201,8 @@ with main_col:
                 progress_salud = st.progress(
                     5,
                     text=tr(
-                        "OpenCV está revisando plantas secas y vacíos slot por slot...",
-                        "OpenCV examine la santé emplacement par emplacement..."
+                        "Gemini está revisando la Salud slot por slot...",
+                        "Gemini examine la santé emplacement par emplacement..."
                     )
                 )
 
@@ -9941,15 +9212,15 @@ with main_col:
                         (u for u in uploaded_images if u.name == fuente),
                         uploaded_images[0]
                     )
-                    rows_ocv = st.session_state.tc_inventario_rows_ai or []
-                    if not rows_ocv:
+                    rows_ai = st.session_state.tc_inventario_rows_ai or []
+                    if not rows_ai:
                         raise RuntimeError(
                             "Falta la geometría de Inventario. Vuelve a ejecutar Inventario antes de Salud."
                         )
 
-                    backend_result = _ocv_analyze_health(
+                    backend_result = _tc_analyze_health_openai(
                         uploaded_image,
-                        rows_ocv
+                        rows_ai
                     )
                     progress_salud.progress(
                         90,
@@ -9991,7 +9262,6 @@ with main_col:
                         "total_slots": int(backend_result.get("total_slots", 0) or 0),
                         "angle": float(backend_result.get("angle", 0.0)),
                         "annotated": backend_result.get("annotated"),
-                        "polygon_image": backend_result.get("polygon_image"),
                         "ia_scene": backend_result.get("backend"),
                         "result_url": backend_result.get("result_url"),
                         "historial_google_guardado": historial_google_ok,
@@ -10004,7 +9274,7 @@ with main_col:
                         "recomendaciones_iniciales": backend_result.get("recomendaciones_iniciales", []),
                         "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
                         "detalle_zonas": backend_result.get("detalle_zonas", {}),
-                        "metodo": backend_result.get("metodo", "opencv-only-straight-rows"),
+                        "metodo": backend_result.get("metodo", "gemini-only-slot-health"),
                         "confidence": backend_result.get("confidence", 0.0),
                     })
 
@@ -10016,8 +9286,8 @@ with main_col:
                 except Exception as exc:
                     st.error(
                         tr(
-                            f"No se pudo analizar Salud con OpenCV: {exc}",
-                            f"Impossible d’analyser la santé avec OpenCV : {exc}"
+                            f"No se pudo analizar Salud con IA: {exc}",
+                            f"Impossible d’analyser la santé avec l’IA : {exc}"
                         )
                     )
 
@@ -10042,7 +9312,7 @@ with main_col:
                     with st.container(border=True):
                         st.markdown(f"**{item.get('name','')}**")
 
-                        c_original, c_proc, c_poly = st.columns(3)
+                        c_original, c_proc = st.columns(2)
                         with c_original:
                             st.caption(tr("Imagen original", "Image originale"))
                             try:
@@ -10055,7 +9325,7 @@ with main_col:
                             except Exception:
                                 pass
                         with c_proc:
-                            st.caption(tr("Líneas de Salud — OpenCV", "Lignes de santé — OpenCV"))
+                            st.caption(tr("Imagen procesada — Salud", "Image traitée — Santé"))
                             annotated = item.get("annotated")
                             if annotated is not None:
                                 if isinstance(annotated, Image.Image):
@@ -10065,14 +9335,6 @@ with main_col:
                                         cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
                                         use_container_width=True
                                     )
-                        with c_poly:
-                            st.caption(tr("Polígonos — secas y vacíos", "Polygones — secs et vides"))
-                            polygon_image = item.get("polygon_image")
-                            if polygon_image is not None:
-                                if isinstance(polygon_image, Image.Image):
-                                    st.image(polygon_image, use_container_width=True)
-                                else:
-                                    st.image(cv2.cvtColor(polygon_image, cv2.COLOR_BGR2RGB), use_container_width=True)
 
                         d1, d2, d3 = st.columns(3)
                         with d1:
