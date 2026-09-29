@@ -5629,6 +5629,129 @@ def _tc_get_captura_base_upload(uploaded_images):
     return None
 
 
+
+# ============================================================
+# HELPERS MULTIFOTO V15.1
+# ============================================================
+
+def _tc_nombre_foto(original_name):
+    """Devuelve el nombre amigable escrito por el usuario."""
+    nombres = st.session_state.get("tc_nombres_fotos", {}) or {}
+    custom = str(nombres.get(str(original_name), "") or "").strip()
+    return custom or str(original_name)
+
+
+def _tc_compact_image_bytes(image, max_side=1280, quality=82):
+    """Comprime una imagen OpenCV/PIL para no saturar session_state."""
+    if image is None:
+        return b""
+
+    if isinstance(image, Image.Image):
+        rgb = np.asarray(image.convert("RGB"))
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    else:
+        bgr = np.ascontiguousarray(np.asarray(image, dtype=np.uint8))
+
+    if bgr.ndim != 3 or bgr.shape[2] != 3:
+        return b""
+
+    h, w = bgr.shape[:2]
+    largest = max(h, w)
+
+    if largest > int(max_side):
+        scale = float(max_side) / float(largest)
+        bgr = cv2.resize(
+            bgr,
+            (
+                max(1, int(round(w * scale))),
+                max(1, int(round(h * scale))),
+            ),
+            interpolation=cv2.INTER_AREA,
+        )
+        bgr = np.ascontiguousarray(bgr)
+
+    ok, enc = cv2.imencode(
+        ".jpg",
+        bgr,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)],
+    )
+    if not ok:
+        return b""
+
+    return enc.tobytes()
+
+
+def _tc_image_bytes_to_bgr(data):
+    """Convierte bytes JPEG/PNG compactos a BGR cuando OpenCV los necesita."""
+    if not data:
+        return None
+    arr = np.frombuffer(data, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    del arr
+    return np.ascontiguousarray(img) if img is not None else None
+
+
+def _tc_image_bytes_for_streamlit(data):
+    """Convierte bytes compactos a PIL para st.image."""
+    if not data:
+        return None
+    return Image.open(io.BytesIO(data)).convert("RGB")
+
+
+def _tc_liberar_memoria_opencv():
+    """Limpieza entre fotografías para reducir presión de memoria nativa."""
+    try:
+        cv2.destroyAllWindows()
+    except Exception:
+        pass
+    gc.collect()
+
+
+def _tc_fuentes_para_analisis(uploaded_images):
+    """
+    Devuelve TODAS las fotografías seleccionadas.
+    Cada foto se procesa individualmente para Inventario, Análisis y Polígonos.
+    """
+    return list(uploaded_images or [])
+
+
+def _tc_find_multi(items, name):
+    """Busca el resultado correspondiente al mismo archivo original."""
+    for item in items or []:
+        if str(item.get("name", "")) == str(name):
+            return item
+    return None
+
+
+def _tc_actualizar_historial_nombre_foto(analisis_id, nombre_foto):
+    """Guarda el nombre amigable en HistorialTerroCore!AC."""
+    if not analisis_id or not nombre_foto or not historial_google_configurado():
+        return False
+
+    target_row = _tc_buscar_fila_historial(analisis_id)
+    if not target_row:
+        return False
+
+    _, sheets_service = obtener_google_clients()
+    spreadsheet_id = _secret_text("GSHEET_ID")
+
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range="HistorialTerroCore!AC1",
+        valueInputOption="RAW",
+        body={"values": [["NombreFoto"]]},
+    ).execute()
+
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"HistorialTerroCore!AC{target_row}",
+        valueInputOption="RAW",
+        body={"values": [[str(nombre_foto)]]},
+    ).execute()
+
+    return True
+
+
 # ============================================================
 # INVENTARIO AUTOMÁTICO - SLOTS / OCUPADOS / VACÍOS
 # ============================================================
