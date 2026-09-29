@@ -22,6 +22,13 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
+try:
+    from streamlit_drawable_canvas import st_canvas
+    TC_EDITOR_MANUAL_DISPONIBLE = True
+except Exception:
+    st_canvas = None
+    TC_EDITOR_MANUAL_DISPONIBLE = False
+
 
 # ============================================================
 # LOGO TERROCORE
@@ -9867,6 +9874,352 @@ def _tc_uploaded_pil(up):
     return Image.open(io.BytesIO(up.getvalue())).convert("RGB")
 
 
+# ============================================================
+# EDICIÓN MANUAL DE IMÁGENES PROCESADAS
+# ============================================================
+
+def _tc_editor_a_pil(imagen):
+    """Convierte PIL/OpenCV/NumPy a PIL RGB para el editor."""
+    if imagen is None:
+        return None
+
+    if isinstance(imagen, Image.Image):
+        return imagen.convert("RGB").copy()
+
+    arr = np.asarray(imagen)
+    if arr.size == 0:
+        return None
+
+    if arr.ndim == 2:
+        return Image.fromarray(arr.astype(np.uint8)).convert("RGB")
+
+    if arr.ndim == 3 and arr.shape[2] == 4:
+        return Image.fromarray(arr.astype(np.uint8), mode="RGBA").convert("RGB")
+
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        # En esta app los arreglos NumPy mostrados por _tc_ui_image se
+        # consideran OpenCV/BGR.
+        rgb = cv2.cvtColor(arr.astype(np.uint8), cv2.COLOR_BGR2RGB)
+        return Image.fromarray(rgb).convert("RGB")
+
+    return Image.fromarray(arr.astype(np.uint8)).convert("RGB")
+
+
+def _tc_pil_a_png_bytes(imagen):
+    pil = _tc_editor_a_pil(imagen)
+    if pil is None:
+        return b""
+
+    buf = io.BytesIO()
+    pil.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _tc_reemplazar_imagen_drive_mismo_id(file_id, imagen):
+    """
+    Reemplaza únicamente los bytes del archivo de Drive.
+    Conserva el MISMO FileID, nombre, ruta de AppSheet y renglón de Sheets.
+    """
+    file_id = str(file_id or "").strip()
+    if not file_id:
+        return False, "La imagen todavía no tiene FileID en Google Drive."
+
+    contenido = _tc_pil_a_png_bytes(imagen)
+    if not contenido:
+        return False, "No se pudo convertir la corrección manual a PNG."
+
+    drive_service, _ = obtener_google_clients()
+
+    media = MediaIoBaseUpload(
+        io.BytesIO(contenido),
+        mimetype="image/png",
+        resumable=False,
+    )
+
+    drive_service.files().update(
+        fileId=file_id,
+        media_body=media,
+        fields="id,name",
+        supportsAllDrives=True,
+    ).execute()
+
+    # Forzar que Historial vuelva a leer la imagen corregida.
+    try:
+        _tc_historial_imagen_bytes.clear()
+    except Exception:
+        pass
+
+    return True, file_id
+
+
+def _tc_resultado_guardado_por_fuente(nombre_fuente):
+    """Busca el resultado/registro guardado que corresponde a una foto cargada."""
+    nombre_fuente = str(nombre_fuente or "").strip()
+
+    for item in (st.session_state.get("tc_resultados_base", []) or []):
+        if str(item.get("source_name", "") or "").strip() == nombre_fuente:
+            return item
+
+    return None
+
+
+def _tc_file_id_guardado(nombre_fuente, tipo):
+    """
+    tipo:
+      inventario -> ImagenInventarioFileID
+      analisis   -> ImagenProcesadaFileID
+      poligonos  -> ImagenPoligonosFileID
+    """
+    item = _tc_resultado_guardado_por_fuente(nombre_fuente)
+    if not item:
+        return ""
+
+    info = item.get("historial_google_info") or {}
+    if not isinstance(info, dict):
+        return ""
+
+    campo = {
+        "inventario": "imagen_inventario_file_id",
+        "analisis": "imagen_procesada_file_id",
+        "poligonos": "imagen_poligonos_file_id",
+    }.get(str(tipo or "").lower(), "")
+
+    return str(info.get(campo, "") or "").strip()
+
+
+def _tc_canvas_resultado_a_pil(canvas_result, base_display, full_size):
+    """
+    Convierte la salida del canvas a la resolución original.
+    Funciona tanto si image_data trae fondo como si solo trae overlay RGBA.
+    """
+    if canvas_result is None or canvas_result.image_data is None:
+        return None
+
+    data = np.asarray(canvas_result.image_data).astype(np.uint8)
+
+    if data.ndim != 3:
+        return None
+
+    if data.shape[2] == 4:
+        overlay = Image.fromarray(data, mode="RGBA")
+        base_rgba = base_display.convert("RGBA")
+
+        alpha = np.asarray(overlay)[:, :, 3]
+        # Si el canvas devolvió solo dibujos, componemos sobre el fondo.
+        # Si devolvió fondo + dibujos, alpha suele ser totalmente opaco y
+        # la composición sigue conservando el resultado correcto.
+        composed = Image.alpha_composite(base_rgba, overlay).convert("RGB")
+    elif data.shape[2] == 3:
+        composed = Image.fromarray(data, mode="RGB")
+    else:
+        return None
+
+    if composed.size != tuple(full_size):
+        composed = composed.resize(tuple(full_size), Image.Resampling.LANCZOS)
+
+    return composed.convert("RGB")
+
+
+def _tc_editor_manual_imagen(
+    imagen_actual,
+    imagen_original,
+    key,
+    titulo,
+    color_inicial="#FF0000",
+    file_id="",
+):
+    """
+    Editor visual manual para Inventario, Análisis verde/rojo y Polígonos.
+
+    Devuelve una PIL corregida cuando se pulsa Guardar.
+    Si hay FileID, reemplaza el archivo en Drive sin cambiar su ID.
+    """
+    actual = _tc_editor_a_pil(imagen_actual)
+    original = _tc_editor_a_pil(imagen_original)
+
+    if actual is None:
+        st.info(tr("No hay imagen para editar.", "Aucune image à modifier."))
+        return None
+
+    if original is None:
+        original = actual.copy()
+
+    activar = st.toggle(
+        tr("✏️ Editar manualmente esta imagen", "✏️ Modifier manuellement cette image"),
+        key=f"{key}_toggle",
+    )
+
+    if not activar:
+        return None
+
+    if not TC_EDITOR_MANUAL_DISPONIBLE:
+        st.error(
+            tr(
+                "Falta instalar streamlit-drawable-canvas. Agrega "
+                "`streamlit-drawable-canvas==0.9.3` a requirements.txt.",
+                "Le paquet streamlit-drawable-canvas manque. Ajoutez "
+                "`streamlit-drawable-canvas==0.9.3` à requirements.txt.",
+            )
+        )
+        return None
+
+    st.markdown(f"#### ✏️ {titulo}")
+
+    base_opcion = st.radio(
+        tr("Base de edición", "Base d’édition"),
+        options=[
+            tr("Resultado actual", "Résultat actuel"),
+            tr("Imagen original · redibujar desde cero", "Image originale · redessiner"),
+        ],
+        horizontal=True,
+        key=f"{key}_base",
+    )
+
+    usar_original = base_opcion.startswith("Imagen original") or base_opcion.startswith("Image originale")
+    base_full = original.copy() if usar_original else actual.copy()
+
+    max_w = 950
+    full_w, full_h = base_full.size
+    scale = min(1.0, max_w / float(max(1, full_w)))
+    disp_w = max(1, int(round(full_w * scale)))
+    disp_h = max(1, int(round(full_h * scale)))
+
+    base_display = base_full.resize(
+        (disp_w, disp_h),
+        Image.Resampling.LANCZOS,
+    )
+
+    c1, c2, c3 = st.columns([1.2, 1.0, 1.0])
+
+    with c1:
+        herramienta = st.selectbox(
+            tr("Herramienta", "Outil"),
+            [
+                tr("Línea", "Ligne"),
+                tr("Dibujo libre", "Dessin libre"),
+                tr("Rectángulo", "Rectangle"),
+                tr("Círculo / punto", "Cercle / point"),
+                tr("Polígono", "Polygone"),
+                tr("Mover / seleccionar / borrar objeto", "Déplacer / sélectionner / supprimer"),
+            ],
+            key=f"{key}_tool",
+        )
+
+    with c2:
+        color = st.color_picker(
+            tr("Color", "Couleur"),
+            value=color_inicial,
+            key=f"{key}_color",
+        )
+
+    with c3:
+        grosor = st.slider(
+            tr("Grosor", "Épaisseur"),
+            min_value=1,
+            max_value=30,
+            value=5,
+            key=f"{key}_stroke",
+        )
+
+    modos = {
+        tr("Línea", "Ligne"): "line",
+        tr("Dibujo libre", "Dessin libre"): "freedraw",
+        tr("Rectángulo", "Rectangle"): "rect",
+        tr("Círculo / punto", "Cercle / point"): "circle",
+        tr("Polígono", "Polygone"): "polygon",
+        tr("Mover / seleccionar / borrar objeto", "Déplacer / sélectionner / supprimer"): "transform",
+    }
+    drawing_mode = modos.get(herramienta, "line")
+
+    st.caption(
+        tr(
+            "Tip: para quitar todas las marcas automáticas, selecciona "
+            "'Imagen original · redibujar desde cero'. En modo Mover puedes "
+            "seleccionar y borrar objetos que tú hayas dibujado.",
+            "Astuce : pour retirer toutes les marques automatiques, choisissez "
+            "'Image originale · redessiner'. En mode Déplacer vous pouvez "
+            "sélectionner et supprimer les objets dessinés.",
+        )
+    )
+
+    canvas_result = st_canvas(
+        fill_color="rgba(30, 110, 245, 0.15)",
+        stroke_width=int(grosor),
+        stroke_color=color,
+        background_color="#FFFFFF",
+        background_image=base_display,
+        update_streamlit=True,
+        height=disp_h,
+        width=disp_w,
+        drawing_mode=drawing_mode,
+        display_toolbar=True,
+        key=f"{key}_canvas",
+    )
+
+    b1, b2 = st.columns(2)
+
+    with b1:
+        guardar = st.button(
+            tr("💾 Aplicar corrección manual", "💾 Appliquer la correction"),
+            type="primary",
+            use_container_width=True,
+            key=f"{key}_guardar",
+        )
+
+    with b2:
+        st.caption(
+            tr(
+                "Si esta imagen ya está en Drive, se conserva el mismo FileID.",
+                "Si cette image est déjà dans Drive, le même FileID est conservé.",
+            )
+        )
+
+    if not guardar:
+        return None
+
+    corregida = _tc_canvas_resultado_a_pil(
+        canvas_result,
+        base_display,
+        (full_w, full_h),
+    )
+
+    if corregida is None:
+        st.error(tr("No se pudo generar la corrección.", "Impossible de générer la correction."))
+        return None
+
+    if file_id:
+        try:
+            ok_drive, info_drive = _tc_reemplazar_imagen_drive_mismo_id(
+                file_id,
+                corregida,
+            )
+            if ok_drive:
+                st.success(
+                    tr(
+                        "✅ Corrección guardada en Drive con el mismo FileID.",
+                        "✅ Correction enregistrée dans Drive avec le même FileID.",
+                    )
+                )
+            else:
+                st.warning(str(info_drive))
+        except Exception as exc:
+            st.warning(
+                tr(
+                    f"La corrección quedó en la sesión, pero Drive no pudo actualizarse: {exc}",
+                    f"La correction est dans la session, mais Drive n’a pas pu être mis à jour : {exc}",
+                )
+            )
+    else:
+        st.success(
+            tr(
+                "✅ Corrección aplicada. Se guardará en Drive cuando ejecutes el análisis.",
+                "✅ Correction appliquée. Elle sera enregistrée dans Drive lors de l’analyse.",
+            )
+        )
+
+    return corregida
+
+
 # ------------------------------------------------------------
 # NAVEGACIÓN VISUAL DEL VIDEO
 # ------------------------------------------------------------
@@ -10273,6 +10626,42 @@ with main_col:
                                 else tr("Inventario independiente de esta fotografía", "Inventaire indépendant de cette photographie")
                             )
                         )
+
+                        # --------------------------------------------
+                        # EDICIÓN MANUAL 1/3 · INVENTARIO
+                        # --------------------------------------------
+                        try:
+                            original_editor_inv = _tc_uploaded_pil(up)
+                        except Exception:
+                            original_editor_inv = inv_individual.get("pil") or inv_individual.get("image")
+
+                        file_id_inv = _tc_file_id_guardado(up.name, "inventario")
+
+                        corregida_inv = _tc_editor_manual_imagen(
+                            inv_individual.get("image"),
+                            original_editor_inv,
+                            key=f"tc_edit_inv_{idx}_{up.name}",
+                            titulo=tr(
+                                "Corregir Inventario",
+                                "Corriger l’inventaire"
+                            ),
+                            color_inicial="#00BFFF",
+                            file_id=file_id_inv,
+                        )
+
+                        if corregida_inv is not None:
+                            inv_individual["image"] = corregida_inv
+                            inv_map[up.name] = inv_individual
+                            st.session_state.tc_inventarios_por_imagen = inv_map
+
+                            if up.name == ref_name:
+                                st.session_state.tc_inventario_imagen = corregida_inv
+
+                            # Si Salud ya se ejecutó, actualizar también la copia
+                            # usada en el resumen final.
+                            item_guardado = _tc_resultado_guardado_por_fuente(up.name)
+                            if item_guardado is not None:
+                                item_guardado["inventory_image"] = corregida_inv
                     else:
                         st.warning(
                             tr(
@@ -10562,6 +10951,42 @@ with main_col:
                             caption=tr("Análisis visual verde / rojo", "Analyse visuelle vert / rouge")
                         )
 
+                        # --------------------------------------------
+                        # EDICIÓN MANUAL 2/3 · ANÁLISIS VERDE/ROJO
+                        # --------------------------------------------
+                        source_name_edit = item.get("source_name", "") or item.get("name", "")
+                        up_edit = next(
+                            (u for u in (uploaded_images or []) if u.name == source_name_edit),
+                            None
+                        )
+
+                        original_editor_salud = None
+                        if up_edit is not None:
+                            try:
+                                original_editor_salud = _tc_uploaded_pil(up_edit)
+                            except Exception:
+                                original_editor_salud = None
+
+                        file_id_salud = _tc_file_id_guardado(
+                            source_name_edit,
+                            "analisis"
+                        )
+
+                        corregida_salud = _tc_editor_manual_imagen(
+                            item.get("annotated"),
+                            original_editor_salud,
+                            key=f"tc_edit_salud_{idx}_{source_name_edit}",
+                            titulo=tr(
+                                "Corregir análisis verde / rojo",
+                                "Corriger l’analyse vert / rouge"
+                            ),
+                            color_inicial="#FF3030",
+                            file_id=file_id_salud,
+                        )
+
+                        if corregida_salud is not None:
+                            item["annotated"] = corregida_salud
+
                         diagnostico = str(item.get("diagnostico_visual", "") or "").strip()
                         if diagnostico:
                             st.markdown(tr("#### Descripción visual preliminar", "#### Description visuelle préliminaire"))
@@ -10598,6 +11023,43 @@ with main_col:
                         if polygon_image is not None:
                             st.markdown(tr("### Imagen con polígonos azules", "### Image avec polygones bleus"))
                             _tc_ui_image(polygon_image)
+
+                            # ----------------------------------------
+                            # EDICIÓN MANUAL 3/3 · POLÍGONOS
+                            # ----------------------------------------
+                            source_name_poly = item.get("source_name", "") or item.get("name", "")
+                            up_poly = next(
+                                (u for u in (uploaded_images or []) if u.name == source_name_poly),
+                                None
+                            )
+
+                            original_editor_poly = None
+                            if up_poly is not None:
+                                try:
+                                    original_editor_poly = _tc_uploaded_pil(up_poly)
+                                except Exception:
+                                    original_editor_poly = None
+
+                            file_id_poly = _tc_file_id_guardado(
+                                source_name_poly,
+                                "poligonos"
+                            )
+
+                            corregida_poly = _tc_editor_manual_imagen(
+                                item.get("polygon_image"),
+                                original_editor_poly,
+                                key=f"tc_edit_poly_{idx}_{source_name_poly}",
+                                titulo=tr(
+                                    "Corregir polígonos",
+                                    "Corriger les polygones"
+                                ),
+                                color_inicial="#1E6EF5",
+                                file_id=file_id_poly,
+                            )
+
+                            if corregida_poly is not None:
+                                item["polygon_image"] = corregida_poly
+                                polygon_image = corregida_poly
 
                             p1, p2, p3 = st.columns(3)
                             red_pct_item = float(item.get("red_pct", 0.0) or 0.0)
