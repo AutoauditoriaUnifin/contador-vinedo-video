@@ -22,12 +22,43 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
+# ============================================================
+# EDITOR MANUAL COMPATIBLE CON STREAMLIT MODERNO
+# ============================================================
+#
+# streamlit-drawable-canvas 0.9.x usa una API interna antigua:
+# streamlit.elements.image.image_to_url
+# Esa API ya no existe en Streamlit moderno. Por eso exigimos
+# la versión nueva del componente (0.13.0).
 try:
+    from importlib.metadata import version as _tc_dist_version
+
+    TC_EDITOR_MANUAL_VERSION = _tc_dist_version("streamlit-drawable-canvas")
+
+    def _tc_version_tuple(v):
+        nums = re.findall(r"\d+", str(v or ""))
+        nums = [int(x) for x in nums[:3]]
+        while len(nums) < 3:
+            nums.append(0)
+        return tuple(nums)
+
+    if _tc_version_tuple(TC_EDITOR_MANUAL_VERSION) < (0, 10, 0):
+        raise RuntimeError(
+            "Versión antigua de streamlit-drawable-canvas detectada: "
+            f"{TC_EDITOR_MANUAL_VERSION}. "
+            "Reemplázala por streamlit-drawable-canvas==0.13.0."
+        )
+
     from streamlit_drawable_canvas import st_canvas
+
     TC_EDITOR_MANUAL_DISPONIBLE = True
-except Exception:
+    TC_EDITOR_MANUAL_ERROR = ""
+
+except Exception as _tc_editor_exc:
     st_canvas = None
     TC_EDITOR_MANUAL_DISPONIBLE = False
+    TC_EDITOR_MANUAL_VERSION = ""
+    TC_EDITOR_MANUAL_ERROR = str(_tc_editor_exc)
 
 
 # ============================================================
@@ -10053,12 +10084,20 @@ def _tc_editor_manual_imagen(
         return None
 
     if not TC_EDITOR_MANUAL_DISPONIBLE:
+        detalle_editor = (
+            f"\n\nDetalle: {TC_EDITOR_MANUAL_ERROR}"
+            if TC_EDITOR_MANUAL_ERROR else ""
+        )
         st.error(
             tr(
-                "Falta instalar streamlit-drawable-canvas. Agrega "
-                "`streamlit-drawable-canvas==0.9.3` a requirements.txt.",
-                "Le paquet streamlit-drawable-canvas manque. Ajoutez "
-                "`streamlit-drawable-canvas==0.9.3` à requirements.txt.",
+                "El editor manual necesita la versión nueva del componente. "
+                "En `requirements.txt` REEMPLAZA cualquier línea antigua por:\n\n"
+                "`streamlit-drawable-canvas==0.13.0`"
+                + detalle_editor,
+                "L’éditeur manuel nécessite la nouvelle version du composant. "
+                "Dans `requirements.txt`, REMPLACEZ toute ancienne version par :\n\n"
+                "`streamlit-drawable-canvas==0.13.0`"
+                + detalle_editor,
             )
         )
         return None
@@ -10098,9 +10137,9 @@ def _tc_editor_manual_imagen(
                 tr("Línea", "Ligne"),
                 tr("Dibujo libre", "Dessin libre"),
                 tr("Rectángulo", "Rectangle"),
-                tr("Círculo / punto", "Cercle / point"),
+                tr("Círculo", "Cercle"),
+                tr("Punto", "Point"),
                 tr("Polígono", "Polygone"),
-                tr("Mover / seleccionar / borrar objeto", "Déplacer / sélectionner / supprimer"),
             ],
             key=f"{key}_tool",
         )
@@ -10125,20 +10164,21 @@ def _tc_editor_manual_imagen(
         tr("Línea", "Ligne"): "line",
         tr("Dibujo libre", "Dessin libre"): "freedraw",
         tr("Rectángulo", "Rectangle"): "rect",
-        tr("Círculo / punto", "Cercle / point"): "circle",
+        tr("Círculo", "Cercle"): "circle",
+        tr("Punto", "Point"): "point",
         tr("Polígono", "Polygone"): "polygon",
-        tr("Mover / seleccionar / borrar objeto", "Déplacer / sélectionner / supprimer"): "transform",
     }
     drawing_mode = modos.get(herramienta, "line")
 
     st.caption(
         tr(
             "Tip: para quitar todas las marcas automáticas, selecciona "
-            "'Imagen original · redibujar desde cero'. En modo Mover puedes "
-            "seleccionar y borrar objetos que tú hayas dibujado.",
+            "'Imagen original · redibujar desde cero'. Para mover, ajustar o "
+            "borrar objetos que tú dibujaste, usa el botón de edición de la "
+            "barra del canvas.",
             "Astuce : pour retirer toutes les marques automatiques, choisissez "
-            "'Image originale · redessiner'. En mode Déplacer vous pouvez "
-            "sélectionner et supprimer les objets dessinés.",
+            "'Image originale · redessiner'. Pour déplacer, ajuster ou supprimer "
+            "vos objets, utilisez le bouton d’édition de la barre du canvas.",
         )
     )
 
@@ -10152,7 +10192,9 @@ def _tc_editor_manual_imagen(
         height=disp_h,
         width=disp_w,
         drawing_mode=drawing_mode,
-        display_toolbar=True,
+        point_display_radius=max(3, int(grosor)),
+        return_image_data=True,
+        max_display_height=820,
         key=f"{key}_canvas",
     )
 
