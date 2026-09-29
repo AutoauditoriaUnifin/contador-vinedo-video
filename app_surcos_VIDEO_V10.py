@@ -2,19 +2,6 @@ import io
 import base64
 import json
 import os
-
-# ============================================================
-# ESTABILIDAD STREAMLIT CLOUD / OPENCV
-# Limita hilos de librerías nativas para evitar cierres por
-# segmentation fault en contenedores con recursos limitados.
-# NO modifica la lógica del análisis.
-# ============================================================
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
-os.environ.setdefault("OPENCV_OPENCL_RUNTIME", "disabled")
 import csv
 import math
 import zipfile
@@ -24,16 +11,6 @@ import re
 from pathlib import Path
 
 import cv2
-
-# OpenCV estable para ejecución en servidor/headless.
-try:
-    cv2.setNumThreads(1)
-except Exception:
-    pass
-try:
-    cv2.ocl.setUseOpenCL(False)
-except Exception:
-    pass
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -1538,7 +1515,7 @@ with header_logo_col:
     if LOGO_PATH.exists():
         st.image(
             str(LOGO_PATH),
-            width="stretch"
+            use_container_width=True
         )
 
 with header_text_col:
@@ -9480,7 +9457,6 @@ def analizar_pil_con_ia(pil_img):
     }
 
 
-
 # ------------------------------------------------------------
 # ESTILOS ADICIONALES: SOLO COMPLEMENTAN EL DISEÑO ORIGINAL
 # ------------------------------------------------------------
@@ -9581,7 +9557,7 @@ with side_col:
         if st.button(
             "🇪🇸 ES Español",
             key="lang_es_inventario",
-            width="stretch",
+            use_container_width=True,
             disabled=st.session_state.idioma_terrocore == "ES"
         ):
             st.session_state.idioma_terrocore = "ES"
@@ -9591,7 +9567,7 @@ with side_col:
         if st.button(
             "🇫🇷 FR Français",
             key="lang_fr_inventario",
-            width="stretch",
+            use_container_width=True,
             disabled=st.session_state.idioma_terrocore == "FR"
         ):
             st.session_state.idioma_terrocore = "FR"
@@ -9647,7 +9623,7 @@ with side_col:
         crear_captura = st.button(
             tr("📷 Crear captura base", "📷 Créer la capture de base"),
             type="primary",
-            width="stretch",
+            use_container_width=True,
             disabled=(not uploaded_images or not misma_parcela or not parcela_nombre.strip()),
             key="tc_crear_captura"
         )
@@ -9684,7 +9660,7 @@ with side_col:
 
     if st.button(
         tr("🔄 Nueva parcela / Nuevo análisis", "🔄 Nouvelle parcelle / Nouvelle analyse"),
-        width="stretch",
+        use_container_width=True,
         key="tc_reiniciar"
     ):
         _tc_reiniciar_parcela()
@@ -9715,7 +9691,7 @@ with main_col:
                         st.image(
                             Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
                             caption=up.name,
-                            width="stretch"
+                            use_container_width=True
                         )
                 except Exception as exc:
                     st.warning(f"{up.name}: {exc}")
@@ -9747,21 +9723,21 @@ with main_col:
         analizar_inventario = st.button(
             tr("🌿 Analizar Inventario", "🌿 Analyser l’inventaire"),
             type="primary",
-            width="stretch",
+            use_container_width=True,
             disabled=(not st.session_state.tc_captura_confirmada or not uploaded_images),
             key="tc_analizar_inventario"
         )
 
         if analizar_inventario and uploaded_images:
             # ========================================================
-            # INVENTARIO 100% OPENCV LOCAL
-            # Líneas, slots y clasificación se calculan localmente sin APIs externas.
+            # INVENTARIO 100% OPENAI VISION
+            # OpenCV solo dibuja; no detecta ni clasifica.
             # ========================================================
             progress = st.progress(
                 5,
                 text=tr(
                     "OpenCV está detectando los surcos rectos y alineando los slots...",
-                    "OpenCV détecte les rangs droits et aligne les emplacements..."
+                    "Gemini examine la parcelle et chaque rang..."
                 )
             )
 
@@ -9772,8 +9748,8 @@ with main_col:
                 progress.progress(
                     92,
                     text=tr(
-                        "OpenCV está terminando slots ocupados y vacíos...",
-                        "OpenCV termine les emplacements occupés et vides..."
+                        "La IA está terminando slots ocupados y vacíos...",
+                        "L’IA termine les emplacements occupés et vides..."
                     )
                 )
 
@@ -9785,7 +9761,7 @@ with main_col:
                 st.session_state.tc_inventario_fuente = best_up.name
                 st.session_state.tc_inventario_confianza = float(inv.get("confidence", 0.0))
                 st.session_state.tc_inventario_rows_ai = inv.get("rows", [])
-                st.session_state.tc_inventario_modelo = inv.get("model", "OpenCV local")
+                st.session_state.tc_inventario_modelo = inv.get("model", f"Gemini ({_tg_gemini_model()})")
                 st.session_state.tc_inventario_debug = inv.get("debug", {})
                 st.session_state.tc_inventario_warnings = inv.get("warnings", [])
                 st.session_state.tc_inventario_procesado = True
@@ -9793,8 +9769,8 @@ with main_col:
                 progress.progress(100, text=tr("Inventario terminado.", "Inventaire terminé."))
                 st.success(
                     tr(
-                        "✅ Inventario terminado localmente con OpenCV, sin usar IA externa.",
-                        "✅ Inventaire terminé localement avec OpenCV, sans IA externe."
+                        "✅ Inventario terminado únicamente con Gemini.",
+                        "✅ Inventaire terminé uniquement avec Gemini."
                     )
                 )
                 if errores_inventario:
@@ -9843,7 +9819,7 @@ with main_col:
         fuente_inv = st.session_state.tc_inventario_fuente or "—"
         st.caption(
             tr(
-                f"Inventario identificado localmente con OpenCV. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
+                f"Inventario identificado únicamente con Gemini. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
                 f"Inventaire automatique calculé à partir de la présence visuelle, séparé du diagnostic de santé. Image de référence : {fuente_inv}. Confiance moyenne : {confianza_inv*100:.1f} %."
             )
         )
@@ -9867,17 +9843,17 @@ with main_col:
                 ))
                 st.markdown(
                     tr(
-                        "**Inventario recto:** los números 01…N aparecen únicamente arriba. Cada línea es recta y los puntos de slots quedan sobre el mismo eje del surco, sin saltar a la hilera vecina.",
+                        "**Inventario limpio:** los números 01…N aparecen únicamente arriba de cada surco. No se muestran números abajo. Los slots se calculan en la tabla, pero no se dibujan sobre la fotografía.",
                         "**Inventaire épuré :** les numéros 01…N apparaissent uniquement en haut et en bas de chaque rang. Les emplacements sont calculés dans le tableau sans être dessinés sur la photo."
                     ),
                     unsafe_allow_html=True
                 )
                 if isinstance(inv_image, Image.Image):
-                    st.image(inv_image, width="stretch")
+                    st.image(inv_image, use_container_width=True)
                 else:
                     st.image(
                         cv2.cvtColor(inv_image, cv2.COLOR_BGR2RGB),
-                        width="stretch"
+                        use_container_width=True
                     )
 
         st.caption(
@@ -9895,7 +9871,7 @@ with main_col:
 
         edited = st.data_editor(
             tabla_actual,
-            width="stretch",
+            use_container_width=True,
             hide_index=True,
             num_rows="fixed",
             key="tc_editor_inventario",
@@ -9946,7 +9922,7 @@ with main_col:
         if st.button(
             tr("✅ Confirmar Inventario", "✅ Confirmer l’inventaire"),
             type="primary",
-            width="stretch",
+            use_container_width=True,
             disabled=(not inventario_valido),
             key="tc_confirmar_inventario"
         ):
@@ -9985,7 +9961,7 @@ with main_col:
             analizar_salud = st.button(
                 tr("🩺 Analizar Salud", "🩺 Analyser la santé"),
                 type="primary",
-                width="stretch",
+                use_container_width=True,
                 disabled=not uploaded_images,
                 key="tc_analizar_salud"
             )
@@ -9996,7 +9972,7 @@ with main_col:
                     5,
                     text=tr(
                         "OpenCV está revisando cada slot para detectar vegetación, seco y vacíos...",
-                        "OpenCV examine chaque emplacement pour détecter végétation, sécheresse et vides..."
+                        "OpenCV examine chaque emplacement pour détecter végétation, sec et vide..."
                     )
                 )
 
@@ -10056,6 +10032,7 @@ with main_col:
                         "total_slots": int(backend_result.get("total_slots", 0) or 0),
                         "angle": float(backend_result.get("angle", 0.0)),
                         "annotated": backend_result.get("annotated"),
+                        "polygon_image": backend_result.get("polygon_image"),
                         "ia_scene": backend_result.get("backend"),
                         "result_url": backend_result.get("result_url"),
                         "historial_google_guardado": historial_google_ok,
@@ -10069,7 +10046,6 @@ with main_col:
                         "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
                         "detalle_zonas": backend_result.get("detalle_zonas", {}),
                         "metodo": backend_result.get("metodo", "opencv-v2-straight-grid-polygons"),
-                        "polygon_image": backend_result.get("polygon_image"),
                         "confidence": backend_result.get("confidence", 0.0),
                     })
 
@@ -10107,89 +10083,39 @@ with main_col:
                     with st.container(border=True):
                         st.markdown(f"**{item.get('name','')}**")
 
-                        # ======================================================
-                        # ANÁLISIS 1 — IMAGEN ORIGINAL
-                        # SOLO cambia la presentación. No modifica el análisis.
-                        # ======================================================
-                        with st.container(border=True):
-                            st.markdown(
-                                f"### {tr('Análisis 1 — Imagen original', 'Analyse 1 — Image originale')}"
-                            )
+                        c_original, c_poly, c_proc = st.columns(3)
+                        with c_original:
+                            st.caption(tr("Imagen original", "Image originale"))
                             try:
                                 fuente = st.session_state.tc_inventario_fuente or item.get("name", "")
-                                up = next(
-                                    (u for u in uploaded_images if u.name == fuente),
-                                    uploaded_images[0]
-                                )
+                                up = next((u for u in uploaded_images if u.name == fuente), uploaded_images[0])
                                 st.image(
                                     Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
-                                    width="stretch"
+                                    use_container_width=True
                                 )
                             except Exception:
                                 pass
-
-                        # ======================================================
-                        # ANÁLISIS 2 — POLÍGONOS
-                        # Conserva exactamente la misma polygon_image.
-                        # ======================================================
-                        with st.container(border=True):
-                            st.markdown(
-                                f"### {tr('Análisis 2 — Polígonos', 'Analyse 2 — Polygones')}"
-                            )
-                            st.caption(
-                                tr(
-                                    "Polígonos — secos y vacíos",
-                                    "Polygones — secs et vides"
-                                )
-                            )
-
+                        with c_poly:
+                            st.caption(tr("Polígonos — secos y vacíos", "Polygones — secs et vides"))
                             polygon_image = item.get("polygon_image")
-
                             if polygon_image is not None:
                                 if isinstance(polygon_image, Image.Image):
-                                    st.image(
-                                        polygon_image,
-                                        width="stretch"
-                                    )
+                                    st.image(polygon_image, use_container_width=True)
                                 else:
                                     st.image(
-                                        cv2.cvtColor(
-                                            polygon_image,
-                                            cv2.COLOR_BGR2RGB
-                                        ),
-                                        width="stretch"
+                                        cv2.cvtColor(polygon_image, cv2.COLOR_BGR2RGB),
+                                        use_container_width=True
                                     )
-
-                        # ======================================================
-                        # ANÁLISIS 3 — IMAGEN PROCESADA / SALUD
-                        # Conserva exactamente la misma imagen annotated.
-                        # ======================================================
-                        with st.container(border=True):
-                            st.markdown(
-                                f"### {tr('Análisis 3 — Imagen procesada — Salud', 'Analyse 3 — Image traitée — Santé')}"
-                            )
-                            st.caption(
-                                tr(
-                                    "Imagen procesada — Salud",
-                                    "Image traitée — Santé"
-                                )
-                            )
-
+                        with c_proc:
+                            st.caption(tr("Imagen procesada — Salud", "Image traitée — Santé"))
                             annotated = item.get("annotated")
-
                             if annotated is not None:
                                 if isinstance(annotated, Image.Image):
-                                    st.image(
-                                        annotated,
-                                        width="stretch"
-                                    )
+                                    st.image(annotated, use_container_width=True)
                                 else:
                                     st.image(
-                                        cv2.cvtColor(
-                                            annotated,
-                                            cv2.COLOR_BGR2RGB
-                                        ),
-                                        width="stretch"
+                                        cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+                                        use_container_width=True
                                     )
 
                         d1, d2, d3 = st.columns(3)
@@ -10264,7 +10190,7 @@ with st.expander(
                         tr("Rojo %", "Rouge %"): registro.get("rojo_pct", 0.0),
                         tr("Zona más afectada", "Zone la plus touchée"): tr_diag_texto(registro.get("zona_mas_afectada", "")),
                     })
-                st.dataframe(pd.DataFrame(filas_historial), width="stretch", hide_index=True)
+                st.dataframe(pd.DataFrame(filas_historial), use_container_width=True, hide_index=True)
                 st.caption(
                     tr(
                         "Este historial conserva tu estructura actual. En la siguiente etapa podemos agregar ParcelaID para agrupar análisis por parcela y fecha.",
