@@ -10657,60 +10657,6 @@ with main_col:
                     )
                 )
 
-                st.markdown(tr("## Vista final · Líneas sobre surcos", "## Vue finale · Lignes sur les rangs"))
-
-                # Vista final para CADA fotografía analizada.
-                for idx_item, item in enumerate(resultados, 1):
-                    source_name = item.get("source_name", "")
-                    up_ref = next(
-                        (u for u in (uploaded_images or []) if u.name == source_name),
-                        None
-                    )
-
-                    original_ref = None
-                    if up_ref is not None:
-                        try:
-                            original_ref = _tc_uploaded_pil(up_ref)
-                        except Exception:
-                            original_ref = None
-
-                    with st.container(border=True):
-                        st.markdown(f"### {idx_item}. {source_name or item.get('name','')}")
-
-                        f1, f2, f3 = st.columns(3)
-                        f1.metric(
-                            tr("Vegetación verde", "Végétation verte"),
-                            f"{float(item.get('green_pct',0.0)):.1f}%"
-                        )
-                        f2.metric(
-                            tr("Afectación roja", "Affectation rouge"),
-                            f"{float(item.get('red_pct',0.0)):.1f}%"
-                        )
-                        f3.metric(
-                            tr("Surcos usados", "Rangs utilisés"),
-                            int(item.get("count",0) or 0)
-                        )
-
-                        vf1, vf2 = st.columns(2)
-                        with vf1:
-                            st.caption(tr("Imagen original", "Image originale"))
-                            _tc_ui_image(original_ref)
-                        with vf2:
-                            st.caption(
-                                tr(
-                                    "Imagen procesada — Líneas guiadas por SU Inventario",
-                                    "Image traitée — Lignes guidées par SON inventaire"
-                                )
-                            )
-                            _tc_ui_image(item.get("annotated"))
-
-                st.caption(
-                    tr(
-                        "Cada fotografía utiliza su propio Inventario, sus propios surcos y sus propios slots.",
-                        "Chaque photographie utilise son propre inventaire, ses propres rangs et ses propres emplacements."
-                    )
-                )
-
                 # ----------------------------------------------------
                 # RESUMEN FINAL DE 4 IMÁGENES POR CADA FOTO
                 # ----------------------------------------------------
