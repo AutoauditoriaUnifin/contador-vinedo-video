@@ -9313,7 +9313,7 @@ def _ocv2_draw_health_and_polygons(pil, rows, health_map):
             poly = _ocv2_polygon_for_group(positions, group, row_spacing, slot_pitch)
             if poly:
                 # Polígono rojo SOLO en la zona seca/vacía.
-                draw_p.polygon(poly, fill=(245,45,45,82), outline=(245,45,45,240))
+                draw_p.polygon(poly, fill=(40,120,255,88), outline=(30,110,245,235))
 
         # Puntos del diagnóstico: todos sobre el MISMO eje recto.
         for idx, p in enumerate(positions, 1):
@@ -10097,7 +10097,7 @@ with main_col:
                             except Exception:
                                 pass
                         with c_poly:
-                            st.caption(tr("Diagnóstico 2 — Polígonos: secos y vacíos", "Diagnostic 2 — Polygones : secs et vides"))
+                            st.caption(tr("Polígonos — secos y vacíos", "Polygones — secs et vides"))
                             polygon_image = item.get("polygon_image")
                             if polygon_image is not None:
                                 if isinstance(polygon_image, Image.Image):
@@ -10108,7 +10108,7 @@ with main_col:
                                         use_container_width=True
                                     )
                         with c_proc:
-                            st.caption(tr("Diagnóstico 3 — Líneas y puntos", "Diagnostic 3 — Lignes et points"))
+                            st.caption(tr("Imagen procesada — Salud", "Image traitée — Santé"))
                             annotated = item.get("annotated")
                             if annotated is not None:
                                 if isinstance(annotated, Image.Image):
