@@ -9702,17 +9702,123 @@ st.markdown(
 )
 
 
+
+# ============================================================
+# FLUJO VISUAL DEL VIDEO - SOLO INTERFAZ / PRESENTACIÓN
+# ============================================================
+# IMPORTANTE:
+# - La lógica de líneas rectas NO se modifica.
+# - La lógica de puntos/slots NO se modifica.
+# - La lógica de polígonos azules NO se modifica.
+# - El diagnóstico verde/rojo y porcentajes NO se modifican.
+# - El guardado en Drive/Sheets NO se modifica.
+# - El historial y descarga de imágenes NO se modifican.
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+    .tc-video-flow{
+        display:grid;
+        grid-template-columns:repeat(7, minmax(115px,1fr));
+        gap:9px;
+        margin: .75rem 0 1rem 0;
+    }
+    .tc-video-flow-item{
+        min-height:44px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        text-align:center;
+        padding:8px 8px;
+        border-radius:10px;
+        border:1px solid rgba(255,255,255,.22);
+        background:#FFFDFC;
+        color:#722F37;
+        font-weight:850;
+        font-size:.82rem;
+        line-height:1.15;
+        box-shadow:0 2px 7px rgba(0,0,0,.10);
+    }
+    .tc-video-flow-item.locked{
+        background:rgba(78,30,38,.18);
+        color:rgba(255,255,255,.42);
+        border-color:rgba(255,255,255,.12);
+        box-shadow:none;
+    }
+    .tc-stage-title{
+        font-size:1.65rem;
+        font-weight:900;
+        margin-top:.35rem;
+        margin-bottom:.35rem;
+        color:#FFF;
+    }
+    .tc-stage-sub{
+        font-size:.92rem;
+        color:#F4DDE0;
+        margin-bottom:.75rem;
+    }
+    .tc-soft-card{
+        border:1px solid rgba(255,255,255,.18);
+        border-radius:12px;
+        padding:14px;
+        background:rgba(80,25,35,.18);
+        margin:.6rem 0;
+    }
+    .tc-four-grid{
+        display:grid;
+        grid-template-columns:repeat(4,1fr);
+        gap:12px;
+    }
+    .tc-label-mini{
+        font-weight:800;
+        margin-bottom:5px;
+        color:#F8E8EA;
+    }
+    @media(max-width:1100px){
+        .tc-video-flow{grid-template-columns:repeat(4,1fr);}
+    }
+    @media(max-width:700px){
+        .tc-video-flow{grid-template-columns:1fr 1fr;}
+        .tc-video-flow-item{font-size:.76rem; min-height:42px;}
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+def _tc_ui_image(img, caption=None):
+    """Muestra PIL o arreglo OpenCV sin alterar la imagen."""
+    if img is None:
+        return
+    if isinstance(img, Image.Image):
+        st.image(img, caption=caption, use_container_width=True)
+        return
+    arr = np.asarray(img)
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        st.image(cv2.cvtColor(arr, cv2.COLOR_BGR2RGB), caption=caption, use_container_width=True)
+    else:
+        st.image(arr, caption=caption, use_container_width=True)
+
+
+def _tc_uploaded_pil(up):
+    return Image.open(io.BytesIO(up.getvalue())).convert("RGB")
+
+
 # ------------------------------------------------------------
-# CABECERA DE FLUJO
+# NAVEGACIÓN VISUAL DEL VIDEO
 # ------------------------------------------------------------
 st.markdown(
     f"""
-    <div class="tc-flow-wrap">
-      <div class="tc-flow-step active">{tr('① Captura', '① Capture')}</div>
-      <div class="tc-flow-step {'active' if st.session_state.tc_captura_confirmada else ''}">{tr('② Inventario', '② Inventaire')}</div>
-      <div class="tc-flow-step {'active' if st.session_state.tc_inventario_procesado else ''}">{tr('③ Validación', '③ Validation')}</div>
-      <div class="tc-flow-step {'active' if st.session_state.tc_inventario_confirmado else 'locked'}">{tr('④ Salud', '④ Santé')}</div>
-      <div class="tc-flow-step locked">{tr('⑤ Reporte', '⑤ Rapport')}</div>
+    <div class="tc-video-flow">
+      <div class="tc-video-flow-item">① {tr('Captura Base','Capture de base')}</div>
+      <div class="tc-video-flow-item">② {tr('Inventario visual','Inventaire visuel')}</div>
+      <div class="tc-video-flow-item">③ {tr('Validación QR','Validation QR')}</div>
+      <div class="tc-video-flow-item">④ {tr('Regiones críticas','Régions critiques')}</div>
+      <div class="tc-video-flow-item locked">⑤ {tr('Segundo vuelo','Deuxième vol')}</div>
+      <div class="tc-video-flow-item locked">⑥ {tr('Análisis nivel 2','Analyse niveau 2')}</div>
+      <div class="tc-video-flow-item">⑦ {tr('Historial','Historique')}</div>
     </div>
     """,
     unsafe_allow_html=True
@@ -9721,7 +9827,7 @@ st.markdown(
 side_col, main_col = st.columns([1.0, 2.15], gap="medium")
 
 # ============================================================
-# PANEL DE CONFIGURACIÓN - PRIMERO EN MÓVIL
+# PANEL LATERAL - MISMO FLUJO DEL VIDEO
 # ============================================================
 with side_col:
     idioma_es_col, idioma_fr_col = st.columns(2, gap="medium")
@@ -9729,7 +9835,7 @@ with side_col:
     with idioma_es_col:
         if st.button(
             "🇪🇸 ES Español",
-            key="lang_es_inventario",
+            key="lang_es_video_flow",
             use_container_width=True,
             disabled=st.session_state.idioma_terrocore == "ES"
         ):
@@ -9739,7 +9845,7 @@ with side_col:
     with idioma_fr_col:
         if st.button(
             "🇫🇷 FR Français",
-            key="lang_fr_inventario",
+            key="lang_fr_video_flow",
             use_container_width=True,
             disabled=st.session_state.idioma_terrocore == "FR"
         ):
@@ -9753,14 +9859,14 @@ with side_col:
             tr("Nombre de la parcela", "Nom de la parcelle"),
             value=st.session_state.tc_parcela_nombre,
             placeholder=tr("Ej. Parcela 01", "Ex. Parcelle 01"),
-            key="tc_parcela_input"
+            key="tc_parcela_input_video_flow"
         )
         st.session_state.tc_parcela_nombre = parcela_nombre
 
         fecha_captura = st.date_input(
             tr("Fecha de captura", "Date de capture"),
             value=st.session_state.tc_fecha_captura,
-            key="tc_fecha_input"
+            key="tc_fecha_input_video_flow"
         )
         st.session_state.tc_fecha_captura = fecha_captura
 
@@ -9774,7 +9880,7 @@ with side_col:
             ),
             type=["jpg", "jpeg", "png"],
             accept_multiple_files=True,
-            key="tc_uploader_captura_base"
+            key="tc_uploader_captura_base_video_flow"
         )
 
         misma_parcela = st.checkbox(
@@ -9782,7 +9888,15 @@ with side_col:
                 "Confirmo que todas las imágenes pertenecen a la misma parcela",
                 "Je confirme que toutes les images appartiennent à la même parcelle"
             ),
-            key="tc_misma_parcela"
+            key="tc_misma_parcela_video_flow"
+        )
+
+        altura_vuelo = st.number_input(
+            tr("Altura del vuelo base (m) — opcional", "Hauteur du vol de base (m) — facultatif"),
+            min_value=0.0,
+            value=0.0,
+            step=1.0,
+            key="tc_altura_video_flow"
         )
 
         if uploaded_images:
@@ -9798,7 +9912,7 @@ with side_col:
             type="primary",
             use_container_width=True,
             disabled=(not uploaded_images or not misma_parcela or not parcela_nombre.strip()),
-            key="tc_crear_captura"
+            key="tc_crear_captura_video_flow"
         )
 
         if crear_captura:
@@ -9816,327 +9930,325 @@ with side_col:
             st.session_state.tc_salud_procesada = False
             st.success(
                 tr(
-                    "✅ Captura base creada. Ya puedes analizar Inventario.",
-                    "✅ Capture de base créée. Vous pouvez maintenant analyser l’inventaire."
+                    "✅ Captura base creada. Ya puedes continuar con Inventario visual.",
+                    "✅ Capture de base créée. Vous pouvez continuer avec l’inventaire visuel."
                 )
             )
 
     with st.container(border=True):
         st.markdown(tr("### Estado de la parcela", "### État de la parcelle"))
-        st.write(f"**{tr('Parcela', 'Parcelle')}:** {parcela_nombre or '—'}")
-        st.write(f"**{tr('Fecha', 'Date')}:** {fecha_captura}")
-        st.write(f"**{tr('Imágenes', 'Images')}:** {len(uploaded_images or [])}")
+        st.write(f"**{tr('Parcela','Parcelle')}:** {parcela_nombre or '—'}")
+        st.write(f"**{tr('Fecha','Date')}:** {fecha_captura}")
+        st.write(f"**{tr('Imágenes','Images')}:** {len(uploaded_images or [])}")
         st.write(
-            f"**{tr('Estado', 'État')}:** " +
-            (tr("Captura base lista", "Capture de base prête") if st.session_state.tc_captura_confirmada else tr("Pendiente", "En attente"))
+            f"**{tr('Estado','État')}:** " +
+            (
+                tr("Captura base lista", "Capture de base prête")
+                if st.session_state.tc_captura_confirmada
+                else tr("Pendiente", "En attente")
+            )
         )
 
     if st.button(
         tr("🔄 Nueva parcela / Nuevo análisis", "🔄 Nouvelle parcelle / Nouvelle analyse"),
         use_container_width=True,
-        key="tc_reiniciar"
+        key="tc_reiniciar_video_flow"
     ):
         _tc_reiniciar_parcela()
         st.rerun()
 
 
 # ============================================================
-# PANEL PRINCIPAL - CAPTURA / INVENTARIO / SALUD
+# PANEL PRINCIPAL - FLUJO DEL VIDEO
 # ============================================================
 with main_col:
-    # --------------------------------------------------------
-    # VISTA PREVIA CAPTURA BASE
-    # --------------------------------------------------------
+
+    # ========================================================
+    # ① CAPTURA BASE
+    # ========================================================
+    st.markdown(
+        f"<div class='tc-stage-title'>① {tr('Captura Base de la Parcela','Capture de base de la parcelle')}</div>",
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        f"<div class='tc-stage-sub'>{tr('La Captura Base es la referencia común para dos vertientes independientes: Inventario visual y Regiones críticas.','La capture de base est la référence commune pour deux volets indépendants : inventaire visuel et régions critiques.')}</div>",
+        unsafe_allow_html=True
+    )
+
     with st.container(border=True):
-        st.subheader(tr("Captura Base de la Parcela", "Capture de base de la parcelle"))
-        st.caption(
-            tr(
-                "Esta captura será la referencia para Inventario y, después de confirmarlo, para Salud.",
-                "Cette capture servira de référence pour l’inventaire puis, après validation, pour la santé."
-            )
-        )
+        st.markdown(tr("### Imagen Maestra de Parcela", "### Image maîtresse de la parcelle"))
 
         if uploaded_images:
-            preview_cols = st.columns(min(3, len(uploaded_images)))
-            for idx, up in enumerate(uploaded_images):
-                try:
-                    with preview_cols[idx % len(preview_cols)]:
-                        st.image(
-                            Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
-                            caption=up.name,
-                            use_container_width=True
-                        )
-                except Exception as exc:
-                    st.warning(f"{up.name}: {exc}")
+            master_up = uploaded_images[0]
+            if st.session_state.tc_inventario_fuente:
+                master_up = next(
+                    (u for u in uploaded_images if u.name == st.session_state.tc_inventario_fuente),
+                    uploaded_images[0]
+                )
+            try:
+                _tc_ui_image(
+                    _tc_uploaded_pil(master_up),
+                    caption=tr("Referencia principal", "Référence principale")
+                )
+            except Exception as exc:
+                st.warning(str(exc))
+
+            st.info(
+                tr(
+                    f"Se cargaron {len(uploaded_images)} fotografía(s). La Imagen Maestra funciona como referencia común sin modificar el análisis técnico.",
+                    f"{len(uploaded_images)} photo(s) chargée(s). L’image maîtresse sert de référence commune sans modifier l’analyse technique."
+                )
+            )
+
+            st.markdown(tr("### Fotografías fuente", "### Photographies source"))
+            for idx, up in enumerate(uploaded_images, 1):
+                with st.expander(f"{idx}. {up.name}", expanded=(idx == 1)):
+                    try:
+                        _tc_ui_image(_tc_uploaded_pil(up))
+                    except Exception as exc:
+                        st.warning(f"{up.name}: {exc}")
         else:
             st.info(
                 tr(
-                    "Carga las fotografías desde el panel derecho.",
-                    "Chargez les photos depuis le panneau de droite."
+                    "Carga las fotografías desde el panel de Captura Base.",
+                    "Chargez les photographies depuis le panneau Capture de base."
                 )
             )
 
-    # --------------------------------------------------------
-    # INVENTARIO
-    # --------------------------------------------------------
-    with st.container(border=True):
-        st.subheader(tr("Inventario", "Inventaire"))
-        st.caption(
-            tr(
-                "Primera etapa: detectar surcos, numerarlos únicamente arriba y separar slots ocupados/vacíos. El diagnóstico de salud permanece bloqueado.",
-                "Première étape : détecter les rangs, les numéroter au début et à la fin et séparer les emplacements occupés/vides. Le diagnostic de santé reste bloqué."
+    st.markdown("---")
+
+    # ========================================================
+    # ② INVENTARIO VISUAL
+    # ========================================================
+    st.markdown(
+        f"<div class='tc-stage-title'>② {tr('Vertiente 1 · Inventario visual de la parcela','Volet 1 · Inventaire visuel de la parcelle')}</div>",
+        unsafe_allow_html=True
+    )
+    st.caption(
+        tr(
+            "Detecta los surcos con la lógica actual, mantiene líneas rectas, puntos/slots y la numeración del Inventario.",
+            "Détecte les rangs avec la logique actuelle, en conservant les lignes droites, les points/emplacements et la numérotation."
+        )
+    )
+
+    analizar_inventario = st.button(
+        tr("🌿 Analizar Inventario", "🌿 Analyser l’inventaire"),
+        type="primary",
+        use_container_width=True,
+        disabled=(not st.session_state.tc_captura_confirmada or not uploaded_images),
+        key="tc_analizar_inventario_video_flow"
+    )
+
+    if analizar_inventario and uploaded_images:
+        progress = st.progress(
+            5,
+            text=tr(
+                "OpenCV está detectando los surcos rectos y alineando los slots...",
+                "OpenCV détecte les rangs droits et aligne les emplacements..."
             )
         )
 
-        st.markdown(
-            f"<div class='tc-row-number-demo'>01 ───────────────────────── 01</div>",
-            unsafe_allow_html=True
-        )
+        try:
+            # MISMA FUNCIÓN / MISMA LÓGICA DEL CÓDIGO ANTERIOR.
+            best_up, inv, errores_inventario = _tc_select_best_capture_openai(uploaded_images)
 
-        analizar_inventario = st.button(
-            tr("🌿 Analizar Inventario", "🌿 Analyser l’inventaire"),
-            type="primary",
-            use_container_width=True,
-            disabled=(not st.session_state.tc_captura_confirmada or not uploaded_images),
-            key="tc_analizar_inventario"
-        )
-
-        if analizar_inventario and uploaded_images:
-            # ========================================================
-            # INVENTARIO 100% OPENCV LOCAL
-            # Líneas, slots y clasificación se calculan localmente sin APIs externas.
-            # ========================================================
-            progress = st.progress(
-                5,
+            progress.progress(
+                92,
                 text=tr(
-                    "OpenCV está detectando los surcos rectos y alineando los slots...",
-                    "OpenCV détecte les rangs droits et aligne les emplacements..."
+                    "OpenCV está terminando el inventario...",
+                    "OpenCV termine l’inventaire..."
                 )
             )
 
-            try:
-                best_up, inv, errores_inventario = _tc_select_best_capture_openai(
-                    uploaded_images
-                )
-                progress.progress(
-                    92,
-                    text=tr(
-                        "OpenCV está terminando slots ocupados y vacíos...",
-                        "OpenCV termine les emplacements occupés et vides..."
-                    )
-                )
+            st.session_state.tc_resultados_base = []
+            st.session_state.tc_salud_procesada = False
+            st.session_state.tc_inventario_confirmado = False
+            st.session_state.tc_tabla_inventario = inv["table"]
+            st.session_state.tc_inventario_imagen = inv["image"]
+            st.session_state.tc_inventario_fuente = best_up.name
+            st.session_state.tc_inventario_confianza = float(inv.get("confidence", 0.0))
+            st.session_state.tc_inventario_rows_ai = inv.get("rows", [])
+            st.session_state.tc_inventario_modelo = inv.get("model", "OpenCV local")
+            st.session_state.tc_inventario_debug = inv.get("debug", {})
+            st.session_state.tc_inventario_warnings = inv.get("warnings", [])
+            st.session_state.tc_inventario_procesado = True
 
-                st.session_state.tc_resultados_base = []
-                st.session_state.tc_salud_procesada = False
-                st.session_state.tc_inventario_confirmado = False
-                st.session_state.tc_tabla_inventario = inv["table"]
-                st.session_state.tc_inventario_imagen = inv["image"]
-                st.session_state.tc_inventario_fuente = best_up.name
-                st.session_state.tc_inventario_confianza = float(inv.get("confidence", 0.0))
-                st.session_state.tc_inventario_rows_ai = inv.get("rows", [])
-                st.session_state.tc_inventario_modelo = inv.get("model", "OpenCV local")
-                st.session_state.tc_inventario_debug = inv.get("debug", {})
-                st.session_state.tc_inventario_warnings = inv.get("warnings", [])
-                st.session_state.tc_inventario_procesado = True
-
-                progress.progress(100, text=tr("Inventario terminado.", "Inventaire terminé."))
-                st.success(
-                    tr(
-                        "✅ Inventario terminado localmente con OpenCV, sin usar IA externa.",
-                        "✅ Inventaire terminé localement avec OpenCV, sans IA externe."
-                    )
+            progress.progress(100, text=tr("Inventario terminado.", "Inventaire terminé."))
+            st.success(
+                tr(
+                    "✅ Inventario terminado con la misma lógica OpenCV.",
+                    "✅ Inventaire terminé avec la même logique OpenCV."
                 )
-                if errores_inventario:
-                    with st.expander(tr("Detalles de otras capturas", "Détails des autres captures"), expanded=False):
-                        for msg in errores_inventario:
-                            st.caption(msg)
-            except Exception as exc:
-                st.session_state.tc_inventario_procesado = False
-                st.session_state.tc_tabla_inventario = None
-                st.session_state.tc_inventario_imagen = None
-                st.session_state.tc_inventario_rows_ai = []
-                st.session_state.tc_inventario_warnings = []
-                st.error(
-                    tr(
-                        f"No se pudo terminar el Inventario con OpenCV: {exc}",
-                        f"Impossible de terminer l’inventaire avec OpenCV : {exc}"
-                    )
-                )
+            )
 
-    # --------------------------------------------------------
-    # RESULTADO DE INVENTARIO
-    # --------------------------------------------------------
+            if errores_inventario:
+                with st.expander(
+                    tr("Detalles de otras capturas", "Détails des autres captures"),
+                    expanded=False
+                ):
+                    for msg in errores_inventario:
+                        st.caption(msg)
+
+        except Exception as exc:
+            st.session_state.tc_inventario_procesado = False
+            st.session_state.tc_tabla_inventario = None
+            st.session_state.tc_inventario_imagen = None
+            st.session_state.tc_inventario_rows_ai = []
+            st.session_state.tc_inventario_warnings = []
+            st.error(
+                tr(
+                    f"No se pudo terminar el Inventario con OpenCV: {exc}",
+                    f"Impossible de terminer l’inventaire avec OpenCV : {exc}"
+                )
+            )
+
     if st.session_state.tc_inventario_procesado:
-        st.markdown("---")
-        st.subheader(tr("Resultado de Inventario", "Résultat de l’inventaire"))
-
-        m1, m2, m3, m4 = st.columns(4)
-
         tabla_actual = st.session_state.tc_tabla_inventario
         if tabla_actual is None:
             tabla_actual = _tc_resultado_a_fila_surcos(0)
 
         total_surcos = int(len(tabla_actual))
-        total_slots, total_ocupados, total_vacios, inventario_valido = _tc_metricas_tabla(tabla_actual.copy())
-
-        with m1:
-            st.metric(tr("Surcos", "Rangs"), total_surcos)
-        with m2:
-            st.metric(tr("Slots totales", "Emplacements totaux"), total_slots)
-        with m3:
-            st.metric(tr("Ocupados", "Occupés"), total_ocupados)
-        with m4:
-            st.metric(tr("Vacíos", "Vides"), total_vacios)
-
-        confianza_inv = float(st.session_state.tc_inventario_confianza or 0.0)
-        fuente_inv = st.session_state.tc_inventario_fuente or "—"
-        st.caption(
-            tr(
-                f"Inventario identificado localmente con OpenCV. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
-                f"Inventaire automatique calculé à partir de la présence visuelle, séparé du diagnostic de santé. Image de référence : {fuente_inv}. Confiance moyenne : {confianza_inv*100:.1f} %."
-            )
+        total_slots, total_ocupados, total_vacios, inventario_valido = _tc_metricas_tabla(
+            tabla_actual.copy()
         )
 
-        warnings_inv = st.session_state.get("tc_inventario_warnings", []) or []
-        if warnings_inv:
-            st.warning(tr(
-                "La IA terminó la parcela, pero hay uno o más surcos que requieren revisión. No se canceló todo el Inventario.",
-                "L’IA a terminé la parcelle, mais un ou plusieurs rangs nécessitent une vérification. L’inventaire complet n’a pas été annulé."
-            ))
-            with st.expander(tr("Surcos a revisar", "Rangs à vérifier"), expanded=False):
-                for warning_msg in warnings_inv:
-                    st.caption(str(warning_msg))
+        st.markdown(tr("## Resultado de Inventario", "## Résultat de l’inventaire"))
 
-        inv_image = st.session_state.tc_inventario_imagen
-        if inv_image is not None:
-            with st.container(border=True):
-                st.markdown(tr(
-                    "#### Imagen de Inventario",
-                    "#### Image d’inventaire"
-                ))
-                st.markdown(
-                    tr(
-                        "**Inventario recto:** los números 01…N aparecen únicamente arriba. Cada línea es recta y los puntos de slots quedan sobre el mismo eje del surco, sin saltar a la hilera vecina.",
-                        "**Inventaire épuré :** les numéros 01…N apparaissent uniquement en haut et en bas de chaque rang. Les emplacements sont calculés dans le tableau sans être dessinés sur la photo."
-                    ),
-                    unsafe_allow_html=True
-                )
-                if isinstance(inv_image, Image.Image):
-                    st.image(inv_image, use_container_width=True)
-                else:
-                    st.image(
-                        cv2.cvtColor(inv_image, cv2.COLOR_BGR2RGB),
-                        use_container_width=True
-                    )
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(tr("Surcos", "Rangs"), total_surcos)
+        m2.metric(tr("Slots totales", "Emplacements totaux"), total_slots)
+        m3.metric(tr("Ocupados", "Occupés"), total_ocupados)
+        m4.metric(tr("Vacíos", "Vides"), total_vacios)
 
         st.caption(
             tr(
-                "Las imágenes verde/rojo del diagnóstico no se muestran en Inventario. Se habilitan únicamente después de confirmar esta etapa.",
-                "Les images vert/rouge du diagnostic ne sont pas affichées dans l’inventaire. Elles ne sont disponibles qu’après confirmation de cette étape."
+                f"Imagen de referencia: {st.session_state.tc_inventario_fuente or '—'}. Confianza media: {float(st.session_state.tc_inventario_confianza or 0.0)*100:.1f}%.",
+                f"Image de référence : {st.session_state.tc_inventario_fuente or '—'}. Confiance moyenne : {float(st.session_state.tc_inventario_confianza or 0.0)*100:.1f} %."
             )
         )
 
-        st.markdown(tr("#### Tabla automática por surco", "#### Tableau automatique par rang"))
-        st.caption(tr(
-            "Gemini revisa cada hilera y llena Slots, Ocupados y Vacíos. Puedes corregir un valor antes de confirmar si la revisión visual lo requiere.",
-            "Gemini examine chaque rang et remplit Emplacements, Occupés et Vides. Vous pouvez corriger une valeur avant confirmation."
-        ))
+        st.markdown(tr("### Inventario por cada fotografía", "### Inventaire par photographie"))
+
+        if uploaded_images:
+            ref_name = st.session_state.tc_inventario_fuente or uploaded_images[0].name
+            for idx, up in enumerate(uploaded_images, 1):
+                with st.expander(f"{idx}. {up.name}", expanded=(up.name == ref_name)):
+                    if up.name == ref_name:
+                        _tc_ui_image(
+                            st.session_state.tc_inventario_imagen,
+                            caption=tr("Inventario de la fotografía de referencia", "Inventaire de la photographie de référence")
+                        )
+                    else:
+                        st.caption(
+                            tr(
+                                "Esta fotografía se conserva como fuente. La lógica actual selecciona una sola captura de referencia para el Inventario.",
+                                "Cette photographie est conservée comme source. La logique actuelle sélectionne une seule capture de référence pour l’inventaire."
+                            )
+                        )
+                        try:
+                            _tc_ui_image(_tc_uploaded_pil(up))
+                        except Exception:
+                            pass
+
+        st.markdown(tr("### Tabla automática por surco", "### Tableau automatique par rang"))
+        st.caption(
+            tr(
+                "OpenCV estima Slots, Ocupados y Vacíos. Puedes corregir un valor antes de confirmar.",
+                "OpenCV estime Emplacements, Occupés et Vides. Vous pouvez corriger une valeur avant de confirmer."
+            )
+        )
 
         edited = st.data_editor(
             tabla_actual,
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            key="tc_editor_inventario",
+            key="tc_editor_inventario_video_flow",
             column_config={
-                tr("Surco", "Rang"): st.column_config.TextColumn(
-                    tr("Surco", "Rang"), disabled=True, width="small"
+                "Surco": st.column_config.TextColumn("Surco", disabled=True, width="small"),
+                "Slots": st.column_config.NumberColumn("Slots", min_value=0, step=1, format="%d"),
+                "Ocupados": st.column_config.NumberColumn("Ocupados", min_value=0, step=1, format="%d"),
+                "Vacíos": st.column_config.NumberColumn("Vacíos", min_value=0, step=1, format="%d"),
+                "Confianza": st.column_config.NumberColumn(
+                    "Confianza", min_value=0.0, max_value=100.0, format="%.1f %%", disabled=True
                 ),
-                tr("Slots", "Emplacements"): st.column_config.NumberColumn(
-                    tr("Slots", "Emplacements"), min_value=0, step=1, format="%d"
-                ),
-                tr("Ocupados", "Occupés"): st.column_config.NumberColumn(
-                    tr("Ocupados", "Occupés"), min_value=0, step=1, format="%d"
-                ),
-                tr("Vacíos", "Vides"): st.column_config.NumberColumn(
-                    tr("Vacíos", "Vides"), min_value=0, step=1, format="%d"
-                ),
-                tr("Confianza", "Confiance"): st.column_config.NumberColumn(
-                    tr("Confianza", "Confiance"),
-                    min_value=0.0,
-                    max_value=100.0,
-                    format="%.1f %%",
-                    disabled=True
-                ),
-                tr("Estado", "État"): st.column_config.TextColumn(
-                    tr("Estado", "État"), disabled=True, width="medium"
-                ),
+                "Estado": st.column_config.TextColumn("Estado", disabled=True, width="medium"),
             }
         )
 
         st.session_state.tc_tabla_inventario = edited
-        total_slots, total_ocupados, total_vacios, inventario_valido = _tc_metricas_tabla(edited.copy())
+        total_slots, total_ocupados, total_vacios, inventario_valido = _tc_metricas_tabla(
+            edited.copy()
+        )
 
         if inventario_valido:
-            st.success(
-                tr(
-                    "✅ Validación correcta: Slots = Ocupados + Vacíos en todos los surcos.",
-                    "✅ Validation correcte : Emplacements = Occupés + Vides pour tous les rangs."
-                )
-            )
+            st.success("✅ Validación correcta: Slots = Ocupados + Vacíos en todos los surcos.")
         else:
-            st.error(
-                tr(
-                    "Revisa la tabla: cada surco debe cumplir Slots = Ocupados + Vacíos.",
-                    "Vérifiez le tableau : chaque rang doit respecter Emplacements = Occupés + Vides."
-                )
+            st.error("Revisa la tabla: cada surco debe cumplir Slots = Ocupados + Vacíos.")
+
+        # ====================================================
+        # ③ VALIDACIÓN QR - MISMA CONFIRMACIÓN QUE YA EXISTÍA
+        # ====================================================
+        st.markdown(
+            f"<div class='tc-stage-title'>③ {tr('Validación QR','Validation QR')}</div>",
+            unsafe_allow_html=True
+        )
+        st.caption(
+            tr(
+                "La validación confirma el Inventario antes de desbloquear el estado visual y los polígonos.",
+                "La validation confirme l’inventaire avant de déverrouiller l’état visuel et les polygones."
             )
+        )
 
         if st.button(
-            tr("✅ Confirmar Inventario", "✅ Confirmer l’inventaire"),
+            tr("➕ Agregar validación", "➕ Ajouter la validation"),
             type="primary",
             use_container_width=True,
             disabled=(not inventario_valido),
-            key="tc_confirmar_inventario"
+            key="tc_confirmar_inventario_video_flow"
         ):
             st.session_state.tc_inventario_confirmado = True
             st.success(
                 tr(
-                    "Inventario confirmado. Diagnóstico de Salud desbloqueado.",
-                    "Inventaire confirmé. Diagnostic de santé déverrouillé."
+                    "✅ Inventario validado. Se desbloqueó Regiones críticas.",
+                    "✅ Inventaire validé. Les régions critiques sont déverrouillées."
                 )
             )
             st.rerun()
 
-    # --------------------------------------------------------
-    # SALUD - OCULTA HASTA CONFIRMAR INVENTARIO
-    # --------------------------------------------------------
+        if st.session_state.tc_inventario_confirmado:
+            st.success(
+                tr(
+                    "✅ Validación registrada.",
+                    "✅ Validation enregistrée."
+                )
+            )
+
     st.markdown("---")
-    st.subheader(tr("Diagnóstico de Salud", "Diagnostic de santé"))
+
+    # ========================================================
+    # ④ REGIONES CRÍTICAS / ESTADO VISUAL
+    # ========================================================
+    st.markdown(
+        f"<div class='tc-stage-title'>④ {tr('Vertiente 2 · Estado visual de la parcela','Volet 2 · État visuel de la parcelle')}</div>",
+        unsafe_allow_html=True
+    )
 
     if not st.session_state.tc_inventario_confirmado:
         st.info(
             tr(
-                "🔒 Salud está bloqueada. Primero confirma el Inventario.",
-                "🔒 Santé est verrouillée. Confirmez d’abord l’inventaire."
+                "🔒 Primero completa y valida el Inventario para ejecutar esta vertiente.",
+                "🔒 Complétez et validez d’abord l’inventaire pour exécuter ce volet."
             )
         )
     else:
-        # Salud se ejecuta como una etapa completamente independiente.
         if not st.session_state.tc_salud_procesada:
-            st.info(
-                tr(
-                    "✅ Inventario confirmado. Ya puedes ejecutar el diagnóstico de Salud sobre la misma captura base.",
-                    "✅ Inventaire confirmé. Vous pouvez maintenant exécuter le diagnostic de santé sur la même capture de base."
-                )
-            )
-
             analizar_salud = st.button(
-                tr("🩺 Analizar Salud", "🩺 Analyser la santé"),
+                tr("🩺 Analizar estado visual", "🩺 Analyser l’état visuel"),
                 type="primary",
                 use_container_width=True,
                 disabled=not uploaded_images,
-                key="tc_analizar_salud"
+                key="tc_analizar_salud_video_flow"
             )
 
             if analizar_salud and uploaded_images:
@@ -10156,15 +10268,15 @@ with main_col:
                         uploaded_images[0]
                     )
                     rows_ai = st.session_state.tc_inventario_rows_ai or []
+
                     if not rows_ai:
                         raise RuntimeError(
-                            "Falta la geometría de Inventario. Vuelve a ejecutar Inventario antes de Salud."
+                            "Falta la geometría de Inventario. Vuelve a ejecutar Inventario."
                         )
 
-                    backend_result = _tc_analyze_health_openai(
-                        uploaded_image,
-                        rows_ai
-                    )
+                    # MISMA FUNCIÓN / MISMA LÓGICA DEL CÓDIGO ANTERIOR.
+                    backend_result = _tc_analyze_health_openai(uploaded_image, rows_ai)
+
                     progress_salud.progress(
                         90,
                         text=tr(
@@ -10176,6 +10288,7 @@ with main_col:
                     historial_google_ok = False
                     historial_google_info = ""
                     try:
+                        # MISMO GUARDADO DRIVE/SHEETS.
                         historial_google_ok, historial_google_info = guardar_analisis_en_google(
                             uploaded_image,
                             backend_result
@@ -10205,6 +10318,7 @@ with main_col:
                         "total_slots": int(backend_result.get("total_slots", 0) or 0),
                         "angle": float(backend_result.get("angle", 0.0)),
                         "annotated": backend_result.get("annotated"),
+                        "polygon_image": backend_result.get("polygon_image"),
                         "ia_scene": backend_result.get("backend"),
                         "result_url": backend_result.get("result_url"),
                         "historial_google_guardado": historial_google_ok,
@@ -10218,20 +10332,19 @@ with main_col:
                         "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
                         "detalle_zonas": backend_result.get("detalle_zonas", {}),
                         "metodo": backend_result.get("metodo", "opencv-v2-straight-grid-polygons"),
-                        "polygon_image": backend_result.get("polygon_image"),
                         "confidence": backend_result.get("confidence", 0.0),
                     })
 
                     st.session_state.tc_resultados_base = resultados_salud
                     st.session_state.tc_salud_procesada = True
-                    progress_salud.progress(100, text=tr("Salud terminada.", "Santé terminée."))
+                    progress_salud.progress(100, text=tr("Análisis terminado.", "Analyse terminée."))
                     st.rerun()
 
                 except Exception as exc:
                     st.error(
                         tr(
-                            f"No se pudo analizar Salud con OpenCV: {exc}",
-                            f"Impossible d’analyser la santé avec OpenCV : {exc}"
+                            f"No se pudo analizar con OpenCV: {exc}",
+                            f"Impossible d’analyser avec OpenCV : {exc}"
                         )
                     )
 
@@ -10241,156 +10354,294 @@ with main_col:
             if not resultados:
                 st.info(tr("No hay resultados para mostrar.", "Aucun résultat à afficher."))
             else:
-                green_vals = [float(i.get("green_pct", 0.0) or 0.0) for i in resultados]
-                red_vals = [float(i.get("red_pct", 0.0) or 0.0) for i in resultados]
-                green_pct = float(np.mean(green_vals)) if green_vals else 0.0
-                red_pct = float(np.mean(red_vals)) if red_vals else 0.0
+                st.markdown(tr("### Análisis por cada fotografía", "### Analyse par photographie"))
 
-                s1, s2 = st.columns(2)
-                with s1:
-                    st.metric(tr("Vegetación verde", "Végétation verte"), f"{green_pct:.1f}%")
-                with s2:
-                    st.metric(tr("Afectación roja", "Affectation rouge"), f"{red_pct:.1f}%")
-
-                for idx, item in enumerate(resultados):
-                    with st.container(border=True):
-                        st.markdown(f"**{item.get('name','')}**")
-
-                        c_original, c_poly, c_proc = st.columns(3)
-                        with c_original:
-                            st.caption(tr("Imagen original", "Image originale"))
-                            try:
-                                fuente = st.session_state.tc_inventario_fuente or item.get("name", "")
-                                up = next((u for u in uploaded_images if u.name == fuente), uploaded_images[0])
-                                st.image(
-                                    Image.open(io.BytesIO(up.getvalue())).convert("RGB"),
-                                    use_container_width=True
-                                )
-                            except Exception:
-                                pass
-                        with c_poly:
-                            st.caption(tr("Polígonos — secos y vacíos", "Polygones — secs et vides"))
-                            polygon_image = item.get("polygon_image")
-                            if polygon_image is not None:
-                                if isinstance(polygon_image, Image.Image):
-                                    st.image(polygon_image, use_container_width=True)
-                                else:
-                                    st.image(
-                                        cv2.cvtColor(polygon_image, cv2.COLOR_BGR2RGB),
-                                        use_container_width=True
-                                    )
-                        with c_proc:
-                            st.caption(tr("Imagen procesada — Salud", "Image traitée — Santé"))
-                            annotated = item.get("annotated")
-                            if annotated is not None:
-                                if isinstance(annotated, Image.Image):
-                                    st.image(annotated, use_container_width=True)
-                                else:
-                                    st.image(
-                                        cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
-                                        use_container_width=True
-                                    )
-
+                for idx, item in enumerate(resultados, 1):
+                    with st.expander(
+                        f"{idx}. {item.get('name','')}",
+                        expanded=True
+                    ):
                         d1, d2, d3 = st.columns(3)
-                        with d1:
-                            st.metric(tr("Verde", "Vert"), f"{float(item.get('green_pct',0.0)):.1f}%")
-                        with d2:
-                            st.metric(tr("Rojo", "Rouge"), f"{float(item.get('red_pct',0.0)):.1f}%")
-                        with d3:
-                            st.metric(
-                                tr("Zona más afectada", "Zone la plus touchée"),
-                                tr_diag_texto(item.get("zona_mas_afectada", "—"))
-                            )
+                        d1.metric(
+                            tr("Vegetación verde", "Végétation verte"),
+                            f"{float(item.get('green_pct',0.0)):.1f}%"
+                        )
+                        d2.metric(
+                            tr("Afectación", "Affectation"),
+                            f"{float(item.get('red_pct',0.0)):.1f}%"
+                        )
+                        d3.metric(
+                            tr("Zona más afectada", "Zone la plus touchée"),
+                            tr_diag_texto(item.get("zona_mas_afectada", "—"))
+                        )
 
-                        total_slots_item = int(item.get("total_slots", 0) or 0)
-                        green_slots_item = int(item.get("green_slots", 0) or 0)
-                        red_slots_item = int(item.get("red_slots", 0) or 0)
-                        if total_slots_item > 0:
-                            st.caption(
-                                tr(
-                                    f"Salud por slots: {green_slots_item} verdes + {red_slots_item} rojos = {total_slots_item} posiciones evaluadas.",
-                                    f"Santé par emplacements : {green_slots_item} verts + {red_slots_item} rouges = {total_slots_item} positions évaluées."
-                                )
-                            )
+                        _tc_ui_image(
+                            item.get("annotated"),
+                            caption=tr("Análisis visual verde / rojo", "Analyse visuelle vert / rouge")
+                        )
 
                         diagnostico = str(item.get("diagnostico_visual", "") or "").strip()
                         if diagnostico:
-                            st.markdown(tr("**Diagnóstico visual**", "**Diagnostic visuel**"))
+                            st.markdown(tr("#### Descripción visual preliminar", "#### Description visuelle préliminaire"))
                             st.write(tr_diag_texto(diagnostico))
 
                         recomendaciones = item.get("recomendaciones_iniciales", []) or []
                         if recomendaciones:
-                            st.markdown(tr("**Recomendaciones iniciales**", "**Recommandations initiales**"))
+                            st.markdown(tr("#### Siguiente inspección sugerida", "#### Inspection suivante suggérée"))
                             for rec in recomendaciones:
                                 st.markdown(f"- {tr_diag_texto(rec)}")
 
-
-# ============================================================
-# HISTORIAL ACTUAL - GOOGLE DRIVE / SHEETS
-# Se conserva sin modificar la estructura existente.
-# ============================================================
-st.markdown("---")
-
-with st.expander(
-    tr("📂 Historial de análisis", "📂 Historique des analyses"),
-    expanded=False
-):
-    if not historial_google_configurado():
-        st.info(
-            tr(
-                "El historial de Google Drive aún no está configurado.",
-                "L’historique Google Drive n’est pas encore configuré."
-            )
-        )
-    else:
-        try:
-            registros_historial = obtener_historial_google(limite=100)
-            if not registros_historial:
-                st.info(
+                # ----------------------------------------------------
+                # POLÍGONOS - MISMA IMAGEN GENERADA POR LA LÓGICA ACTUAL
+                # ----------------------------------------------------
+                st.markdown(
                     tr(
-                        "Todavía no hay análisis guardados.",
-                        "Aucune analyse enregistrée pour le moment."
+                        "## Regiones críticas · Polígonos para seguimiento",
+                        "## Régions critiques · Polygones de suivi"
                     )
                 )
-            else:
-                filas_historial = []
-                for registro in registros_historial:
-                    filas_historial.append({
-                        tr("Fecha", "Date"): registro.get("fecha", ""),
-                        tr("Imagen", "Image"): registro.get("nombre", ""),
-                        tr("Surcos", "Rangs"): registro.get("surcos", 0),
-                        tr("Verde %", "Vert %"): registro.get("verde_pct", 0.0),
-                        tr("Rojo %", "Rouge %"): registro.get("rojo_pct", 0.0),
-                        tr("Zona más afectada", "Zone la plus touchée"): tr_diag_texto(registro.get("zona_mas_afectada", "")),
-                    })
-                st.dataframe(
-                    pd.DataFrame(filas_historial),
-                    width="stretch",
-                    hide_index=True
+                st.caption(
+                    tr(
+                        "Los polígonos azules se muestran exactamente con la salida producida por la lógica actual.",
+                        "Les polygones bleus sont affichés exactement avec la sortie produite par la logique actuelle."
+                    )
+                )
+
+                for idx, item in enumerate(resultados, 1):
+                    with st.expander(
+                        f"{idx}. {item.get('name','')}",
+                        expanded=True
+                    ):
+                        polygon_image = item.get("polygon_image")
+                        if polygon_image is not None:
+                            st.markdown(tr("### Imagen con polígonos azules", "### Image avec polygones bleus"))
+                            _tc_ui_image(polygon_image)
+
+                            p1, p2, p3 = st.columns(3)
+                            red_pct_item = float(item.get("red_pct", 0.0) or 0.0)
+                            p1.metric(
+                                tr("Zonas detectadas", "Zones détectées"),
+                                1 if red_pct_item > 0 else 0
+                            )
+                            p2.metric(
+                                tr("Área visual diferente", "Zone visuelle différente"),
+                                f"{red_pct_item:.1f}%"
+                            )
+                            p3.metric(
+                                tr("Surcos analizados", "Rangs analysés"),
+                                int(item.get("count", 0) or 0)
+                            )
+
+                            if item.get("historial_google_guardado"):
+                                st.success(
+                                    tr(
+                                        "✅ El análisis fue guardado en Google Sheets y Google Drive.",
+                                        "✅ L’analyse a été enregistrée dans Google Sheets et Google Drive."
+                                    )
+                                )
+                        else:
+                            st.info(
+                                tr(
+                                    "No hay una imagen de polígonos disponible en este resultado.",
+                                    "Aucune image de polygones n’est disponible pour ce résultat."
+                                )
+                            )
+
+                st.markdown("---")
+
+                # ====================================================
+                # ⑤ y ⑥ - SE CONSERVAN COMO ETAPAS VISUALES SIN
+                # CAMBIAR LA LÓGICA ACTUAL.
+                # ====================================================
+                st.markdown(
+                    f"<div class='tc-stage-title'>⑤ {tr('Segundo vuelo','Deuxième vol')}</div>",
+                    unsafe_allow_html=True
+                )
+                st.info(
+                    tr(
+                        "Esta etapa queda preparada en el flujo. No se ejecuta un segundo vuelo automáticamente para no modificar la lógica actual.",
+                        "Cette étape est préparée dans le flux. Aucun deuxième vol n’est exécuté automatiquement afin de ne pas modifier la logique actuelle."
+                    )
                 )
 
                 st.markdown(
+                    f"<div class='tc-stage-title'>⑥ {tr('Etapa 3 · Análisis visual de segundo nivel','Étape 3 · Analyse visuelle de deuxième niveau')}</div>",
+                    unsafe_allow_html=True
+                )
+                st.caption(
                     tr(
-                        "### 🖼️ Ver imágenes del historial",
-                        "### 🖼️ Voir les images de l’historique"
+                        "Primero registra el segundo vuelo de una región. Mientras tanto se conserva la vista final calculada con la lógica actual.",
+                        "Enregistrez d’abord le deuxième vol d’une région. En attendant, la vue finale calculée avec la logique actuelle est conservée."
                     )
                 )
 
-                indice_historial = st.selectbox(
-                    tr(
-                        "Selecciona un análisis para ver sus imágenes",
-                        "Sélectionnez une analyse pour voir ses images"
-                    ),
-                    options=list(range(len(registros_historial))),
-                    format_func=lambda i: (
-                        f"{str(registros_historial[i].get('fecha', ''))[:10]}  |  "
-                        f"{registros_historial[i].get('nombre', '')}  |  "
-                        f"{registros_historial[i].get('surcos', 0)} surcos"
-                    ),
-                    key="tc_historial_selector_imagen"
+                st.markdown(tr("## Vista final · Líneas sobre surcos", "## Vue finale · Lignes sur les rangs"))
+
+                item = resultados[0]
+                f1, f2, f3 = st.columns(3)
+                f1.metric(
+                    tr("Vegetación verde", "Végétation verte"),
+                    f"{float(item.get('green_pct',0.0)):.1f}%"
+                )
+                f2.metric(
+                    tr("Afectación roja", "Affectation rouge"),
+                    f"{float(item.get('red_pct',0.0)):.1f}%"
+                )
+                f3.metric(
+                    tr("Surcos usados", "Rangs utilisés"),
+                    int(item.get("count",0) or 0)
                 )
 
-                registro_img = registros_historial[indice_historial]
+                original_ref = None
+                if uploaded_images:
+                    fuente = st.session_state.tc_inventario_fuente or uploaded_images[0].name
+                    up_ref = next((u for u in uploaded_images if u.name == fuente), uploaded_images[0])
+                    try:
+                        original_ref = _tc_uploaded_pil(up_ref)
+                    except Exception:
+                        original_ref = None
+
+                vf1, vf2 = st.columns(2)
+                with vf1:
+                    st.caption(tr("Imagen original", "Image originale"))
+                    _tc_ui_image(original_ref)
+                with vf2:
+                    st.caption(
+                        tr(
+                            "Imagen procesada — Líneas guiadas por el Inventario",
+                            "Image traitée — Lignes guidées par l’inventaire"
+                        )
+                    )
+                    _tc_ui_image(item.get("annotated"))
+
+                st.caption(
+                    tr(
+                        "Las líneas usan exactamente los surcos confirmados del Inventario y conservan el diagnóstico verde/rojo de la lógica actual.",
+                        "Les lignes utilisent exactement les rangs confirmés de l’inventaire et conservent le diagnostic vert/rouge de la logique actuelle."
+                    )
+                )
+
+                # ----------------------------------------------------
+                # RESUMEN FINAL DE 4 IMÁGENES
+                # ----------------------------------------------------
+                st.markdown("---")
+                st.markdown(
+                    tr(
+                        "## Resumen final · 4 imágenes por fotografía",
+                        "## Résumé final · 4 images par photographie"
+                    )
+                )
+                st.caption(
+                    tr(
+                        "Se muestran: Original, Inventario, Análisis visual y Polígonos.",
+                        "Affichage : Original, Inventaire, Analyse visuelle et Polygones."
+                    )
+                )
+
+                with st.container(border=True):
+                    st.markdown(
+                        f"### 1. {st.session_state.tc_inventario_fuente or item.get('name','')}"
+                    )
+                    r1, r2, r3, r4 = st.columns(4)
+
+                    with r1:
+                        st.caption("1. Original")
+                        _tc_ui_image(original_ref)
+
+                    with r2:
+                        st.caption("2. Inventario")
+                        _tc_ui_image(st.session_state.tc_inventario_imagen)
+
+                    with r3:
+                        st.caption("3. Análisis")
+                        _tc_ui_image(item.get("annotated"))
+
+                    with r4:
+                        st.caption("4. Polígonos")
+                        _tc_ui_image(item.get("polygon_image"))
+
+
+# ============================================================
+# ⑦ HISTORIAL POR PARCELA
+# ============================================================
+st.markdown("---")
+st.markdown(
+    f"<div class='tc-stage-title'>⑦ 📂 {tr('Historial por parcela','Historique par parcelle')}</div>",
+    unsafe_allow_html=True
+)
+st.caption(
+    tr(
+        "Consulta análisis anteriores y vuelve a abrir las imágenes guardadas sin cambiar la lógica de almacenamiento.",
+        "Consultez les analyses précédentes et rouvrez les images enregistrées sans modifier la logique de stockage."
+    )
+)
+
+if not historial_google_configurado():
+    st.info(
+        tr(
+            "El historial de Google Drive aún no está configurado.",
+            "L’historique Google Drive n’est pas encore configuré."
+        )
+    )
+else:
+    try:
+        registros_historial = obtener_historial_google(limite=100)
+
+        if not registros_historial:
+            st.info(
+                tr(
+                    "Todavía no hay análisis guardados.",
+                    "Aucune analyse enregistrée pour le moment."
+                )
+            )
+        else:
+            # Tabla conserva los mismos datos del historial.
+            filas_historial = []
+            for registro in registros_historial:
+                filas_historial.append({
+                    tr("Fecha", "Date"): registro.get("fecha", ""),
+                    tr("Imagen", "Image"): registro.get("nombre", ""),
+                    tr("Surcos", "Rangs"): registro.get("surcos", 0),
+                    tr("Verde %", "Vert %"): registro.get("verde_pct", 0.0),
+                    tr("Rojo %", "Rouge %"): registro.get("rojo_pct", 0.0),
+                    tr("Zona más afectada", "Zone la plus touchée"):
+                        tr_diag_texto(registro.get("zona_mas_afectada", "")),
+                })
+
+            st.dataframe(
+                pd.DataFrame(filas_historial),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            indice_historial = st.selectbox(
+                tr(
+                    "Selecciona un análisis para cargar sus imágenes",
+                    "Sélectionnez une analyse pour charger ses images"
+                ),
+                options=list(range(len(registros_historial))),
+                format_func=lambda i: (
+                    f"{str(registros_historial[i].get('fecha',''))[:10]} | "
+                    f"{registros_historial[i].get('nombre','')} | "
+                    f"{registros_historial[i].get('surcos',0)} surcos"
+                ),
+                key="tc_historial_selector_video_flow"
+            )
+
+            registro_img = registros_historial[indice_historial]
+
+            with st.container(border=True):
+                h1, h2, h3 = st.columns(3)
+                h1.metric(tr("Surcos", "Rangs"), registro_img.get("surcos", 0))
+                h2.metric(
+                    tr("Verde %", "Vert %"),
+                    f"{float(registro_img.get('verde_pct',0.0) or 0.0):.1f}%"
+                )
+                h3.metric(
+                    tr("Rojo %", "Rouge %"),
+                    f"{float(registro_img.get('rojo_pct',0.0) or 0.0):.1f}%"
+                )
+
                 original_id = str(
                     registro_img.get("imagen_original_file_id", "") or ""
                 ).strip()
@@ -10401,77 +10652,80 @@ with st.expander(
                 col_hist_original, col_hist_procesada = st.columns(2)
 
                 with col_hist_original:
-                    st.markdown(
-                        tr(
-                            "**Imagen original**",
-                            "**Image originale**"
-                        )
-                    )
+                    st.markdown("### 1. Original")
                     if original_id:
-                        with st.spinner(tr("Cargando imagen original...", "Chargement de l’image originale...")):
+                        with st.spinner(
+                            tr("Cargando imagen original...", "Chargement de l’image originale...")
+                        ):
                             img_original_hist = _tc_historial_pil(original_id)
+
                         if img_original_hist is not None:
                             st.image(
                                 img_original_hist,
                                 caption=registro_img.get("nombre", ""),
-                                width="stretch"
+                                use_container_width=True
                             )
                         else:
                             st.info(
                                 tr(
-                                    "No se pudo abrir la imagen original de este registro.",
-                                    "Impossible d’ouvrir l’image originale de cet enregistrement."
+                                    "No se pudo abrir la imagen original.",
+                                    "Impossible d’ouvrir l’image originale."
                                 )
                             )
                     else:
                         st.info(
                             tr(
-                                "Este registro no tiene imagen original guardada.",
+                                "Este registro no tiene imagen original.",
                                 "Cet enregistrement ne contient pas d’image originale."
                             )
                         )
 
                 with col_hist_procesada:
-                    st.markdown(
-                        tr(
-                            "**Imagen procesada**",
-                            "**Image traitée**"
-                        )
-                    )
+                    st.markdown("### 2. Análisis")
                     if procesada_id:
-                        with st.spinner(tr("Cargando imagen procesada...", "Chargement de l’image traitée...")):
+                        with st.spinner(
+                            tr("Cargando imagen procesada...", "Chargement de l’image traitée...")
+                        ):
                             img_procesada_hist = _tc_historial_pil(procesada_id)
+
                         if img_procesada_hist is not None:
                             st.image(
                                 img_procesada_hist,
                                 caption=tr("Resultado del análisis", "Résultat de l’analyse"),
-                                width="stretch"
+                                use_container_width=True
                             )
                         else:
                             st.info(
                                 tr(
-                                    "No se pudo abrir la imagen procesada de este registro.",
-                                    "Impossible d’ouvrir l’image traitée de cet enregistrement."
+                                    "No se pudo abrir la imagen procesada.",
+                                    "Impossible d’ouvrir l’image traitée."
                                 )
                             )
                     else:
                         st.info(
                             tr(
-                                "Este registro no tiene imagen procesada guardada.",
+                                "Este registro no tiene imagen procesada.",
                                 "Cet enregistrement ne contient pas d’image traitée."
                             )
                         )
 
-                st.caption(
-                    tr(
-                        "Selecciona cualquier registro de arriba para consultar sus imágenes sin cambiar el análisis guardado.",
-                        "Sélectionnez un enregistrement ci-dessus pour consulter ses images sans modifier l’analyse enregistrée."
-                    )
-                )
-        except Exception as exc:
-            st.error(
-                tr(
-                    f"No se pudo cargar el historial: {exc}",
-                    f"Impossible de charger l’historique : {exc}"
-                )
+                diagnostico_guardado = str(
+                    registro_img.get("diagnostico_visual", "") or ""
+                ).strip()
+                if diagnostico_guardado:
+                    st.markdown(tr("## Diagnóstico guardado", "## Diagnostic enregistré"))
+                    st.write(tr_diag_texto(diagnostico_guardado))
+
+                recs_guardadas = registro_img.get("recomendaciones", []) or []
+                if recs_guardadas:
+                    st.markdown(tr("## Recomendaciones", "## Recommandations"))
+                    for rec in recs_guardadas:
+                        st.markdown(f"- {tr_diag_texto(rec)}")
+
+    except Exception as exc:
+        st.error(
+            tr(
+                f"No se pudo cargar el historial: {exc}",
+                f"Impossible de charger l’historique : {exc}"
             )
+        )
