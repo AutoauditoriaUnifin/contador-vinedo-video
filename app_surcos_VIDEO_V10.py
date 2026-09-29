@@ -886,6 +886,26 @@ def descargar_archivo_google_drive(file_id):
     return buffer.getvalue()
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def _tc_historial_imagen_bytes(file_id):
+    """Descarga y cachea una imagen del historial desde Google Drive."""
+    file_id = str(file_id or "").strip()
+    if not file_id:
+        return b""
+    return descargar_archivo_google_drive(file_id)
+
+
+def _tc_historial_pil(file_id):
+    """Devuelve una imagen PIL lista para st.image o None si no existe."""
+    try:
+        contenido = _tc_historial_imagen_bytes(file_id)
+        if not contenido:
+            return None
+        return Image.open(io.BytesIO(contenido)).convert("RGB")
+    except Exception:
+        return None
+
+
 def _asegurar_hoja_historial():
     _, sheets_service = obtener_google_clients()
 
@@ -1018,6 +1038,125 @@ def _float_historial(valor):
     return float(texto)
 
 
+def _tg_es_numero_historial(valor):
+    """True si el valor puede convertirse a número sin romper el historial."""
+    if valor is None:
+        return True
+
+    texto = str(valor).strip()
+    if texto == "":
+        return True
+
+    texto = texto.replace("%", "").replace(" ", "")
+
+    if "," in texto and "." not in texto:
+        texto = texto.replace(",", ".")
+    elif "," in texto and "." in texto and texto.rfind(",") > texto.rfind("."):
+        texto = texto.replace(".", "").replace(",", ".")
+
+    try:
+        float(texto)
+        return True
+    except Exception:
+        return False
+
+
+def _tg_int_historial_seguro(valor, default=0):
+    """Convierte Surcos sin lanzar excepción si una fila antigua está corrida."""
+    try:
+        if valor is None or str(valor).strip() == "":
+            return int(default)
+        return int(round(_float_historial(valor)))
+    except Exception:
+        return int(default)
+
+
+def _tg_float_historial_seguro(valor, default=0.0):
+    """Convierte porcentajes sin detener toda la carga del historial."""
+    try:
+        if valor is None or str(valor).strip() == "":
+            return float(default)
+        return float(_float_historial(valor))
+    except Exception:
+        return float(default)
+
+
+def _tg_detectar_offset_historial(row):
+    """
+    Detecta filas antiguas que quedaron desplazadas una o más columnas.
+
+    Ejemplo del problema:
+        ... ImagenOriginalFileID | ImagenProcesadaFileID | Surcos ...
+
+    Si una columna como 'Parcelas' fue insertada antes del ID, los dos FileID
+    se desplazan y el antiguo lector intentaba convertir un FileID a float.
+
+    Devuelve el desplazamiento más probable del bloque estándar de 16 campos.
+    """
+    valores = list(row or [])
+
+    mejor_offset = 0
+    mejor_score = -1
+
+    # Soportar hasta 6 columnas añadidas antes del bloque histórico original.
+    for offset in range(0, min(7, max(1, len(valores)))):
+        if len(valores) < offset + 6:
+            continue
+
+        score = 0
+
+        # Campos típicos del bloque estándar.
+        id_val = str(valores[offset + 0] or "").strip()
+        fecha_val = str(valores[offset + 1] or "").strip()
+        nombre_val = str(valores[offset + 2] or "").strip()
+        orig_id = str(valores[offset + 3] or "").strip()
+        proc_id = str(valores[offset + 4] or "").strip()
+        surcos_val = valores[offset + 5] if len(valores) > offset + 5 else ""
+
+        if id_val:
+            score += 1
+
+        # UUID/ID interno suele ser largo.
+        if len(id_val) >= 8:
+            score += 1
+
+        # Fecha ISO o fecha reconocible.
+        if ("-" in fecha_val or "/" in fecha_val or "T" in fecha_val) and len(fecha_val) >= 8:
+            score += 2
+
+        # Nombre de imagen/archivo.
+        if any(ext in nombre_val.lower() for ext in (".jpg", ".jpeg", ".png", ".webp", ".heic")):
+            score += 2
+        elif nombre_val:
+            score += 1
+
+        # IDs de Google Drive normalmente son cadenas largas alfanuméricas.
+        if len(orig_id) >= 15 and re.fullmatch(r"[A-Za-z0-9_-]+", orig_id or ""):
+            score += 2
+        if len(proc_id) >= 15 and re.fullmatch(r"[A-Za-z0-9_-]+", proc_id or ""):
+            score += 2
+
+        # Surcos DEBE ser numérico o vacío.
+        if _tg_es_numero_historial(surcos_val):
+            score += 4
+        else:
+            score -= 6
+
+        # Los tres porcentajes siguientes también deben ser numéricos o vacíos.
+        for idx in (6, 7, 8):
+            if len(valores) > offset + idx:
+                if _tg_es_numero_historial(valores[offset + idx]):
+                    score += 2
+                else:
+                    score -= 2
+
+        if score > mejor_score:
+            mejor_score = score
+            mejor_offset = offset
+
+    return max(0, int(mejor_offset))
+
+
 def obtener_historial_google(limite=100):
     _, sheets_service = obtener_google_clients()
 
@@ -1025,15 +1164,49 @@ def obtener_historial_google(limite=100):
 
     spreadsheet_id = _secret_text("GSHEET_ID")
 
+    # Leemos más columnas porque algunas filas históricas pueden tener
+    # columnas extra como Parcelas/URLs/AppSheet.
     rows = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range=f"{HISTORIAL_SHEET_NAME}!A2:P",
+        range=f"{HISTORIAL_SHEET_NAME}!A2:AZ",
     ).execute().get("values", [])
 
     registros = []
 
-    for row in rows:
-        row = list(row) + [""] * (16 - len(row))
+    for row_original in rows:
+        row_original = list(row_original or [])
+
+        if not any(str(v).strip() for v in row_original):
+            continue
+
+        offset = _tg_detectar_offset_historial(row_original)
+
+        row = row_original[offset:offset + 16]
+        row = row + [""] * (16 - len(row))
+
+        # Protección adicional:
+        # si aun así Surcos no es numérico, intentar localizar un bloque
+        # válido desplazado 1..6 columnas antes de descartar la fila.
+        if not _tg_es_numero_historial(row[5]):
+            encontrado = False
+
+            for otro_offset in range(0, min(7, len(row_original))):
+                candidato = row_original[otro_offset:otro_offset + 16]
+                candidato = candidato + [""] * (16 - len(candidato))
+
+                if (
+                    _tg_es_numero_historial(candidato[5])
+                    and _tg_es_numero_historial(candidato[6])
+                    and _tg_es_numero_historial(candidato[7])
+                    and _tg_es_numero_historial(candidato[8])
+                ):
+                    row = candidato
+                    encontrado = True
+                    break
+
+            # No detenemos toda la aplicación por una fila dañada.
+            if not encontrado and not _tg_es_numero_historial(row[5]):
+                continue
 
         registros.append({
             "id": row[0],
@@ -1041,10 +1214,10 @@ def obtener_historial_google(limite=100):
             "nombre": row[2],
             "imagen_original_file_id": row[3],
             "imagen_procesada_file_id": row[4],
-            "surcos": int(float(row[5] or 0)),
-            "verde_pct": _float_historial(row[6]),
-            "rojo_pct": _float_historial(row[7]),
-            "amarillo_pct": _float_historial(row[8]),
+            "surcos": _tg_int_historial_seguro(row[5]),
+            "verde_pct": _tg_float_historial_seguro(row[6]),
+            "rojo_pct": _tg_float_historial_seguro(row[7]),
+            "amarillo_pct": _tg_float_historial_seguro(row[8]),
             "nivel_visual": row[9],
             "zona_mas_afectada": row[10],
             "diagnostico_visual": row[11],
@@ -9457,7 +9630,6 @@ def analizar_pil_con_ia(pil_img):
     }
 
 
-
 # ------------------------------------------------------------
 # ESTILOS ADICIONALES: SOLO COMPLEMENTAN EL DISEÑO ORIGINAL
 # ------------------------------------------------------------
@@ -9731,14 +9903,14 @@ with main_col:
 
         if analizar_inventario and uploaded_images:
             # ========================================================
-            # INVENTARIO 100% OPENCV LOCAL
-            # Líneas, slots y clasificación se calculan localmente sin APIs externas.
+            # INVENTARIO 100% OPENAI VISION
+            # OpenCV solo dibuja; no detecta ni clasifica.
             # ========================================================
             progress = st.progress(
                 5,
                 text=tr(
                     "OpenCV está detectando los surcos rectos y alineando los slots...",
-                    "OpenCV détecte les rangs droits et aligne les emplacements..."
+                    "Gemini examine la parcelle et chaque rang..."
                 )
             )
 
@@ -9749,8 +9921,8 @@ with main_col:
                 progress.progress(
                     92,
                     text=tr(
-                        "OpenCV está terminando slots ocupados y vacíos...",
-                        "OpenCV termine les emplacements occupés et vides..."
+                        "La IA está terminando slots ocupados y vacíos...",
+                        "L’IA termine les emplacements occupés et vides..."
                     )
                 )
 
@@ -9762,7 +9934,7 @@ with main_col:
                 st.session_state.tc_inventario_fuente = best_up.name
                 st.session_state.tc_inventario_confianza = float(inv.get("confidence", 0.0))
                 st.session_state.tc_inventario_rows_ai = inv.get("rows", [])
-                st.session_state.tc_inventario_modelo = inv.get("model", "OpenCV local")
+                st.session_state.tc_inventario_modelo = inv.get("model", f"Gemini ({_tg_gemini_model()})")
                 st.session_state.tc_inventario_debug = inv.get("debug", {})
                 st.session_state.tc_inventario_warnings = inv.get("warnings", [])
                 st.session_state.tc_inventario_procesado = True
@@ -9770,8 +9942,8 @@ with main_col:
                 progress.progress(100, text=tr("Inventario terminado.", "Inventaire terminé."))
                 st.success(
                     tr(
-                        "✅ Inventario terminado localmente con OpenCV, sin usar IA externa.",
-                        "✅ Inventaire terminé localement avec OpenCV, sans IA externe."
+                        "✅ Inventario terminado únicamente con Gemini.",
+                        "✅ Inventaire terminé uniquement avec Gemini."
                     )
                 )
                 if errores_inventario:
@@ -9820,7 +9992,7 @@ with main_col:
         fuente_inv = st.session_state.tc_inventario_fuente or "—"
         st.caption(
             tr(
-                f"Inventario identificado localmente con OpenCV. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
+                f"Inventario identificado únicamente con Gemini. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
                 f"Inventaire automatique calculé à partir de la présence visuelle, séparé du diagnostic de santé. Image de référence : {fuente_inv}. Confiance moyenne : {confianza_inv*100:.1f} %."
             )
         )
@@ -9844,7 +10016,7 @@ with main_col:
                 ))
                 st.markdown(
                     tr(
-                        "**Inventario recto:** los números 01…N aparecen únicamente arriba. Cada línea es recta y los puntos de slots quedan sobre el mismo eje del surco, sin saltar a la hilera vecina.",
+                        "**Inventario limpio:** los números 01…N aparecen únicamente arriba de cada surco. No se muestran números abajo. Los slots se calculan en la tabla, pero no se dibujan sobre la fotografía.",
                         "**Inventaire épuré :** les numéros 01…N apparaissent uniquement en haut et en bas de chaque rang. Les emplacements sont calculés dans le tableau sans être dessinés sur la photo."
                     ),
                     unsafe_allow_html=True
@@ -9973,7 +10145,7 @@ with main_col:
                     5,
                     text=tr(
                         "OpenCV está revisando cada slot para detectar vegetación, seco y vacíos...",
-                        "OpenCV examine chaque emplacement pour détecter végétation, sécheresse et vides..."
+                        "OpenCV examine chaque emplacement pour détecter végétation, sec et vide..."
                     )
                 )
 
@@ -10033,6 +10205,7 @@ with main_col:
                         "total_slots": int(backend_result.get("total_slots", 0) or 0),
                         "angle": float(backend_result.get("angle", 0.0)),
                         "annotated": backend_result.get("annotated"),
+                        "polygon_image": backend_result.get("polygon_image"),
                         "ia_scene": backend_result.get("backend"),
                         "result_url": backend_result.get("result_url"),
                         "historial_google_guardado": historial_google_ok,
@@ -10046,7 +10219,6 @@ with main_col:
                         "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
                         "detalle_zonas": backend_result.get("detalle_zonas", {}),
                         "metodo": backend_result.get("metodo", "opencv-v2-straight-grid-polygons"),
-                        "polygon_image": backend_result.get("polygon_image"),
                         "confidence": backend_result.get("confidence", 0.0),
                     })
 
@@ -10191,11 +10363,109 @@ with st.expander(
                         tr("Rojo %", "Rouge %"): registro.get("rojo_pct", 0.0),
                         tr("Zona más afectada", "Zone la plus touchée"): tr_diag_texto(registro.get("zona_mas_afectada", "")),
                     })
-                st.dataframe(pd.DataFrame(filas_historial), use_container_width=True, hide_index=True)
+                st.dataframe(
+                    pd.DataFrame(filas_historial),
+                    width="stretch",
+                    hide_index=True
+                )
+
+                st.markdown(
+                    tr(
+                        "### 🖼️ Ver imágenes del historial",
+                        "### 🖼️ Voir les images de l’historique"
+                    )
+                )
+
+                indice_historial = st.selectbox(
+                    tr(
+                        "Selecciona un análisis para ver sus imágenes",
+                        "Sélectionnez une analyse pour voir ses images"
+                    ),
+                    options=list(range(len(registros_historial))),
+                    format_func=lambda i: (
+                        f"{str(registros_historial[i].get('fecha', ''))[:10]}  |  "
+                        f"{registros_historial[i].get('nombre', '')}  |  "
+                        f"{registros_historial[i].get('surcos', 0)} surcos"
+                    ),
+                    key="tc_historial_selector_imagen"
+                )
+
+                registro_img = registros_historial[indice_historial]
+                original_id = str(
+                    registro_img.get("imagen_original_file_id", "") or ""
+                ).strip()
+                procesada_id = str(
+                    registro_img.get("imagen_procesada_file_id", "") or ""
+                ).strip()
+
+                col_hist_original, col_hist_procesada = st.columns(2)
+
+                with col_hist_original:
+                    st.markdown(
+                        tr(
+                            "**Imagen original**",
+                            "**Image originale**"
+                        )
+                    )
+                    if original_id:
+                        with st.spinner(tr("Cargando imagen original...", "Chargement de l’image originale...")):
+                            img_original_hist = _tc_historial_pil(original_id)
+                        if img_original_hist is not None:
+                            st.image(
+                                img_original_hist,
+                                caption=registro_img.get("nombre", ""),
+                                width="stretch"
+                            )
+                        else:
+                            st.info(
+                                tr(
+                                    "No se pudo abrir la imagen original de este registro.",
+                                    "Impossible d’ouvrir l’image originale de cet enregistrement."
+                                )
+                            )
+                    else:
+                        st.info(
+                            tr(
+                                "Este registro no tiene imagen original guardada.",
+                                "Cet enregistrement ne contient pas d’image originale."
+                            )
+                        )
+
+                with col_hist_procesada:
+                    st.markdown(
+                        tr(
+                            "**Imagen procesada**",
+                            "**Image traitée**"
+                        )
+                    )
+                    if procesada_id:
+                        with st.spinner(tr("Cargando imagen procesada...", "Chargement de l’image traitée...")):
+                            img_procesada_hist = _tc_historial_pil(procesada_id)
+                        if img_procesada_hist is not None:
+                            st.image(
+                                img_procesada_hist,
+                                caption=tr("Resultado del análisis", "Résultat de l’analyse"),
+                                width="stretch"
+                            )
+                        else:
+                            st.info(
+                                tr(
+                                    "No se pudo abrir la imagen procesada de este registro.",
+                                    "Impossible d’ouvrir l’image traitée de cet enregistrement."
+                                )
+                            )
+                    else:
+                        st.info(
+                            tr(
+                                "Este registro no tiene imagen procesada guardada.",
+                                "Cet enregistrement ne contient pas d’image traitée."
+                            )
+                        )
+
                 st.caption(
                     tr(
-                        "Este historial conserva tu estructura actual. En la siguiente etapa podemos agregar ParcelaID para agrupar análisis por parcela y fecha.",
-                        "Cet historique conserve la structure actuelle. À l’étape suivante, nous pourrons ajouter ParcelleID pour regrouper les analyses par parcelle et par date."
+                        "Selecciona cualquier registro de arriba para consultar sus imágenes sin cambiar el análisis guardado.",
+                        "Sélectionnez un enregistrement ci-dessus pour consulter ses images sans modifier l’analyse enregistrée."
                     )
                 )
         except Exception as exc:
