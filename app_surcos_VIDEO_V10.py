@@ -5579,6 +5579,7 @@ _estado_nuevo = {
     "tc_inventario_rows_ai": [],
     "tc_inventario_modelo": "",
     "tc_inventario_debug": {},
+    "tc_inventarios_por_imagen": {},
     "tc_salud_procesada": False,
 }
 
@@ -5599,6 +5600,7 @@ def _tc_reiniciar_parcela():
     st.session_state.tc_inventario_rows_ai = []
     st.session_state.tc_inventario_modelo = ""
     st.session_state.tc_inventario_debug = {}
+    st.session_state.tc_inventarios_por_imagen = {}
     st.session_state.tc_salud_procesada = False
 
 
@@ -9986,6 +9988,7 @@ with side_col:
             st.session_state.tc_inventario_rows_ai = []
             st.session_state.tc_inventario_modelo = ""
             st.session_state.tc_inventario_debug = {}
+            st.session_state.tc_inventarios_por_imagen = {}
             st.session_state.tc_salud_procesada = False
             st.success(
                 tr(
@@ -10108,20 +10111,61 @@ with main_col:
         )
 
         try:
-            # MISMA FUNCIÓN / MISMA LÓGICA DEL CÓDIGO ANTERIOR.
-            best_up, inv, errores_inventario = _tc_select_best_capture_openai(uploaded_images)
+            # Procesar TODAS las fotografías con el MISMO motor OpenCV.
+            # La mejor captura se mantiene únicamente como referencia principal
+            # para la tabla de validación, pero cada imagen conserva sus propios
+            # surcos, slots e imagen de Inventario.
+            inventarios_por_imagen = {}
+            candidatos = []
+            errores_inventario = []
+
+            total_imgs = max(1, len(uploaded_images))
+
+            for idx_img, up in enumerate(uploaded_images, 1):
+                try:
+                    inv_img = _ocv2_inventory_from_file(up)
+                    inventarios_por_imagen[up.name] = inv_img
+
+                    score = (
+                        float(inv_img.get("confidence", 0.0)) * 0.50
+                        + min(1.0, float(inv_img.get("count", 0)) / 100.0) * 0.50
+                    )
+                    candidatos.append((score, up, inv_img))
+
+                    pct = 5 + int((idx_img / total_imgs) * 80)
+                    progress.progress(
+                        min(85, pct),
+                        text=tr(
+                            f"Inventario {idx_img}/{total_imgs}: {up.name}",
+                            f"Inventaire {idx_img}/{total_imgs} : {up.name}"
+                        )
+                    )
+                except Exception as exc_img:
+                    errores_inventario.append(f"{up.name}: {exc_img}")
+
+            if not candidatos:
+                raise RuntimeError(
+                    " | ".join(errores_inventario)
+                    if errores_inventario
+                    else "OpenCV no pudo analizar las fotografías."
+                )
+
+            candidatos.sort(key=lambda x: x[0], reverse=True)
+            _, best_up, inv = candidatos[0]
 
             progress.progress(
                 92,
                 text=tr(
-                    "OpenCV está terminando el inventario...",
-                    "OpenCV termine l’inventaire..."
+                    "OpenCV está terminando los inventarios...",
+                    "OpenCV termine les inventaires..."
                 )
             )
 
             st.session_state.tc_resultados_base = []
             st.session_state.tc_salud_procesada = False
             st.session_state.tc_inventario_confirmado = False
+
+            # Referencia principal para la tabla editable/validación.
             st.session_state.tc_tabla_inventario = inv["table"]
             st.session_state.tc_inventario_imagen = inv["image"]
             st.session_state.tc_inventario_fuente = best_up.name
@@ -10130,19 +10174,22 @@ with main_col:
             st.session_state.tc_inventario_modelo = inv.get("model", "OpenCV local")
             st.session_state.tc_inventario_debug = inv.get("debug", {})
             st.session_state.tc_inventario_warnings = inv.get("warnings", [])
+
+            # Mapa completo: una geometría/inventario independiente por foto.
+            st.session_state.tc_inventarios_por_imagen = inventarios_por_imagen
             st.session_state.tc_inventario_procesado = True
 
-            progress.progress(100, text=tr("Inventario terminado.", "Inventaire terminé."))
+            progress.progress(100, text=tr("Inventarios terminados.", "Inventaires terminés."))
             st.success(
                 tr(
-                    "✅ Inventario terminado con la misma lógica OpenCV.",
-                    "✅ Inventaire terminé avec la même logique OpenCV."
+                    f"✅ Se analizaron {len(inventarios_por_imagen)} fotografía(s) con OpenCV.",
+                    f"✅ {len(inventarios_por_imagen)} photographie(s) analysée(s) avec OpenCV."
                 )
             )
 
             if errores_inventario:
                 with st.expander(
-                    tr("Detalles de otras capturas", "Détails des autres captures"),
+                    tr("Fotografías que no pudieron procesarse", "Photographies non traitées"),
                     expanded=False
                 ):
                     for msg in errores_inventario:
@@ -10190,24 +10237,49 @@ with main_col:
 
         if uploaded_images:
             ref_name = st.session_state.tc_inventario_fuente or uploaded_images[0].name
+            inv_map = st.session_state.get("tc_inventarios_por_imagen", {}) or {}
+
             for idx, up in enumerate(uploaded_images, 1):
                 with st.expander(f"{idx}. {up.name}", expanded=(up.name == ref_name)):
-                    if up.name == ref_name:
-                        _tc_ui_image(
-                            st.session_state.tc_inventario_imagen,
-                            caption=tr("Inventario de la fotografía de referencia", "Inventaire de la photographie de référence")
+                    inv_individual = inv_map.get(up.name)
+
+                    if inv_individual:
+                        i1, i2, i3 = st.columns(3)
+                        i1.metric(
+                            tr("Surcos", "Rangs"),
+                            int(inv_individual.get("count", 0) or 0)
                         )
-                    else:
-                        st.caption(
-                            tr(
-                                "Esta fotografía se conserva como fuente. La lógica actual selecciona una sola captura de referencia para el Inventario.",
-                                "Cette photographie est conservée comme source. La logique actuelle sélectionne une seule capture de référence pour l’inventaire."
+                        tabla_ind = inv_individual.get("table")
+                        slots_ind = 0
+                        if tabla_ind is not None:
+                            try:
+                                slots_ind = int(
+                                    pd.to_numeric(tabla_ind["Slots"], errors="coerce")
+                                    .fillna(0).sum()
+                                )
+                            except Exception:
+                                slots_ind = 0
+                        i2.metric(tr("Slots", "Emplacements"), slots_ind)
+                        i3.metric(
+                            tr("Confianza", "Confiance"),
+                            f"{float(inv_individual.get('confidence', 0.0))*100:.1f}%"
+                        )
+
+                        _tc_ui_image(
+                            inv_individual.get("image"),
+                            caption=(
+                                tr("Inventario de referencia", "Inventaire de référence")
+                                if up.name == ref_name
+                                else tr("Inventario independiente de esta fotografía", "Inventaire indépendant de cette photographie")
                             )
                         )
-                        try:
-                            _tc_ui_image(_tc_uploaded_pil(up))
-                        except Exception:
-                            pass
+                    else:
+                        st.warning(
+                            tr(
+                                "Esta fotografía no pudo generar Inventario.",
+                                "Cette photographie n’a pas pu générer d’inventaire."
+                            )
+                        )
 
         st.markdown(tr("### Tabla automática por surco", "### Tableau automatique par rang"))
         st.caption(
@@ -10321,82 +10393,133 @@ with main_col:
                 )
 
                 try:
-                    fuente = st.session_state.tc_inventario_fuente or ""
-                    uploaded_image = next(
-                        (u for u in uploaded_images if u.name == fuente),
-                        uploaded_images[0]
-                    )
-                    rows_ai = st.session_state.tc_inventario_rows_ai or []
+                    inv_map = st.session_state.get("tc_inventarios_por_imagen", {}) or {}
+                    total_imgs = max(1, len(uploaded_images))
+                    errores_salud = []
 
-                    if not rows_ai:
+                    # Guardar la referencia principal para restaurarla después.
+                    inventario_principal = st.session_state.get("tc_inventario_imagen")
+
+                    for idx_img, uploaded_image in enumerate(uploaded_images, 1):
+                        try:
+                            inv_individual = inv_map.get(uploaded_image.name)
+
+                            # Cada fotografía usa SUS propios surcos.
+                            if inv_individual:
+                                rows_ai = inv_individual.get("rows", []) or []
+                                inventario_img_actual = inv_individual.get("image")
+                            else:
+                                # Fallback para compatibilidad con sesiones anteriores.
+                                rows_ai = st.session_state.tc_inventario_rows_ai or []
+                                inventario_img_actual = inventario_principal
+
+                            if not rows_ai:
+                                raise RuntimeError(
+                                    "No existe geometría de Inventario para esta fotografía."
+                                )
+
+                            progress_salud.progress(
+                                max(5, min(80, int((idx_img - 1) / total_imgs * 80) + 5)),
+                                text=tr(
+                                    f"Analizando {idx_img}/{total_imgs}: {uploaded_image.name}",
+                                    f"Analyse {idx_img}/{total_imgs} : {uploaded_image.name}"
+                                )
+                            )
+
+                            # MISMO motor de líneas rectas / slots / verde-rojo / polígonos.
+                            backend_result = _tc_analyze_health_openai(
+                                uploaded_image,
+                                rows_ai
+                            )
+
+                            # guardar_analisis_en_google toma el Inventario desde
+                            # session_state. Cambiamos SOLO esa referencia durante
+                            # el guardado para que cada registro suba SU inventario.
+                            st.session_state.tc_inventario_imagen = inventario_img_actual
+
+                            historial_google_ok = False
+                            historial_google_info = ""
+                            try:
+                                historial_google_ok, historial_google_info = guardar_analisis_en_google(
+                                    uploaded_image,
+                                    backend_result
+                                )
+                            except Exception as historial_exc:
+                                historial_google_info = str(historial_exc)
+
+                            nombre_resultado = (
+                                historial_google_info.get("nombre", uploaded_image.name)
+                                if historial_google_ok and isinstance(historial_google_info, dict)
+                                else uploaded_image.name
+                            )
+                            id_resultado = (
+                                historial_google_info.get("id", f"{idx_img}_{uploaded_image.name}")
+                                if historial_google_ok and isinstance(historial_google_info, dict)
+                                else f"{idx_img}_{uploaded_image.name}"
+                            )
+
+                            resultados_salud.append({
+                                "id": id_resultado,
+                                "name": nombre_resultado,
+                                "source_name": uploaded_image.name,
+                                "inventory_image": inventario_img_actual,
+                                "count": int(backend_result.get("count", 0)),
+                                "green_pct": float(backend_result.get("green_pct", 0.0)),
+                                "red_pct": float(backend_result.get("red_pct", 0.0)),
+                                "green_slots": int(backend_result.get("green_slots", 0) or 0),
+                                "red_slots": int(backend_result.get("red_slots", 0) or 0),
+                                "total_slots": int(backend_result.get("total_slots", 0) or 0),
+                                "angle": float(backend_result.get("angle", 0.0)),
+                                "annotated": backend_result.get("annotated"),
+                                "polygon_image": backend_result.get("polygon_image"),
+                                "ia_scene": backend_result.get("backend"),
+                                "result_url": backend_result.get("result_url"),
+                                "historial_google_guardado": historial_google_ok,
+                                "historial_google_info": historial_google_info,
+                                "zona_mas_afectada": backend_result.get("zona_mas_afectada", "No determinada"),
+                                "nivel_afectacion_visual": backend_result.get("nivel_afectacion_visual", "No determinado"),
+                                "diagnostico_visual": backend_result.get("diagnostico_visual", ""),
+                                "causas_probables": backend_result.get("causas_probables", []),
+                                "explicacion_nutrientes": backend_result.get("explicacion_nutrientes", ""),
+                                "recomendaciones_iniciales": backend_result.get("recomendaciones_iniciales", []),
+                                "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
+                                "detalle_zonas": backend_result.get("detalle_zonas", {}),
+                                "metodo": backend_result.get("metodo", "opencv-v2-straight-grid-polygons"),
+                                "confidence": backend_result.get("confidence", 0.0),
+                            })
+
+                        except Exception as exc_img:
+                            errores_salud.append(f"{uploaded_image.name}: {exc_img}")
+
+                    # Restaurar referencia principal de la interfaz.
+                    st.session_state.tc_inventario_imagen = inventario_principal
+
+                    if not resultados_salud:
                         raise RuntimeError(
-                            "Falta la geometría de Inventario. Vuelve a ejecutar Inventario."
+                            " | ".join(errores_salud)
+                            if errores_salud
+                            else "No se pudo analizar ninguna fotografía."
                         )
-
-                    # MISMA FUNCIÓN / MISMA LÓGICA DEL CÓDIGO ANTERIOR.
-                    backend_result = _tc_analyze_health_openai(uploaded_image, rows_ai)
-
-                    progress_salud.progress(
-                        90,
-                        text=tr(
-                            "Guardando resultado y preparando diagnóstico...",
-                            "Enregistrement du résultat et préparation du diagnostic..."
-                        )
-                    )
-
-                    historial_google_ok = False
-                    historial_google_info = ""
-                    try:
-                        # MISMO GUARDADO DRIVE/SHEETS.
-                        historial_google_ok, historial_google_info = guardar_analisis_en_google(
-                            uploaded_image,
-                            backend_result
-                        )
-                    except Exception as historial_exc:
-                        historial_google_info = str(historial_exc)
-
-                    nombre_resultado = (
-                        historial_google_info.get("nombre", uploaded_image.name)
-                        if historial_google_ok and isinstance(historial_google_info, dict)
-                        else uploaded_image.name
-                    )
-                    id_resultado = (
-                        historial_google_info.get("id", f"1_{uploaded_image.name}")
-                        if historial_google_ok and isinstance(historial_google_info, dict)
-                        else f"1_{uploaded_image.name}"
-                    )
-
-                    resultados_salud.append({
-                        "id": id_resultado,
-                        "name": nombre_resultado,
-                        "count": int(backend_result.get("count", 0)),
-                        "green_pct": float(backend_result.get("green_pct", 0.0)),
-                        "red_pct": float(backend_result.get("red_pct", 0.0)),
-                        "green_slots": int(backend_result.get("green_slots", 0) or 0),
-                        "red_slots": int(backend_result.get("red_slots", 0) or 0),
-                        "total_slots": int(backend_result.get("total_slots", 0) or 0),
-                        "angle": float(backend_result.get("angle", 0.0)),
-                        "annotated": backend_result.get("annotated"),
-                        "polygon_image": backend_result.get("polygon_image"),
-                        "ia_scene": backend_result.get("backend"),
-                        "result_url": backend_result.get("result_url"),
-                        "historial_google_guardado": historial_google_ok,
-                        "historial_google_info": historial_google_info,
-                        "zona_mas_afectada": backend_result.get("zona_mas_afectada", "No determinada"),
-                        "nivel_afectacion_visual": backend_result.get("nivel_afectacion_visual", "No determinado"),
-                        "diagnostico_visual": backend_result.get("diagnostico_visual", ""),
-                        "causas_probables": backend_result.get("causas_probables", []),
-                        "explicacion_nutrientes": backend_result.get("explicacion_nutrientes", ""),
-                        "recomendaciones_iniciales": backend_result.get("recomendaciones_iniciales", []),
-                        "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
-                        "detalle_zonas": backend_result.get("detalle_zonas", {}),
-                        "metodo": backend_result.get("metodo", "opencv-v2-straight-grid-polygons"),
-                        "confidence": backend_result.get("confidence", 0.0),
-                    })
 
                     st.session_state.tc_resultados_base = resultados_salud
                     st.session_state.tc_salud_procesada = True
-                    progress_salud.progress(100, text=tr("Análisis terminado.", "Analyse terminée."))
+
+                    progress_salud.progress(
+                        100,
+                        text=tr(
+                            f"Análisis terminado: {len(resultados_salud)} fotografía(s).",
+                            f"Analyse terminée : {len(resultados_salud)} photographie(s)."
+                        )
+                    )
+
+                    if errores_salud:
+                        with st.expander(
+                            tr("Fotografías con error", "Photographies en erreur"),
+                            expanded=False
+                        ):
+                            for msg in errores_salud:
+                                st.caption(msg)
+
                     st.rerun()
 
                 except Exception as exc:
@@ -10536,52 +10659,60 @@ with main_col:
 
                 st.markdown(tr("## Vista final · Líneas sobre surcos", "## Vue finale · Lignes sur les rangs"))
 
-                item = resultados[0]
-                f1, f2, f3 = st.columns(3)
-                f1.metric(
-                    tr("Vegetación verde", "Végétation verte"),
-                    f"{float(item.get('green_pct',0.0)):.1f}%"
-                )
-                f2.metric(
-                    tr("Afectación roja", "Affectation rouge"),
-                    f"{float(item.get('red_pct',0.0)):.1f}%"
-                )
-                f3.metric(
-                    tr("Surcos usados", "Rangs utilisés"),
-                    int(item.get("count",0) or 0)
-                )
-
-                original_ref = None
-                if uploaded_images:
-                    fuente = st.session_state.tc_inventario_fuente or uploaded_images[0].name
-                    up_ref = next((u for u in uploaded_images if u.name == fuente), uploaded_images[0])
-                    try:
-                        original_ref = _tc_uploaded_pil(up_ref)
-                    except Exception:
-                        original_ref = None
-
-                vf1, vf2 = st.columns(2)
-                with vf1:
-                    st.caption(tr("Imagen original", "Image originale"))
-                    _tc_ui_image(original_ref)
-                with vf2:
-                    st.caption(
-                        tr(
-                            "Imagen procesada — Líneas guiadas por el Inventario",
-                            "Image traitée — Lignes guidées par l’inventaire"
-                        )
+                # Vista final para CADA fotografía analizada.
+                for idx_item, item in enumerate(resultados, 1):
+                    source_name = item.get("source_name", "")
+                    up_ref = next(
+                        (u for u in (uploaded_images or []) if u.name == source_name),
+                        None
                     )
-                    _tc_ui_image(item.get("annotated"))
+
+                    original_ref = None
+                    if up_ref is not None:
+                        try:
+                            original_ref = _tc_uploaded_pil(up_ref)
+                        except Exception:
+                            original_ref = None
+
+                    with st.container(border=True):
+                        st.markdown(f"### {idx_item}. {source_name or item.get('name','')}")
+
+                        f1, f2, f3 = st.columns(3)
+                        f1.metric(
+                            tr("Vegetación verde", "Végétation verte"),
+                            f"{float(item.get('green_pct',0.0)):.1f}%"
+                        )
+                        f2.metric(
+                            tr("Afectación roja", "Affectation rouge"),
+                            f"{float(item.get('red_pct',0.0)):.1f}%"
+                        )
+                        f3.metric(
+                            tr("Surcos usados", "Rangs utilisés"),
+                            int(item.get("count",0) or 0)
+                        )
+
+                        vf1, vf2 = st.columns(2)
+                        with vf1:
+                            st.caption(tr("Imagen original", "Image originale"))
+                            _tc_ui_image(original_ref)
+                        with vf2:
+                            st.caption(
+                                tr(
+                                    "Imagen procesada — Líneas guiadas por SU Inventario",
+                                    "Image traitée — Lignes guidées par SON inventaire"
+                                )
+                            )
+                            _tc_ui_image(item.get("annotated"))
 
                 st.caption(
                     tr(
-                        "Las líneas usan exactamente los surcos confirmados del Inventario y conservan el diagnóstico verde/rojo de la lógica actual.",
-                        "Les lignes utilisent exactement les rangs confirmés de l’inventaire et conservent le diagnostic vert/rouge de la logique actuelle."
+                        "Cada fotografía utiliza su propio Inventario, sus propios surcos y sus propios slots.",
+                        "Chaque photographie utilise son propre inventaire, ses propres rangs et ses propres emplacements."
                     )
                 )
 
                 # ----------------------------------------------------
-                # RESUMEN FINAL DE 4 IMÁGENES
+                # RESUMEN FINAL DE 4 IMÁGENES POR CADA FOTO
                 # ----------------------------------------------------
                 st.markdown("---")
                 st.markdown(
@@ -10592,32 +10723,44 @@ with main_col:
                 )
                 st.caption(
                     tr(
-                        "Se muestran: Original, Inventario, Análisis visual y Polígonos.",
-                        "Affichage : Original, Inventaire, Analyse visuelle et Polygones."
+                        "Se muestran: Original, Inventario, Análisis visual y Polígonos para cada fotografía cargada.",
+                        "Affichage : Original, Inventaire, Analyse visuelle et Polygones pour chaque photographie chargée."
                     )
                 )
 
-                with st.container(border=True):
-                    st.markdown(
-                        f"### 1. {st.session_state.tc_inventario_fuente or item.get('name','')}"
+                for idx_item, item in enumerate(resultados, 1):
+                    source_name = item.get("source_name", "")
+                    up_ref = next(
+                        (u for u in (uploaded_images or []) if u.name == source_name),
+                        None
                     )
-                    r1, r2, r3, r4 = st.columns(4)
 
-                    with r1:
-                        st.caption("1. Original")
-                        _tc_ui_image(original_ref)
+                    original_ref = None
+                    if up_ref is not None:
+                        try:
+                            original_ref = _tc_uploaded_pil(up_ref)
+                        except Exception:
+                            original_ref = None
 
-                    with r2:
-                        st.caption("2. Inventario")
-                        _tc_ui_image(st.session_state.tc_inventario_imagen)
+                    with st.container(border=True):
+                        st.markdown(f"### {idx_item}. {source_name or item.get('name','')}")
+                        r1, r2, r3, r4 = st.columns(4)
 
-                    with r3:
-                        st.caption("3. Análisis")
-                        _tc_ui_image(item.get("annotated"))
+                        with r1:
+                            st.caption("1. Original")
+                            _tc_ui_image(original_ref)
 
-                    with r4:
-                        st.caption("4. Polígonos")
-                        _tc_ui_image(item.get("polygon_image"))
+                        with r2:
+                            st.caption("2. Inventario")
+                            _tc_ui_image(item.get("inventory_image"))
+
+                        with r3:
+                            st.caption("3. Análisis")
+                            _tc_ui_image(item.get("annotated"))
+
+                        with r4:
+                            st.caption("4. Polígonos")
+                            _tc_ui_image(item.get("polygon_image"))
 
 
 # ============================================================
