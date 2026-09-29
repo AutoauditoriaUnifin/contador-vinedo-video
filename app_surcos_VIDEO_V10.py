@@ -9903,14 +9903,14 @@ with main_col:
 
         if analizar_inventario and uploaded_images:
             # ========================================================
-            # INVENTARIO 100% OPENAI VISION
-            # OpenCV solo dibuja; no detecta ni clasifica.
+            # INVENTARIO 100% OPENCV LOCAL
+            # Líneas, slots y clasificación se calculan localmente sin APIs externas.
             # ========================================================
             progress = st.progress(
                 5,
                 text=tr(
                     "OpenCV está detectando los surcos rectos y alineando los slots...",
-                    "Gemini examine la parcelle et chaque rang..."
+                    "OpenCV détecte les rangs droits et aligne les emplacements..."
                 )
             )
 
@@ -9921,8 +9921,8 @@ with main_col:
                 progress.progress(
                     92,
                     text=tr(
-                        "La IA está terminando slots ocupados y vacíos...",
-                        "L’IA termine les emplacements occupés et vides..."
+                        "OpenCV está terminando slots ocupados y vacíos...",
+                        "OpenCV termine les emplacements occupés et vides..."
                     )
                 )
 
@@ -9934,7 +9934,7 @@ with main_col:
                 st.session_state.tc_inventario_fuente = best_up.name
                 st.session_state.tc_inventario_confianza = float(inv.get("confidence", 0.0))
                 st.session_state.tc_inventario_rows_ai = inv.get("rows", [])
-                st.session_state.tc_inventario_modelo = inv.get("model", f"Gemini ({_tg_gemini_model()})")
+                st.session_state.tc_inventario_modelo = inv.get("model", "OpenCV local")
                 st.session_state.tc_inventario_debug = inv.get("debug", {})
                 st.session_state.tc_inventario_warnings = inv.get("warnings", [])
                 st.session_state.tc_inventario_procesado = True
@@ -9942,8 +9942,8 @@ with main_col:
                 progress.progress(100, text=tr("Inventario terminado.", "Inventaire terminé."))
                 st.success(
                     tr(
-                        "✅ Inventario terminado únicamente con Gemini.",
-                        "✅ Inventaire terminé uniquement avec Gemini."
+                        "✅ Inventario terminado localmente con OpenCV, sin usar IA externa.",
+                        "✅ Inventaire terminé localement avec OpenCV, sans IA externe."
                     )
                 )
                 if errores_inventario:
@@ -9992,7 +9992,7 @@ with main_col:
         fuente_inv = st.session_state.tc_inventario_fuente or "—"
         st.caption(
             tr(
-                f"Inventario identificado únicamente con Gemini. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
+                f"Inventario identificado localmente con OpenCV. Imagen de referencia: {fuente_inv}. Confianza media: {confianza_inv*100:.1f}%.",
                 f"Inventaire automatique calculé à partir de la présence visuelle, séparé du diagnostic de santé. Image de référence : {fuente_inv}. Confiance moyenne : {confianza_inv*100:.1f} %."
             )
         )
@@ -10016,7 +10016,7 @@ with main_col:
                 ))
                 st.markdown(
                     tr(
-                        "**Inventario limpio:** los números 01…N aparecen únicamente arriba de cada surco. No se muestran números abajo. Los slots se calculan en la tabla, pero no se dibujan sobre la fotografía.",
+                        "**Inventario recto:** los números 01…N aparecen únicamente arriba. Cada línea es recta y los puntos de slots quedan sobre el mismo eje del surco, sin saltar a la hilera vecina.",
                         "**Inventaire épuré :** les numéros 01…N apparaissent uniquement en haut et en bas de chaque rang. Les emplacements sont calculés dans le tableau sans être dessinés sur la photo."
                     ),
                     unsafe_allow_html=True
@@ -10145,7 +10145,7 @@ with main_col:
                     5,
                     text=tr(
                         "OpenCV está revisando cada slot para detectar vegetación, seco y vacíos...",
-                        "OpenCV examine chaque emplacement pour détecter végétation, sec et vide..."
+                        "OpenCV examine chaque emplacement pour détecter végétation, sécheresse et vides..."
                     )
                 )
 
@@ -10205,7 +10205,6 @@ with main_col:
                         "total_slots": int(backend_result.get("total_slots", 0) or 0),
                         "angle": float(backend_result.get("angle", 0.0)),
                         "annotated": backend_result.get("annotated"),
-                        "polygon_image": backend_result.get("polygon_image"),
                         "ia_scene": backend_result.get("backend"),
                         "result_url": backend_result.get("result_url"),
                         "historial_google_guardado": historial_google_ok,
@@ -10219,6 +10218,7 @@ with main_col:
                         "nota_diagnostico": backend_result.get("nota_diagnostico", ""),
                         "detalle_zonas": backend_result.get("detalle_zonas", {}),
                         "metodo": backend_result.get("metodo", "opencv-v2-straight-grid-polygons"),
+                        "polygon_image": backend_result.get("polygon_image"),
                         "confidence": backend_result.get("confidence", 0.0),
                     })
 
