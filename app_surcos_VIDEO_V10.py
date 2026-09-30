@@ -22,6 +22,44 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
+# ============================================================
+# EDITOR MANUAL COMPATIBLE CON STREAMLIT MODERNO
+# ============================================================
+#
+# streamlit-drawable-canvas 0.9.x usa una API interna antigua:
+# streamlit.elements.image.image_to_url
+# Esa API ya no existe en Streamlit moderno. Por eso exigimos
+# la versión nueva del componente (0.13.0).
+try:
+    from importlib.metadata import version as _tc_dist_version
+
+    TC_EDITOR_MANUAL_VERSION = _tc_dist_version("streamlit-drawable-canvas")
+
+    def _tc_version_tuple(v):
+        nums = re.findall(r"\d+", str(v or ""))
+        nums = [int(x) for x in nums[:3]]
+        while len(nums) < 3:
+            nums.append(0)
+        return tuple(nums)
+
+    if _tc_version_tuple(TC_EDITOR_MANUAL_VERSION) < (0, 10, 0):
+        raise RuntimeError(
+            "Versión antigua de streamlit-drawable-canvas detectada: "
+            f"{TC_EDITOR_MANUAL_VERSION}. "
+            "Reemplázala por streamlit-drawable-canvas==0.13.0."
+        )
+
+    from streamlit_drawable_canvas import st_canvas
+
+    TC_EDITOR_MANUAL_DISPONIBLE = True
+    TC_EDITOR_MANUAL_ERROR = ""
+
+except Exception as _tc_editor_exc:
+    st_canvas = None
+    TC_EDITOR_MANUAL_DISPONIBLE = False
+    TC_EDITOR_MANUAL_VERSION = ""
+    TC_EDITOR_MANUAL_ERROR = str(_tc_editor_exc)
+
 
 # ============================================================
 # LOGO TERROCORE
@@ -5573,6 +5611,8 @@ _estado_nuevo = {
     "tc_inventario_confirmado": False,
     "tc_resultados_base": [],
     "tc_tabla_inventario": None,
+    "tc_tabla_inventario_original": None,
+    "tc_captura_base_id": "",
     "tc_inventario_imagen": None,
     "tc_inventario_fuente": "",
     "tc_inventario_confianza": 0.0,
@@ -5581,6 +5621,40 @@ _estado_nuevo = {
     "tc_inventario_debug": {},
     "tc_inventarios_por_imagen": {},
     "tc_salud_procesada": False,
+
+    # Metadatos de PARCELA / GOOGLE SHEETS
+    "tc_rancho_vinedo": "",
+    "tc_kml_file_id": "",
+    "tc_ubicacion": "",
+    "tc_estado_parcela": "Activa",
+    "tc_observaciones_parcela": "",
+    "tc_area_parcela_m2": 0.0,
+
+    # Metadatos de CAPTURA / VUELO / VALIDACIÓN
+    "tc_metodo_union": "Lote de fotografías",
+    "tc_angulo_camara": "Nadir / 90°",
+    "tc_recorrido_vuelo": "Parcela completa",
+    "tc_estado_vuelo": "Completado",
+    "tc_observaciones_vuelo": "",
+    "tc_estado_captura": "Creada",
+    "tc_observaciones_captura": "Pendiente de Inventario visual",
+    "tc_qr_inicio": "",
+    "tc_qr_fin": "",
+    "tc_tipo_zona_validacion": "Inventario",
+    "tc_observaciones_validacion": "Validación manual de la tabla de Inventario",
+    "tc_vuelo_base_id": "",
+    "tc_captura_maestra_file_id": "",
+
+    # Segundo vuelo / seguimiento
+    "tc_seg_region_id": "PARCELA_COMPLETA",
+    "tc_seg_tipo_vuelo": "Segundo vuelo",
+    "tc_seg_fecha": date.today(),
+    "tc_seg_altura": 0.0,
+    "tc_seg_angulo": "Nadir / 90°",
+    "tc_seg_recorrido": "Región crítica",
+    "tc_seg_kml": "",
+    "tc_seg_estado": "Completado",
+    "tc_seg_observaciones": "",
 }
 
 for _k, _v in _estado_nuevo.items():
@@ -5594,6 +5668,8 @@ def _tc_reiniciar_parcela():
     st.session_state.tc_inventario_confirmado = False
     st.session_state.tc_resultados_base = []
     st.session_state.tc_tabla_inventario = None
+    st.session_state.tc_tabla_inventario_original = None
+    st.session_state.tc_captura_base_id = ""
     st.session_state.tc_inventario_imagen = None
     st.session_state.tc_inventario_fuente = ""
     st.session_state.tc_inventario_confianza = 0.0
@@ -5602,6 +5678,8 @@ def _tc_reiniciar_parcela():
     st.session_state.tc_inventario_debug = {}
     st.session_state.tc_inventarios_por_imagen = {}
     st.session_state.tc_salud_procesada = False
+    st.session_state.tc_captura_maestra_file_id = ""
+    st.session_state.tc_vuelo_base_id = ""
 
 
 # ============================================================
@@ -8571,10 +8649,21 @@ def _tg_guardar_extras_historial(registro):
         "ImagenOriginalAppSheet": registro.get("imagen_original_appsheet", ""),
         "ImagenProcesadaAppSheet": registro.get("imagen_procesada_appsheet", ""),
 
-        # SOLO IDs nuevos. Los links de AppSheet se generan con fórmulas
-        # directamente en Google Sheets y NO se escriben desde Python.
+        # IDs de las evidencias generadas.
         "ImagenInventarioFileID": registro.get("imagen_inventario_file_id", ""),
         "ImagenPoligonosFileID": registro.get("imagen_poligonos_file_id", ""),
+        "ImagenAnalisisFileID": registro.get("imagen_procesada_file_id", ""),
+
+        # Y/Z (Inventario/Polígonos AppSheet) siguen controladas por fórmulas.
+        # Estas columnas adicionales sí se llenan desde la app.
+        "ImagenAnalisisAppSheet": registro.get("imagen_procesada_appsheet", ""),
+        "NombreFoto": registro.get("nombre_fuente", registro.get("nombre", "")),
+        "LegacyExtra": json.dumps({
+            "captura_base_id": st.session_state.get("tc_captura_base_id", ""),
+            "vuelo_base_id": st.session_state.get("tc_vuelo_base_id", ""),
+            "area_parcela_m2": float(st.session_state.get("tc_area_parcela_m2", 0.0) or 0.0),
+            "metodo": registro.get("metodo", "opencv-v2-straight-grid-polygons"),
+        }, ensure_ascii=False),
     }
 
     data = []
@@ -8601,88 +8690,500 @@ def _tg_guardar_extras_historial(registro):
         ).execute()
 
 
-def _tg_guardar_en_hoja_parcelas(registro):
-    """
-    En la hoja 'Parcelas':
-      A = ID del análisis
-      columna 'Parcela N' = nombre amigable de la imagen
+def _tg_append_rows(hoja, rows, total_cols):
+    """Agrega varias filas a una hoja existente sin tocar sus encabezados."""
+    if not rows:
+        return
+    _, sheets_service = obtener_google_clients()
+    spreadsheet_id = _secret_text("GSHEET_ID")
+    ultima = _tg_letra_columna(int(total_cols))
+    sheets_service.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{hoja}'!A:{ultima}",
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body={"values": rows},
+    ).execute()
 
-    Cada análisis ocupa una fila nueva. Solo se llena la columna
-    correspondiente a la parcela seleccionada.
-    """
+
+def _tg_parcela_id(parcela):
+    """ID estable para relacionar todas las tablas con la misma parcela."""
+    nombre = _tg_normalizar_parcela(parcela)
+    return f"PARCELA_{_tg_nombre_seguro(nombre).upper()}"
+
+
+def _tg_guardar_en_hoja_parcelas(registro):
+    """Alta/actualización completa de Parcelas A:H usando los campos de la app."""
     _, sheets_service = obtener_google_clients()
     spreadsheet_id = _secret_text("GSHEET_ID")
     hoja = "Parcelas"
 
-    # Asegurar que la hoja exista.
-    meta = sheets_service.spreadsheets().get(
+    parcela = _tg_normalizar_parcela(registro.get("parcela", ""))
+    parcela_id = registro.get("parcela_id") or _tg_parcela_id(parcela)
+
+    rancho = str(st.session_state.get("tc_rancho_vinedo", "") or "").strip() or "Sin registrar"
+    kml = str(st.session_state.get("tc_kml_file_id", "") or "").strip() or "PENDIENTE"
+    ubicacion = str(st.session_state.get("tc_ubicacion", "") or "").strip() or "Sin registrar"
+    estado = str(st.session_state.get("tc_estado_parcela", "Activa") or "Activa")
+    observaciones = str(st.session_state.get("tc_observaciones_parcela", "") or "").strip() or "Sin observaciones"
+
+    existentes = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        fields="sheets.properties",
-    ).execute()
-
-    nombres = [
-        s.get("properties", {}).get("title", "")
-        for s in meta.get("sheets", [])
-    ]
-
-    if hoja not in nombres:
-        sheets_service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={
-                "requests": [{
-                    "addSheet": {
-                        "properties": {"title": hoja}
-                    }
-                }]
-            },
-        ).execute()
-
-    # Asegurar ID en A1.
-    a1 = sheets_service.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=f"'{hoja}'!A1",
+        range=f"'{hoja}'!A2:H",
     ).execute().get("values", [])
 
-    if not a1 or not a1[0] or str(a1[0][0]).strip().casefold() != "id":
+    fila_encontrada = 0
+    fecha_alta = registro.get("fecha", "")
+    for idx, fila in enumerate(existentes, 2):
+        fid = str(fila[0] if fila else "").strip()
+        if fid == str(parcela_id):
+            fila_encontrada = idx
+            if len(fila) > 3 and str(fila[3]).strip():
+                fecha_alta = fila[3]
+            break
+
+    valores = [[
+        parcela_id,          # ID
+        parcela,             # NombreParcela
+        rancho,              # RanchoVinedo
+        fecha_alta,          # FechaAlta
+        kml,                 # KMLFileID
+        ubicacion,           # Ubicacion
+        estado,              # Estado
+        observaciones,       # Observaciones
+    ]]
+
+    if fila_encontrada:
         sheets_service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range=f"'{hoja}'!A1",
+            range=f"'{hoja}'!A{fila_encontrada}:H{fila_encontrada}",
             valueInputOption="RAW",
-            body={"values": [["ID"]]},
+            body={"values": valores},
         ).execute()
+    else:
+        _tg_append_rows(hoja, valores, 8)
+        fila_encontrada = len(existentes) + 2
 
-    parcela = _tg_normalizar_parcela(registro.get("parcela", ""))
-    col = _tg_buscar_o_crear_encabezado(
-        sheets_service,
-        spreadsheet_id,
-        hoja,
-        parcela,
+    # Compatibilidad con la columna histórica "Parcela N" si ya existe.
+    # No crea columnas nuevas; solamente la llena cuando coincide con la parcela.
+    try:
+        headers = sheets_service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{hoja}'!1:1",
+        ).execute().get("values", [[]])
+        headers = headers[0] if headers else []
+        for col_idx, encabezado in enumerate(headers, 1):
+            if str(encabezado).strip().casefold() == parcela.casefold():
+                nombre_img = str(registro.get("nombre", "") or "").strip()
+                if nombre_img:
+                    letra = _tg_letra_columna(col_idx)
+                    sheets_service.spreadsheets().values().update(
+                        spreadsheetId=spreadsheet_id,
+                        range=f"'{hoja}'!{letra}{fila_encontrada}",
+                        valueInputOption="RAW",
+                        body={"values": [[nombre_img]]},
+                    ).execute()
+                break
+    except Exception:
+        pass
+
+
+def _tg_tabla_inventario_de_imagen(uploaded_name):
+    inv_map = st.session_state.get("tc_inventarios_por_imagen", {}) or {}
+    inv = inv_map.get(uploaded_name) or {}
+    tabla = inv.get("table")
+    return inv, tabla
+
+
+def _tg_valor_fila_inventario(fila, claves, default=0):
+    for clave in claves:
+        if clave in fila:
+            return fila.get(clave)
+    return default
+
+
+def _tg_resumen_inventario(uploaded_name):
+    inv, tabla = _tg_tabla_inventario_de_imagen(uploaded_name)
+    slots = ocupados = vacios = 0
+    if tabla is not None and not getattr(tabla, "empty", True):
+        for fila in tabla.to_dict(orient="records"):
+            slots += int(float(_tg_valor_fila_inventario(fila, ["Slots", "Emplacements"], 0) or 0))
+            ocupados += int(float(_tg_valor_fila_inventario(fila, ["Ocupados", "Occupés"], 0) or 0))
+            vacios += int(float(_tg_valor_fila_inventario(fila, ["Vacíos", "Vides"], 0) or 0))
+    return inv, tabla, slots, ocupados, vacios
+
+
+def _tg_guardar_hoja_analisis(registro, backend_result, uploaded_name):
+    inv, tabla, slots, ocupados, vacios = _tg_resumen_inventario(uploaded_name)
+    fecha_cap = st.session_state.get("tc_fecha_captura", "")
+    try:
+        fecha_cap = fecha_cap.isoformat()
+    except Exception:
+        fecha_cap = str(fecha_cap or "")
+
+    _tg_append_rows("Analisis", [[
+        registro.get("id", ""),
+        registro.get("parcela_id", ""),
+        registro.get("parcela", ""),
+        fecha_cap,
+        registro.get("fecha", ""),
+        "Inventario + Estado visual + Polígonos",
+        backend_result.get("metodo", "opencv-v2-straight-grid-polygons"),
+        registro.get("nombre", ""),
+        registro.get("imagen_original_file_id", ""),
+        registro.get("imagen_inventario_file_id", ""),
+        registro.get("imagen_procesada_file_id", ""),
+        int(registro.get("surcos", 0) or 0),
+        int(slots),
+        int(ocupados),
+        int(vacios),
+        float(registro.get("verde_pct", 0.0) or 0.0),
+        float(registro.get("rojo_pct", 0.0) or 0.0),
+        float(registro.get("amarillo_pct", 0.0) or 0.0),
+        registro.get("nivel_visual", ""),
+        registro.get("zona_mas_afectada", ""),
+        registro.get("diagnostico_visual", ""),
+        round(float(backend_result.get("confidence", 0.0) or 0.0) * 100.0, 2),
+        json.dumps(registro.get("causas_probables", []), ensure_ascii=False),
+        json.dumps(registro.get("recomendaciones", []), ensure_ascii=False),
+        registro.get("nota_diagnostico", ""),
+    ]], 25)
+
+
+def _tg_guardar_inventario_surcos(registro, uploaded_name):
+    inv, tabla = _tg_tabla_inventario_de_imagen(uploaded_name)
+    if tabla is None or getattr(tabla, "empty", True):
+        return
+
+    rows = []
+    for idx, fila in enumerate(tabla.to_dict(orient="records"), 1):
+        numero = _tg_valor_fila_inventario(fila, ["Surco", "Rang"], idx)
+        slots = int(float(_tg_valor_fila_inventario(fila, ["Slots", "Emplacements"], 0) or 0))
+        ocupados = int(float(_tg_valor_fila_inventario(fila, ["Ocupados", "Occupés"], 0) or 0))
+        vacios = int(float(_tg_valor_fila_inventario(fila, ["Vacíos", "Vides"], 0) or 0))
+        confianza = float(_tg_valor_fila_inventario(fila, ["Confianza", "Confiance"], 0.0) or 0.0)
+        rows.append([
+            f"{registro.get('id','')}-S{idx:03d}",
+            registro.get("id", ""),
+            registro.get("parcela_id", ""),
+            str(numero),
+            slots,
+            ocupados,
+            vacios,
+            confianza,
+        ])
+    _tg_append_rows("InventarioSurcos", rows, 8)
+
+
+def _tg_guardar_evidencias(registro):
+    fecha = registro.get("fecha", "")
+    aid = registro.get("id", "")
+    pid = registro.get("parcela_id", "")
+    evidencias = [
+        ("ORIGINAL", registro.get("nombre", ""), registro.get("imagen_original_file_id", ""), registro.get("mime_original", "image/jpeg")),
+        ("INVENTARIO", registro.get("nombre_inventario", ""), registro.get("imagen_inventario_file_id", ""), "image/png"),
+        ("ANALISIS", registro.get("nombre_procesada", ""), registro.get("imagen_procesada_file_id", ""), "image/png"),
+        ("POLIGONOS", registro.get("nombre_poligonos", ""), registro.get("imagen_poligonos_file_id", ""), "image/png"),
+    ]
+    rows = []
+    for tipo, nombre, file_id, mime in evidencias:
+        if not file_id:
+            continue
+        rows.append([
+            f"EV-{aid}-{tipo}", aid, pid, tipo, nombre, file_id, mime, fecha,
+            "TerroCore image AI",
+        ])
+    _tg_append_rows("Evidencias", rows, 9)
+
+
+def _tg_guardar_nota_diagnostico(registro):
+    nota = str(registro.get("nota_diagnostico", "") or "").strip()
+    if nota:
+        _tg_append_rows("NotaDiagnostico", [[registro.get("id", ""), nota]], 2)
+
+
+def _tg_poligonos_automaticos(uploaded_image, backend_result, uploaded_name):
+    """Reconstruye SOLO metadatos de los polígonos que el motor ya dibujó."""
+    inv, _ = _tg_tabla_inventario_de_imagen(uploaded_name)
+    rows_inv = inv.get("rows", []) or []
+    health_map = backend_result.get("health_map", {}) or {}
+    if not rows_inv or not health_map:
+        return [], (0, 0)
+
+    pil = Image.open(io.BytesIO(uploaded_image.getvalue())).convert("RGB")
+    w, h = pil.size
+    regiones = []
+
+    for r in rows_inv:
+        rid = int(r.get("id", 0) or 0)
+        count = int(r.get("slot_count", 0) or 0)
+        if rid <= 0 or count < 2:
+            continue
+        positions = _ocv2_slot_positions(r, (w, h))
+        if len(positions) != count:
+            continue
+        red_indices = set(health_map.get(rid, {}).get("red_indices", []))
+        red_indices.update(_tg_clean_indices(r.get("vacant_indices", []), count))
+        red_indices = {i for i in red_indices if 1 <= i <= count}
+        row_spacing = float(r.get("row_spacing_px", 18.0) or 18.0)
+        pts = _tg_norm_to_px(r.get("points_norm", []), w, h)
+        if len(pts) < 2:
+            continue
+        a = np.asarray(pts[0], dtype=np.float32)
+        b = np.asarray(pts[-1], dtype=np.float32)
+        slot_pitch = float(r.get("slot_pitch_px", 0.0) or 0.0)
+        if slot_pitch <= 0:
+            slot_pitch = float(np.linalg.norm(b-a)) / max(1, count-1)
+
+        for gidx, group in enumerate(_ocv2_group_consecutive(red_indices), 1):
+            poly = _ocv2_polygon_for_group(positions, group, row_spacing, slot_pitch)
+            if not poly:
+                continue
+            puntos = [[round(float(x), 2), round(float(y), 2)] for x, y in poly]
+            arr = np.asarray(puntos, dtype=np.float32)
+            area_px = abs(float(cv2.contourArea(arr))) if len(arr) >= 3 else 0.0
+            regiones.append({
+                "region_id": f"REG-{rid:03d}-{gidx:03d}",
+                "surco": rid,
+                "primer_slot": int(group[0]),
+                "ultimo_slot": int(group[-1]),
+                "points": puntos,
+                "area_visual_pct": (100.0 * area_px / float(w*h)) if w and h else 0.0,
+            })
+    return regiones, (w, h)
+
+
+def _tg_guardar_regiones_y_zonas(registro, backend_result, uploaded_image, uploaded_name):
+    regiones, _ = _tg_poligonos_automaticos(uploaded_image, backend_result, uploaded_name)
+    if not regiones:
+        return
+
+    nivel = registro.get("nivel_visual", "")
+    conf = round(float(backend_result.get("confidence", 0.0) or 0.0) * 100.0, 2)
+    fecha = registro.get("fecha", "")
+    area_parcela_m2 = float(st.session_state.get("tc_area_parcela_m2", 0.0) or 0.0)
+    aid = registro.get("id", "")
+    pid = registro.get("parcela_id", "")
+    rows_crit = []
+    rows_zonas = []
+
+    for i, reg in enumerate(regiones, 1):
+        region_id = f"{aid}-{reg['region_id']}"
+        poly_json = json.dumps({"space": "image_px", "points": reg["points"]}, ensure_ascii=False)
+        tramo = f"Slots {reg['primer_slot']}-{reg['ultimo_slot']}"
+        area_m2 = (area_parcela_m2 * float(reg["area_visual_pct"]) / 100.0) if area_parcela_m2 > 0 else 0.0
+        rows_crit.append([
+            region_id, aid, pid, f"Región crítica {i}", poly_json,
+            reg["surco"], reg["surco"], tramo,
+            round(reg["area_visual_pct"], 4), round(area_m2, 3), nivel,
+            "Tramo seco, débil o vacío", conf, "Pendiente", fecha,
+        ])
+        rows_zonas.append([
+            f"Z-{region_id}", aid, pid, f"Zona dañada {i}", poly_json,
+            round(area_m2, 3), nivel, str(reg["surco"]), "Pendiente", fecha,
+        ])
+
+    _tg_append_rows("RegionesCriticas", rows_crit, 15)
+    _tg_append_rows("ZonasDañadas", rows_zonas, 10)
+
+
+def _tg_guardar_validacion_muestreo(registro, uploaded_name):
+    fuente = str(st.session_state.get("tc_inventario_fuente", "") or "")
+    if str(uploaded_name) != fuente:
+        return
+    original = st.session_state.get("tc_tabla_inventario_original")
+    editada = st.session_state.get("tc_tabla_inventario")
+    if original is None or editada is None or getattr(original, "empty", True) or getattr(editada, "empty", True):
+        return
+
+    orig_rows = original.to_dict(orient="records")
+    edit_rows = editada.to_dict(orient="records")
+    rows = []
+    fecha = registro.get("fecha", "")
+    for i, (o, e) in enumerate(zip(orig_rows, edit_rows), 1):
+        surco = _tg_valor_fila_inventario(e, ["Surco", "Rang"], i)
+        ia = int(float(_tg_valor_fila_inventario(o, ["Slots", "Emplacements"], 0) or 0))
+        real = int(float(_tg_valor_fila_inventario(e, ["Slots", "Emplacements"], 0) or 0))
+        error = (abs(real - ia) / max(1, ia)) * 100.0
+        tipo_zona = str(st.session_state.get("tc_tipo_zona_validacion", "Inventario") or "Inventario")
+        qr_inicio = str(st.session_state.get("tc_qr_inicio", "") or "").strip() or "PENDIENTE"
+        qr_fin = str(st.session_state.get("tc_qr_fin", "") or "").strip() or "PENDIENTE"
+        obs_val = str(st.session_state.get("tc_observaciones_validacion", "") or "").strip() or "Sin observaciones"
+        rows.append([
+            f"VAL-{registro.get('id','')}-{i:03d}",
+            registro.get("id", ""), registro.get("parcela_id", ""), str(surco),
+            tipo_zona, ia, real, round(error, 2), qr_inicio, qr_fin, fecha,
+            obs_val,
+        ])
+    _tg_append_rows("ValidacionMuestreo", rows, 12)
+
+
+def _tg_guardar_tablas_relacionales(registro, backend_result, uploaded_image):
+    """Llena las tablas que SÍ corresponden al flujo ejecutado actualmente."""
+    errores = []
+    tareas = [
+        ("Parcelas", lambda: _tg_guardar_en_hoja_parcelas(registro)),
+        ("Analisis", lambda: _tg_guardar_hoja_analisis(registro, backend_result, uploaded_image.name)),
+        ("InventarioSurcos", lambda: _tg_guardar_inventario_surcos(registro, uploaded_image.name)),
+        ("Evidencias", lambda: _tg_guardar_evidencias(registro)),
+        ("NotaDiagnostico", lambda: _tg_guardar_nota_diagnostico(registro)),
+        ("RegionesCriticas/ZonasDañadas", lambda: _tg_guardar_regiones_y_zonas(registro, backend_result, uploaded_image, uploaded_image.name)),
+        ("ValidacionMuestreo", lambda: _tg_guardar_validacion_muestreo(registro, uploaded_image.name)),
+    ]
+    for nombre, fn in tareas:
+        try:
+            fn()
+        except Exception as exc:
+            errores.append(f"{nombre}: {exc}")
+    registro["errores_tablas_relacionales"] = errores
+    return errores
+
+
+def _tg_guardar_captura_base(uploaded_images, altura_vuelo=0.0):
+    """Registra CapturasBase + Vuelos y llena todos sus campos disponibles."""
+    if not historial_google_configurado() or not uploaded_images:
+        return ""
+
+    import uuid
+    from datetime import datetime, timezone
+    ahora = datetime.now(timezone.utc)
+    parcela = _tg_normalizar_parcela(st.session_state.get("tc_parcela_nombre", ""))
+    pid = _tg_parcela_id(parcela)
+    captura_id = f"CB{ahora.strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:6].upper()}"
+    vuelo_id = f"VU{ahora.strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:6].upper()}"
+
+    fecha_cap = st.session_state.get("tc_fecha_captura", "")
+    try:
+        fecha_cap = fecha_cap.isoformat()
+    except Exception:
+        fecha_cap = str(fecha_cap or "")
+
+    # Imagen maestra: primera fotografía del lote, guardada una sola vez.
+    master = uploaded_images[0]
+    ext = Path(master.name).suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png"}:
+        ext = ".png" if "png" in str(master.type or "").lower() else ".jpg"
+    master_name = f"{captura_id}_{_tg_nombre_seguro(parcela)}_maestra{ext}"
+    master_file_id = subir_bytes_google_drive(
+        master.getvalue(),
+        master_name,
+        master.type or "image/jpeg",
+        "CapturasBase",
     )
-    letra_parcela = _tg_letra_columna(col)
+    st.session_state.tc_captura_maestra_file_id = master_file_id
+    st.session_state.tc_vuelo_base_id = vuelo_id
 
-    # Primera fila libre según la columna ID.
-    ids = sheets_service.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=f"'{hoja}'!A2:A",
-    ).execute().get("values", [])
-    siguiente_fila = len(ids) + 2
+    # Alta/actualización de parcela con todos sus metadatos.
+    _tg_guardar_en_hoja_parcelas({
+        "id": captura_id,
+        "parcela_id": pid,
+        "parcela": parcela,
+        "fecha": ahora.isoformat(),
+        "nombre": master_name,
+    })
 
-    sheets_service.spreadsheets().values().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={
-            "valueInputOption": "RAW",
-            "data": [
-                {
-                    "range": f"'{hoja}'!A{siguiente_fila}",
-                    "values": [[registro.get("id", "")]],
-                },
-                {
-                    "range": f"'{hoja}'!{letra_parcela}{siguiente_fila}",
-                    "values": [[registro.get("nombre", "")]],
-                },
-            ],
-        },
-    ).execute()
+    metodo_union = str(st.session_state.get("tc_metodo_union", "Lote de fotografías") or "Lote de fotografías")
+    estado_captura = str(st.session_state.get("tc_estado_captura", "Creada") or "Creada")
+    obs_captura = str(st.session_state.get("tc_observaciones_captura", "") or "").strip() or "Sin observaciones"
+
+    _tg_append_rows("CapturasBase", [[
+        captura_id, pid, fecha_cap, len(uploaded_images), master_file_id,
+        metodo_union, float(altura_vuelo or 0.0), estado_captura,
+        obs_captura,
+    ]], 9)
+
+    # También registra el vuelo base para que la hoja Vuelos no quede vacía.
+    angulo = str(st.session_state.get("tc_angulo_camara", "Nadir / 90°") or "Nadir / 90°")
+    recorrido = str(st.session_state.get("tc_recorrido_vuelo", "Parcela completa") or "Parcela completa")
+    kml = str(st.session_state.get("tc_kml_file_id", "") or "").strip() or "PENDIENTE"
+    estado_vuelo = str(st.session_state.get("tc_estado_vuelo", "Completado") or "Completado")
+    obs_vuelo = str(st.session_state.get("tc_observaciones_vuelo", "") or "").strip() or "Sin observaciones"
+
+    _tg_append_rows("Vuelos", [[
+        vuelo_id, pid, "PARCELA_COMPLETA", "Vuelo base", fecha_cap,
+        float(altura_vuelo or 0.0), angulo, recorrido, kml,
+        estado_vuelo, obs_vuelo,
+    ]], 11)
+
+    return captura_id
+
+
+def _tg_guardar_segundo_vuelo_nivel2(
+    archivos,
+    region_id,
+    tipo_vuelo,
+    fecha_vuelo,
+    altura_m,
+    angulo_camara,
+    recorrido,
+    kml_file_id,
+    estado_vuelo,
+    observaciones_vuelo,
+    nivel2,
+):
+    """Guarda Vuelos + EvidenciasSeguimiento + AnalisisNivel2 desde el formulario manual."""
+    if not historial_google_configurado():
+        raise RuntimeError("Google Sheets/Drive no está configurado.")
+
+    import uuid
+    from datetime import datetime, timezone
+    ahora = datetime.now(timezone.utc)
+    parcela = _tg_normalizar_parcela(st.session_state.get("tc_parcela_nombre", ""))
+    pid = _tg_parcela_id(parcela)
+    region_id = str(region_id or "").strip() or "PARCELA_COMPLETA"
+    vuelo_id = f"VU2{ahora.strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:6].upper()}"
+    analisis2_id = f"AN2{ahora.strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:6].upper()}"
+
+    try:
+        fecha_txt = fecha_vuelo.isoformat()
+    except Exception:
+        fecha_txt = str(fecha_vuelo or ahora.date().isoformat())
+
+    kml_txt = str(kml_file_id or "").strip() or "PENDIENTE"
+    obs_vuelo = str(observaciones_vuelo or "").strip() or "Sin observaciones"
+
+    _tg_append_rows("Vuelos", [[
+        vuelo_id, pid, region_id, str(tipo_vuelo or "Segundo vuelo"), fecha_txt,
+        float(altura_m or 0.0), str(angulo_camara or "Sin registrar"),
+        str(recorrido or "Sin registrar"), kml_txt,
+        str(estado_vuelo or "Completado"), obs_vuelo,
+    ]], 11)
+
+    evidencias_rows = []
+    for idx, up in enumerate(archivos or [], 1):
+        ext = Path(up.name).suffix.lower() or ".jpg"
+        nombre = f"{vuelo_id}_{idx:02d}_{_tg_nombre_seguro(Path(up.name).stem)}{ext}"
+        file_id = subir_bytes_google_drive(
+            up.getvalue(), nombre, up.type or "image/jpeg", "Seguimiento"
+        )
+        evidencias_rows.append([
+            f"EVS-{vuelo_id}-{idx:03d}", vuelo_id, region_id, pid,
+            "Segundo vuelo", float(altura_m or 0.0), str(angulo_camara or "Sin registrar"),
+            nombre, file_id, fecha_txt, obs_vuelo,
+        ])
+    _tg_append_rows("EvidenciasSeguimiento", evidencias_rows, 11)
+
+    # Todos los campos de AnalisisNivel2 se llenan desde el formulario.
+    _tg_append_rows("AnalisisNivel2", [[
+        analisis2_id, region_id, pid, fecha_txt,
+        nivel2.get("CoberturaIrregular", "No determinado"),
+        nivel2.get("DiferenciasColor", "No determinado"),
+        nivel2.get("PerdidaContinuidad", "No determinado"),
+        nivel2.get("SectoresSecos", "No determinado"),
+        nivel2.get("FallaRiegoVisible", "No determinado"),
+        nivel2.get("DanoLocalizado", "No determinado"),
+        nivel2.get("PlagasEnfermedadesVisibles", "No determinado"),
+        nivel2.get("CondicionSuelo", "Sin registrar"),
+        float(nivel2.get("Confianza", 0.0) or 0.0),
+        nivel2.get("RequiereRevisionAgronomica", "Sí"),
+        str(nivel2.get("Observaciones", "") or "Sin observaciones"),
+    ]], 15)
+
+    return {
+        "vuelo_id": vuelo_id,
+        "analisis_nivel2_id": analisis2_id,
+        "evidencias": len(evidencias_rows),
+    }
 
 
 # El historial original se conserva; esta versión agrega nombre amigable,
@@ -8793,8 +9294,10 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
     inventario_file_id = ""
     poligonos_file_id = ""
 
-    # Inventario ya calculado y mostrado en la app.
-    _inventario_img = st.session_state.get("tc_inventario_imagen")
+    # Inventario correspondiente EXACTAMENTE a la fotografía que se está guardando.
+    _inv_map_guardado = st.session_state.get("tc_inventarios_por_imagen", {}) or {}
+    _inv_individual_guardado = _inv_map_guardado.get(uploaded_image.name) or {}
+    _inventario_img = _inv_individual_guardado.get("image") or st.session_state.get("tc_inventario_imagen")
     _inventario_bytes = _tg_a_png_bytes(_inventario_img)
 
     if _inventario_bytes:
@@ -8833,8 +9336,14 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
 
         # Nombre que verá Historial/AppSheet. Ya NO usa "WhatsApp Image...".
         "nombre": nombre_original,
+        "nombre_fuente": uploaded_image.name,
         "nombre_procesada": nombre_procesada,
+        "nombre_inventario": nombre_inventario,
+        "nombre_poligonos": nombre_poligonos,
+        "mime_original": uploaded_image.type or "image/jpeg",
+        "metodo": backend_result.get("metodo", "opencv-v2-straight-grid-polygons"),
         "parcela": parcela,
+        "parcela_id": _tg_parcela_id(parcela),
 
         "imagen_original_file_id": original_file_id,
         "imagen_procesada_file_id": processed_file_id,
@@ -8890,8 +9399,10 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
     #    Parcelas + URLs + rutas AppSheet.
     _tg_guardar_extras_historial(registro)
 
-    # 3) Hoja Parcelas: ID + nombre bajo la columna Parcela N correcta.
-    _tg_guardar_en_hoja_parcelas(registro)
+    # 3) Tablas relacionales del flujo REAL ejecutado:
+    #    Parcelas, Analisis, InventarioSurcos, Evidencias, NotaDiagnostico,
+    #    RegionesCriticas, ZonasDañadas y ValidacionMuestreo.
+    _tg_guardar_tablas_relacionales(registro, backend_result, uploaded_image)
 
     return True, registro
 
@@ -9867,6 +10378,363 @@ def _tc_uploaded_pil(up):
     return Image.open(io.BytesIO(up.getvalue())).convert("RGB")
 
 
+# ============================================================
+# EDICIÓN MANUAL DE IMÁGENES PROCESADAS
+# ============================================================
+
+def _tc_editor_a_pil(imagen):
+    """Convierte PIL/OpenCV/NumPy a PIL RGB para el editor."""
+    if imagen is None:
+        return None
+
+    if isinstance(imagen, Image.Image):
+        return imagen.convert("RGB").copy()
+
+    arr = np.asarray(imagen)
+    if arr.size == 0:
+        return None
+
+    if arr.ndim == 2:
+        return Image.fromarray(arr.astype(np.uint8)).convert("RGB")
+
+    if arr.ndim == 3 and arr.shape[2] == 4:
+        return Image.fromarray(arr.astype(np.uint8), mode="RGBA").convert("RGB")
+
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        # En esta app los arreglos NumPy mostrados por _tc_ui_image se
+        # consideran OpenCV/BGR.
+        rgb = cv2.cvtColor(arr.astype(np.uint8), cv2.COLOR_BGR2RGB)
+        return Image.fromarray(rgb).convert("RGB")
+
+    return Image.fromarray(arr.astype(np.uint8)).convert("RGB")
+
+
+def _tc_pil_a_png_bytes(imagen):
+    pil = _tc_editor_a_pil(imagen)
+    if pil is None:
+        return b""
+
+    buf = io.BytesIO()
+    pil.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _tc_reemplazar_imagen_drive_mismo_id(file_id, imagen):
+    """
+    Reemplaza únicamente los bytes del archivo de Drive.
+    Conserva el MISMO FileID, nombre, ruta de AppSheet y renglón de Sheets.
+    """
+    file_id = str(file_id or "").strip()
+    if not file_id:
+        return False, "La imagen todavía no tiene FileID en Google Drive."
+
+    contenido = _tc_pil_a_png_bytes(imagen)
+    if not contenido:
+        return False, "No se pudo convertir la corrección manual a PNG."
+
+    drive_service, _ = obtener_google_clients()
+
+    media = MediaIoBaseUpload(
+        io.BytesIO(contenido),
+        mimetype="image/png",
+        resumable=False,
+    )
+
+    drive_service.files().update(
+        fileId=file_id,
+        media_body=media,
+        fields="id,name",
+        supportsAllDrives=True,
+    ).execute()
+
+    # Forzar que Historial vuelva a leer la imagen corregida.
+    try:
+        _tc_historial_imagen_bytes.clear()
+    except Exception:
+        pass
+
+    return True, file_id
+
+
+def _tc_resultado_guardado_por_fuente(nombre_fuente):
+    """Busca el resultado/registro guardado que corresponde a una foto cargada."""
+    nombre_fuente = str(nombre_fuente or "").strip()
+
+    for item in (st.session_state.get("tc_resultados_base", []) or []):
+        if str(item.get("source_name", "") or "").strip() == nombre_fuente:
+            return item
+
+    return None
+
+
+def _tc_file_id_guardado(nombre_fuente, tipo):
+    """
+    tipo:
+      inventario -> ImagenInventarioFileID
+      analisis   -> ImagenProcesadaFileID
+      poligonos  -> ImagenPoligonosFileID
+    """
+    item = _tc_resultado_guardado_por_fuente(nombre_fuente)
+    if not item:
+        return ""
+
+    info = item.get("historial_google_info") or {}
+    if not isinstance(info, dict):
+        return ""
+
+    campo = {
+        "inventario": "imagen_inventario_file_id",
+        "analisis": "imagen_procesada_file_id",
+        "poligonos": "imagen_poligonos_file_id",
+    }.get(str(tipo or "").lower(), "")
+
+    return str(info.get(campo, "") or "").strip()
+
+
+def _tc_canvas_resultado_a_pil(canvas_result, base_display, full_size):
+    """
+    Convierte la salida del canvas a la resolución original.
+    Funciona tanto si image_data trae fondo como si solo trae overlay RGBA.
+    """
+    if canvas_result is None or canvas_result.image_data is None:
+        return None
+
+    data = np.asarray(canvas_result.image_data).astype(np.uint8)
+
+    if data.ndim != 3:
+        return None
+
+    if data.shape[2] == 4:
+        overlay = Image.fromarray(data, mode="RGBA")
+        base_rgba = base_display.convert("RGBA")
+
+        alpha = np.asarray(overlay)[:, :, 3]
+        # Si el canvas devolvió solo dibujos, componemos sobre el fondo.
+        # Si devolvió fondo + dibujos, alpha suele ser totalmente opaco y
+        # la composición sigue conservando el resultado correcto.
+        composed = Image.alpha_composite(base_rgba, overlay).convert("RGB")
+    elif data.shape[2] == 3:
+        composed = Image.fromarray(data, mode="RGB")
+    else:
+        return None
+
+    if composed.size != tuple(full_size):
+        composed = composed.resize(tuple(full_size), Image.Resampling.LANCZOS)
+
+    return composed.convert("RGB")
+
+
+def _tc_editor_manual_imagen(
+    imagen_actual,
+    imagen_original,
+    key,
+    titulo,
+    color_inicial="#FF0000",
+    file_id="",
+):
+    """
+    Editor visual manual para Inventario, Análisis verde/rojo y Polígonos.
+
+    Devuelve una PIL corregida cuando se pulsa Guardar.
+    Si hay FileID, reemplaza el archivo en Drive sin cambiar su ID.
+    """
+    actual = _tc_editor_a_pil(imagen_actual)
+    original = _tc_editor_a_pil(imagen_original)
+
+    if actual is None:
+        st.info(tr("No hay imagen para editar.", "Aucune image à modifier."))
+        return None
+
+    if original is None:
+        original = actual.copy()
+
+    activar = st.toggle(
+        tr("✏️ Editar manualmente esta imagen", "✏️ Modifier manuellement cette image"),
+        key=f"{key}_toggle",
+    )
+
+    if not activar:
+        return None
+
+    if not TC_EDITOR_MANUAL_DISPONIBLE:
+        detalle_editor = (
+            f"\n\nDetalle: {TC_EDITOR_MANUAL_ERROR}"
+            if TC_EDITOR_MANUAL_ERROR else ""
+        )
+        st.error(
+            tr(
+                "El editor manual necesita la versión nueva del componente. "
+                "En `requirements.txt` REEMPLAZA cualquier línea antigua por:\n\n"
+                "`streamlit-drawable-canvas==0.13.0`"
+                + detalle_editor,
+                "L’éditeur manuel nécessite la nouvelle version du composant. "
+                "Dans `requirements.txt`, REMPLACEZ toute ancienne version par :\n\n"
+                "`streamlit-drawable-canvas==0.13.0`"
+                + detalle_editor,
+            )
+        )
+        return None
+
+    st.markdown(f"#### ✏️ {titulo}")
+
+    base_opcion = st.radio(
+        tr("Base de edición", "Base d’édition"),
+        options=[
+            tr("Resultado actual", "Résultat actuel"),
+            tr("Imagen original · redibujar desde cero", "Image originale · redessiner"),
+        ],
+        horizontal=True,
+        key=f"{key}_base",
+    )
+
+    usar_original = base_opcion.startswith("Imagen original") or base_opcion.startswith("Image originale")
+    base_full = original.copy() if usar_original else actual.copy()
+
+    max_w = 950
+    full_w, full_h = base_full.size
+    scale = min(1.0, max_w / float(max(1, full_w)))
+    disp_w = max(1, int(round(full_w * scale)))
+    disp_h = max(1, int(round(full_h * scale)))
+
+    base_display = base_full.resize(
+        (disp_w, disp_h),
+        Image.Resampling.LANCZOS,
+    )
+
+    c1, c2, c3 = st.columns([1.2, 1.0, 1.0])
+
+    with c1:
+        herramienta = st.selectbox(
+            tr("Herramienta", "Outil"),
+            [
+                tr("Línea", "Ligne"),
+                tr("Dibujo libre", "Dessin libre"),
+                tr("Rectángulo", "Rectangle"),
+                tr("Círculo", "Cercle"),
+                tr("Punto", "Point"),
+                tr("Polígono", "Polygone"),
+            ],
+            key=f"{key}_tool",
+        )
+
+    with c2:
+        color = st.color_picker(
+            tr("Color", "Couleur"),
+            value=color_inicial,
+            key=f"{key}_color",
+        )
+
+    with c3:
+        grosor = st.slider(
+            tr("Grosor", "Épaisseur"),
+            min_value=1,
+            max_value=30,
+            value=5,
+            key=f"{key}_stroke",
+        )
+
+    modos = {
+        tr("Línea", "Ligne"): "line",
+        tr("Dibujo libre", "Dessin libre"): "freedraw",
+        tr("Rectángulo", "Rectangle"): "rect",
+        tr("Círculo", "Cercle"): "circle",
+        tr("Punto", "Point"): "point",
+        tr("Polígono", "Polygone"): "polygon",
+    }
+    drawing_mode = modos.get(herramienta, "line")
+
+    st.caption(
+        tr(
+            "Tip: para quitar todas las marcas automáticas, selecciona "
+            "'Imagen original · redibujar desde cero'. Para mover, ajustar o "
+            "borrar objetos que tú dibujaste, usa el botón de edición de la "
+            "barra del canvas.",
+            "Astuce : pour retirer toutes les marques automatiques, choisissez "
+            "'Image originale · redessiner'. Pour déplacer, ajuster ou supprimer "
+            "vos objets, utilisez le bouton d’édition de la barre du canvas.",
+        )
+    )
+
+    canvas_result = st_canvas(
+        fill_color="rgba(30, 110, 245, 0.15)",
+        stroke_width=int(grosor),
+        stroke_color=color,
+        background_color="#FFFFFF",
+        background_image=base_display,
+        update_streamlit=True,
+        height=disp_h,
+        width=disp_w,
+        drawing_mode=drawing_mode,
+        point_display_radius=max(3, int(grosor)),
+        return_image_data=True,
+        max_display_height=820,
+        key=f"{key}_canvas",
+    )
+
+    b1, b2 = st.columns(2)
+
+    with b1:
+        guardar = st.button(
+            tr("💾 Aplicar corrección manual", "💾 Appliquer la correction"),
+            type="primary",
+            use_container_width=True,
+            key=f"{key}_guardar",
+        )
+
+    with b2:
+        st.caption(
+            tr(
+                "Si esta imagen ya está en Drive, se conserva el mismo FileID.",
+                "Si cette image est déjà dans Drive, le même FileID est conservé.",
+            )
+        )
+
+    if not guardar:
+        return None
+
+    corregida = _tc_canvas_resultado_a_pil(
+        canvas_result,
+        base_display,
+        (full_w, full_h),
+    )
+
+    if corregida is None:
+        st.error(tr("No se pudo generar la corrección.", "Impossible de générer la correction."))
+        return None
+
+    if file_id:
+        try:
+            ok_drive, info_drive = _tc_reemplazar_imagen_drive_mismo_id(
+                file_id,
+                corregida,
+            )
+            if ok_drive:
+                st.success(
+                    tr(
+                        "✅ Corrección guardada en Drive con el mismo FileID.",
+                        "✅ Correction enregistrée dans Drive avec le même FileID.",
+                    )
+                )
+            else:
+                st.warning(str(info_drive))
+        except Exception as exc:
+            st.warning(
+                tr(
+                    f"La corrección quedó en la sesión, pero Drive no pudo actualizarse: {exc}",
+                    f"La correction est dans la session, mais Drive n’a pas pu être mis à jour : {exc}",
+                )
+            )
+    else:
+        st.success(
+            tr(
+                "✅ Corrección aplicada. Se guardará en Drive cuando ejecutes el análisis.",
+                "✅ Correction appliquée. Elle sera enregistrée dans Drive lors de l’analyse.",
+            )
+        )
+
+    return corregida
+
+
 # ------------------------------------------------------------
 # NAVEGACIÓN VISUAL DEL VIDEO
 # ------------------------------------------------------------
@@ -9931,6 +10799,46 @@ with side_col:
         )
         st.session_state.tc_fecha_captura = fecha_captura
 
+        with st.expander(
+            tr("🧾 Datos para Google Sheets", "🧾 Données pour Google Sheets"),
+            expanded=False
+        ):
+            st.text_input(
+                tr("Rancho / Viñedo", "Domaine / Vignoble"),
+                key="tc_rancho_vinedo",
+                placeholder=tr("Ej. Rancho La Esperanza", "Ex. Domaine La Esperanza")
+            )
+            st.text_input(
+                tr("Ubicación", "Localisation"),
+                key="tc_ubicacion",
+                placeholder=tr("Ej. Parras, Coahuila / coordenadas", "Ex. Parras, Coahuila / coordonnées")
+            )
+            st.text_input(
+                tr("KML File ID de Google Drive", "ID du fichier KML Google Drive"),
+                key="tc_kml_file_id",
+                placeholder=tr("Déjalo vacío si todavía está pendiente", "Laissez vide s’il est encore en attente")
+            )
+            st.selectbox(
+                tr("Estado de la parcela", "État de la parcelle"),
+                ["Activa", "En revisión", "Inactiva"],
+                key="tc_estado_parcela"
+            )
+            st.number_input(
+                tr("Área total de la parcela (m²)", "Surface totale de la parcelle (m²)"),
+                min_value=0.0,
+                step=10.0,
+                key="tc_area_parcela_m2",
+                help=tr(
+                    "Se usa para convertir el porcentaje visual de las regiones críticas a AreaM2.",
+                    "Utilisée pour convertir le pourcentage visuel des régions critiques en AreaM2."
+                )
+            )
+            st.text_area(
+                tr("Observaciones de la parcela", "Observations de la parcelle"),
+                key="tc_observaciones_parcela",
+                height=80
+            )
+
     with st.container(border=True):
         st.markdown(tr("### 2. Captura Base", "### 2. Capture de base"))
 
@@ -9960,6 +10868,57 @@ with side_col:
             key="tc_altura_video_flow"
         )
 
+        with st.expander(
+            tr("✈️ Datos del vuelo / validación", "✈️ Données du vol / validation"),
+            expanded=False
+        ):
+            st.selectbox(
+                tr("Método de captura / unión", "Méthode de capture / assemblage"),
+                ["Lote de fotografías", "Imagen individual", "Mosaico / ortomosaico"],
+                key="tc_metodo_union"
+            )
+            st.text_input(
+                tr("Ángulo de cámara", "Angle de caméra"),
+                key="tc_angulo_camara"
+            )
+            st.text_input(
+                tr("Recorrido del vuelo", "Parcours du vol"),
+                key="tc_recorrido_vuelo"
+            )
+            st.selectbox(
+                tr("Estado del vuelo", "État du vol"),
+                ["Completado", "En revisión", "Pendiente"],
+                key="tc_estado_vuelo"
+            )
+            st.text_area(
+                tr("Observaciones del vuelo", "Observations du vol"),
+                key="tc_observaciones_vuelo",
+                height=70
+            )
+            st.selectbox(
+                tr("Estado de la captura base", "État de la capture de base"),
+                ["Creada", "Validada", "En revisión"],
+                key="tc_estado_captura"
+            )
+            st.text_area(
+                tr("Observaciones de captura base", "Observations de la capture de base"),
+                key="tc_observaciones_captura",
+                height=70
+            )
+            st.markdown(tr("**Validación de muestreo / QR**", "**Validation d’échantillonnage / QR**"))
+            st.text_input(tr("QR inicio", "QR début"), key="tc_qr_inicio")
+            st.text_input(tr("QR fin", "QR fin"), key="tc_qr_fin")
+            st.selectbox(
+                tr("Tipo de zona para validación", "Type de zone pour validation"),
+                ["Inventario", "Verde", "Roja", "Región crítica"],
+                key="tc_tipo_zona_validacion"
+            )
+            st.text_area(
+                tr("Observaciones de validación", "Observations de validation"),
+                key="tc_observaciones_validacion",
+                height=70
+            )
+
         if uploaded_images:
             st.caption(
                 tr(
@@ -9978,10 +10937,22 @@ with side_col:
 
         if crear_captura:
             st.session_state.tc_captura_confirmada = True
+            try:
+                st.session_state.tc_captura_base_id = _tg_guardar_captura_base(
+                    uploaded_images, altura_vuelo
+                )
+            except Exception as exc_captura_sheet:
+                st.warning(
+                    tr(
+                        f"La captura se creó, pero CapturasBase no pudo guardarse: {exc_captura_sheet}",
+                        f"La capture a été créée, mais CapturasBase n’a pas pu être enregistrée : {exc_captura_sheet}"
+                    )
+                )
             st.session_state.tc_inventario_procesado = False
             st.session_state.tc_inventario_confirmado = False
             st.session_state.tc_resultados_base = []
             st.session_state.tc_tabla_inventario = None
+            st.session_state.tc_tabla_inventario_original = None
             st.session_state.tc_inventario_imagen = None
             st.session_state.tc_inventario_fuente = ""
             st.session_state.tc_inventario_confianza = 0.0
@@ -10167,6 +11138,10 @@ with main_col:
 
             # Referencia principal para la tabla editable/validación.
             st.session_state.tc_tabla_inventario = inv["table"]
+            try:
+                st.session_state.tc_tabla_inventario_original = inv["table"].copy(deep=True)
+            except Exception:
+                st.session_state.tc_tabla_inventario_original = inv["table"]
             st.session_state.tc_inventario_imagen = inv["image"]
             st.session_state.tc_inventario_fuente = best_up.name
             st.session_state.tc_inventario_confianza = float(inv.get("confidence", 0.0))
@@ -10273,6 +11248,42 @@ with main_col:
                                 else tr("Inventario independiente de esta fotografía", "Inventaire indépendant de cette photographie")
                             )
                         )
+
+                        # --------------------------------------------
+                        # EDICIÓN MANUAL 1/3 · INVENTARIO
+                        # --------------------------------------------
+                        try:
+                            original_editor_inv = _tc_uploaded_pil(up)
+                        except Exception:
+                            original_editor_inv = inv_individual.get("pil") or inv_individual.get("image")
+
+                        file_id_inv = _tc_file_id_guardado(up.name, "inventario")
+
+                        corregida_inv = _tc_editor_manual_imagen(
+                            inv_individual.get("image"),
+                            original_editor_inv,
+                            key=f"tc_edit_inv_{idx}_{up.name}",
+                            titulo=tr(
+                                "Corregir Inventario",
+                                "Corriger l’inventaire"
+                            ),
+                            color_inicial="#00BFFF",
+                            file_id=file_id_inv,
+                        )
+
+                        if corregida_inv is not None:
+                            inv_individual["image"] = corregida_inv
+                            inv_map[up.name] = inv_individual
+                            st.session_state.tc_inventarios_por_imagen = inv_map
+
+                            if up.name == ref_name:
+                                st.session_state.tc_inventario_imagen = corregida_inv
+
+                            # Si Salud ya se ejecutó, actualizar también la copia
+                            # usada en el resumen final.
+                            item_guardado = _tc_resultado_guardado_por_fuente(up.name)
+                            if item_guardado is not None:
+                                item_guardado["inventory_image"] = corregida_inv
                     else:
                         st.warning(
                             tr(
@@ -10562,6 +11573,42 @@ with main_col:
                             caption=tr("Análisis visual verde / rojo", "Analyse visuelle vert / rouge")
                         )
 
+                        # --------------------------------------------
+                        # EDICIÓN MANUAL 2/3 · ANÁLISIS VERDE/ROJO
+                        # --------------------------------------------
+                        source_name_edit = item.get("source_name", "") or item.get("name", "")
+                        up_edit = next(
+                            (u for u in (uploaded_images or []) if u.name == source_name_edit),
+                            None
+                        )
+
+                        original_editor_salud = None
+                        if up_edit is not None:
+                            try:
+                                original_editor_salud = _tc_uploaded_pil(up_edit)
+                            except Exception:
+                                original_editor_salud = None
+
+                        file_id_salud = _tc_file_id_guardado(
+                            source_name_edit,
+                            "analisis"
+                        )
+
+                        corregida_salud = _tc_editor_manual_imagen(
+                            item.get("annotated"),
+                            original_editor_salud,
+                            key=f"tc_edit_salud_{idx}_{source_name_edit}",
+                            titulo=tr(
+                                "Corregir análisis verde / rojo",
+                                "Corriger l’analyse vert / rouge"
+                            ),
+                            color_inicial="#FF3030",
+                            file_id=file_id_salud,
+                        )
+
+                        if corregida_salud is not None:
+                            item["annotated"] = corregida_salud
+
                         diagnostico = str(item.get("diagnostico_visual", "") or "").strip()
                         if diagnostico:
                             st.markdown(tr("#### Descripción visual preliminar", "#### Description visuelle préliminaire"))
@@ -10598,6 +11645,43 @@ with main_col:
                         if polygon_image is not None:
                             st.markdown(tr("### Imagen con polígonos azules", "### Image avec polygones bleus"))
                             _tc_ui_image(polygon_image)
+
+                            # ----------------------------------------
+                            # EDICIÓN MANUAL 3/3 · POLÍGONOS
+                            # ----------------------------------------
+                            source_name_poly = item.get("source_name", "") or item.get("name", "")
+                            up_poly = next(
+                                (u for u in (uploaded_images or []) if u.name == source_name_poly),
+                                None
+                            )
+
+                            original_editor_poly = None
+                            if up_poly is not None:
+                                try:
+                                    original_editor_poly = _tc_uploaded_pil(up_poly)
+                                except Exception:
+                                    original_editor_poly = None
+
+                            file_id_poly = _tc_file_id_guardado(
+                                source_name_poly,
+                                "poligonos"
+                            )
+
+                            corregida_poly = _tc_editor_manual_imagen(
+                                item.get("polygon_image"),
+                                original_editor_poly,
+                                key=f"tc_edit_poly_{idx}_{source_name_poly}",
+                                titulo=tr(
+                                    "Corregir polígonos",
+                                    "Corriger les polygones"
+                                ),
+                                color_inicial="#1E6EF5",
+                                file_id=file_id_poly,
+                            )
+
+                            if corregida_poly is not None:
+                                item["polygon_image"] = corregida_poly
+                                polygon_image = corregida_poly
 
                             p1, p2, p3 = st.columns(3)
                             red_pct_item = float(item.get("red_pct", 0.0) or 0.0)
@@ -10639,12 +11723,50 @@ with main_col:
                     f"<div class='tc-stage-title'>⑤ {tr('Segundo vuelo','Deuxième vol')}</div>",
                     unsafe_allow_html=True
                 )
-                st.info(
+                st.caption(
                     tr(
-                        "Esta etapa queda preparada en el flujo. No se ejecuta un segundo vuelo automáticamente para no modificar la lógica actual.",
-                        "Cette étape est préparée dans le flux. Aucun deuxième vol n’est exécuté automatiquement afin de ne pas modifier la logique actuelle."
+                        "Registra los campos de Vuelos y EvidenciasSeguimiento. Puedes usar el RegionID de RegionesCriticas o PARCELA_COMPLETA.",
+                        "Enregistrez les champs de Vuelos et EvidenciasSeguimiento. Vous pouvez utiliser le RegionID de RegionesCriticas ou PARCELA_COMPLETA."
                     )
                 )
+
+                with st.container(border=True):
+                    sv1, sv2, sv3 = st.columns(3)
+                    with sv1:
+                        region_seg = st.text_input(
+                            "RegionID",
+                            key="tc_seg_region_id",
+                            placeholder="PARCELA_COMPLETA o TC...-REG-001-001"
+                        )
+                        tipo_seg = st.selectbox(
+                            "TipoVuelo",
+                            ["Segundo vuelo", "Seguimiento", "Verificación"],
+                            key="tc_seg_tipo_vuelo"
+                        )
+                        fecha_seg = st.date_input("Fecha", key="tc_seg_fecha")
+                    with sv2:
+                        altura_seg = st.number_input(
+                            "AlturaM", min_value=0.0, step=1.0, key="tc_seg_altura"
+                        )
+                        angulo_seg = st.text_input("AnguloCamara", key="tc_seg_angulo")
+                        recorrido_seg = st.text_input("Recorrido", key="tc_seg_recorrido")
+                    with sv3:
+                        kml_seg = st.text_input(
+                            "KMLFileID",
+                            key="tc_seg_kml",
+                            placeholder="Déjalo vacío = PENDIENTE"
+                        )
+                        estado_seg = st.selectbox(
+                            "Estado", ["Completado", "En revisión", "Pendiente"], key="tc_seg_estado"
+                        )
+                        obs_seg = st.text_area("Observaciones", key="tc_seg_observaciones", height=80)
+
+                    archivos_seg = st.file_uploader(
+                        tr("Fotografías del segundo vuelo", "Photographies du deuxième vol"),
+                        type=["jpg", "jpeg", "png"],
+                        accept_multiple_files=True,
+                        key="tc_seg_uploader"
+                    )
 
                 st.markdown(
                     f"<div class='tc-stage-title'>⑥ {tr('Etapa 3 · Análisis visual de segundo nivel','Étape 3 · Analyse visuelle de deuxième niveau')}</div>",
@@ -10652,64 +11774,73 @@ with main_col:
                 )
                 st.caption(
                     tr(
-                        "Primero registra el segundo vuelo de una región. Mientras tanto se conserva la vista final calculada con la lógica actual.",
-                        "Enregistrez d’abord le deuxième vol d’une région. En attendant, la vue finale calculée avec la logique actuelle est conservée."
+                        "Estos campos corresponden exactamente a la hoja AnalisisNivel2. Se registran como observación manual; no se inventan resultados de IA.",
+                        "Ces champs correspondent exactement à la feuille AnalisisNivel2. Ils sont enregistrés comme observation manuelle ; aucun résultat IA n’est inventé."
                     )
                 )
 
-                st.markdown(tr("## Vista final · Líneas sobre surcos", "## Vue finale · Lignes sur les rangs"))
+                opciones_n2 = ["No determinado", "No", "Sí"]
+                with st.container(border=True):
+                    n21, n22, n23 = st.columns(3)
+                    with n21:
+                        n2_cob = st.selectbox("CoberturaIrregular", opciones_n2, key="tc_n2_cob")
+                        n2_col = st.selectbox("DiferenciasColor", opciones_n2, key="tc_n2_col")
+                        n2_cont = st.selectbox("PerdidaContinuidad", opciones_n2, key="tc_n2_cont")
+                    with n22:
+                        n2_sec = st.selectbox("SectoresSecos", opciones_n2, key="tc_n2_sec")
+                        n2_riego = st.selectbox("FallaRiegoVisible", opciones_n2, key="tc_n2_riego")
+                        n2_dano = st.selectbox("DanoLocalizado", opciones_n2, key="tc_n2_dano")
+                    with n23:
+                        n2_plagas = st.selectbox("PlagasEnfermedadesVisibles", opciones_n2, key="tc_n2_plagas")
+                        n2_suelo = st.text_input("CondicionSuelo", key="tc_n2_suelo", placeholder="Sin registrar")
+                        n2_revision = st.selectbox("RequiereRevisionAgronomica", ["Sí", "No"], key="tc_n2_revision")
 
-                # Vista final para CADA fotografía analizada.
-                for idx_item, item in enumerate(resultados, 1):
-                    source_name = item.get("source_name", "")
-                    up_ref = next(
-                        (u for u in (uploaded_images or []) if u.name == source_name),
-                        None
+                    n2_conf = st.slider("Confianza", 0.0, 100.0, 0.0, 1.0, key="tc_n2_conf")
+                    n2_obs = st.text_area("Observaciones AnalisisNivel2", key="tc_n2_obs", height=90)
+
+                    guardar_seg = st.button(
+                        tr("💾 Guardar segundo vuelo + nivel 2", "💾 Enregistrer deuxième vol + niveau 2"),
+                        type="primary",
+                        use_container_width=True,
+                        disabled=(not archivos_seg),
+                        key="tc_guardar_segundo_vuelo_n2"
                     )
 
-                    original_ref = None
-                    if up_ref is not None:
+                    if guardar_seg:
                         try:
-                            original_ref = _tc_uploaded_pil(up_ref)
-                        except Exception:
-                            original_ref = None
-
-                    with st.container(border=True):
-                        st.markdown(f"### {idx_item}. {source_name or item.get('name','')}")
-
-                        f1, f2, f3 = st.columns(3)
-                        f1.metric(
-                            tr("Vegetación verde", "Végétation verte"),
-                            f"{float(item.get('green_pct',0.0)):.1f}%"
-                        )
-                        f2.metric(
-                            tr("Afectación roja", "Affectation rouge"),
-                            f"{float(item.get('red_pct',0.0)):.1f}%"
-                        )
-                        f3.metric(
-                            tr("Surcos usados", "Rangs utilisés"),
-                            int(item.get("count",0) or 0)
-                        )
-
-                        vf1, vf2 = st.columns(2)
-                        with vf1:
-                            st.caption(tr("Imagen original", "Image originale"))
-                            _tc_ui_image(original_ref)
-                        with vf2:
-                            st.caption(
+                            info_seg = _tg_guardar_segundo_vuelo_nivel2(
+                                archivos_seg,
+                                region_seg,
+                                tipo_seg,
+                                fecha_seg,
+                                altura_seg,
+                                angulo_seg,
+                                recorrido_seg,
+                                kml_seg,
+                                estado_seg,
+                                obs_seg,
+                                {
+                                    "CoberturaIrregular": n2_cob,
+                                    "DiferenciasColor": n2_col,
+                                    "PerdidaContinuidad": n2_cont,
+                                    "SectoresSecos": n2_sec,
+                                    "FallaRiegoVisible": n2_riego,
+                                    "DanoLocalizado": n2_dano,
+                                    "PlagasEnfermedadesVisibles": n2_plagas,
+                                    "CondicionSuelo": n2_suelo or "Sin registrar",
+                                    "Confianza": n2_conf,
+                                    "RequiereRevisionAgronomica": n2_revision,
+                                    "Observaciones": n2_obs or "Sin observaciones",
+                                }
+                            )
+                            st.success(
                                 tr(
-                                    "Imagen procesada — Líneas guiadas por SU Inventario",
-                                    "Image traitée — Lignes guidées par SON inventaire"
+                                    f"✅ Guardado. VueloID: {info_seg['vuelo_id']} · Evidencias: {info_seg['evidencias']} · AnalisisNivel2ID: {info_seg['analisis_nivel2_id']}",
+                                    f"✅ Enregistré. VueloID : {info_seg['vuelo_id']} · Preuves : {info_seg['evidencias']} · AnalisisNivel2ID : {info_seg['analisis_nivel2_id']}"
                                 )
                             )
-                            _tc_ui_image(item.get("annotated"))
-
-                st.caption(
-                    tr(
-                        "Cada fotografía utiliza su propio Inventario, sus propios surcos y sus propios slots.",
-                        "Chaque photographie utilise son propre inventaire, ses propres rangs et ses propres emplacements."
-                    )
-                )
+                        except Exception as exc_seg:
+                            st.error(tr(f"No se pudo guardar el segundo vuelo: {exc_seg}", f"Impossible d’enregistrer le deuxième vol : {exc_seg}"))
 
                 # ----------------------------------------------------
                 # RESUMEN FINAL DE 4 IMÁGENES POR CADA FOTO
