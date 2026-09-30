@@ -108,8 +108,13 @@ def tr(es, fr):
 
 
 def tr_diag_texto(texto):
-    """Traduce únicamente textos del diagnóstico cuando el idioma es FR."""
-    if st.session_state.idioma_terrocore == "ES":
+    """
+    Traduce textos automáticos de diagnóstico cuando el idioma activo es FR.
+
+    También se usa antes de guardar en Google Sheets/AppSheet, de modo que
+    el idioma seleccionado en la app controle el idioma del registro.
+    """
+    if st.session_state.get("idioma_terrocore", "ES") != "FR":
         return str(texto or "")
 
     t = str(texto or "").strip()
@@ -120,8 +125,10 @@ def tr_diag_texto(texto):
         "centro": "centre",
         "izquierda": "gauche",
         "derecha": "droite",
-        "medio": "moyen",
+        "superior": "supérieure",
         "media": "moyenne",
+        "inferior": "inférieure",
+        "medio": "moyen",
         "alto": "élevé",
         "alta": "élevée",
         "bajo": "faible",
@@ -135,35 +142,92 @@ def tr_diag_texto(texto):
         "compactación o variación física del suelo": "compaction ou variation physique du sol",
         "posible problema sanitario localizado": "possible problème phytosanitaire localisé",
 
-        "inspeccionar en campo los tramos rojos": "inspecter sur le terrain les sections rouges",
-        "comparar humedad y funcionamiento del riego entre zonas": "comparer l’humidité et le fonctionnement de l’irrigation entre les zones",
-        "tomar muestras de suelo separadas en zona afectada y zona sana": "prélever séparément des échantillons de sol dans la zone affectée et la zone saine",
-        "considerar análisis foliar para confirmar estado nutricional": "envisager une analyse foliaire pour confirmer l’état nutritionnel",
-        "revisar raíces y presencia de plagas o enfermedades": "vérifier les racines ainsi que la présence de ravageurs ou de maladies",
+        "inspeccionar en campo los tramos rojos":
+            "inspecter sur le terrain les sections rouges",
+        "comparar humedad y funcionamiento del riego entre zonas":
+            "comparer l’humidité et le fonctionnement de l’irrigation entre les zones",
+        "tomar muestras de suelo separadas en zona afectada y zona sana":
+            "prélever séparément des échantillons de sol dans la zone affectée et la zone saine",
+        "considerar análisis foliar para confirmar estado nutricional":
+            "envisager une analyse foliaire pour confirmer l’état nutritionnel",
+        "revisar raíces y presencia de plagas o enfermedades":
+            "vérifier les racines ainsi que la présence de ravageurs ou de maladies",
+
+        "El análisis OpenCV es visual y no identifica nutrientes ni enfermedades por sí solo.":
+            "L’analyse OpenCV est visuelle et n’identifie pas à elle seule les nutriments ni les maladies.",
+        "Revisar en campo los polígonos rojos para distinguir planta seca de faltante real.":
+            "Vérifier sur le terrain les polygones rouges afin de distinguer un plant sec d’un plant réellement manquant.",
+        "Comparar la misma parcela en capturas posteriores para confirmar si la afectación persiste.":
+            "Comparer la même parcelle lors de captures ultérieures afin de confirmer si l’affectation persiste.",
+        "Diagnóstico visual automático por OpenCV; confirmar en campo.":
+            "Diagnostic visuel automatique par OpenCV ; à confirmer sur le terrain.",
 
         "Una fotografía por sí sola no permite afirmar qué nutriente falta. Nitrógeno, fósforo, potasio, magnesio, hierro u otros elementos pueden influir en el vigor, pero síntomas similares también pueden aparecer por falta o exceso de agua, salinidad, compactación, problemas de raíz, plagas o enfermedades. Para decidir una fertilización se recomienda confirmar con análisis de suelo y, de ser posible, análisis foliar.":
-        "Une photographie seule ne permet pas d’identifier avec certitude le nutriment manquant. L’azote, le phosphore, le potassium, le magnésium, le fer ou d’autres éléments peuvent influencer la vigueur, mais des symptômes similaires peuvent aussi être causés par un manque ou un excès d’eau, la salinité, la compaction, des problèmes racinaires, des ravageurs ou des maladies. Avant de décider d’une fertilisation, il est recommandé de confirmer par une analyse du sol et, si possible, une analyse foliaire.",
+            "Une photographie seule ne permet pas d’identifier avec certitude le nutriment manquant. L’azote, le phosphore, le potassium, le magnésium, le fer ou d’autres éléments peuvent influencer la vigueur, mais des symptômes similaires peuvent aussi être causés par un manque ou un excès d’eau, la salinité, la compaction, des problèmes racinaires, des ravageurs ou des maladies. Avant de décider d’une fertilisation, il est recommandé de confirmer par une analyse du sol et, si possible, une analyse foliaire.",
 
         "Diagnóstico visual preliminar. No sustituye análisis de suelo, análisis foliar, revisión del riego ni diagnóstico agronómico en campo.":
-        "Diagnostic visuel préliminaire. Il ne remplace pas une analyse du sol, une analyse foliaire, une vérification de l’irrigation ni un diagnostic agronomique sur le terrain.",
+            "Diagnostic visuel préliminaire. Il ne remplace pas une analyse du sol, une analyse foliaire, une vérification de l’irrigation ni un diagnostic agronomique sur le terrain.",
 
         "La mezcla de tramos verdes y rojos indica heterogeneidad en el vigor del viñedo. Puede existir un problema localizado de humedad, fertilidad o compactación.":
-        "Le mélange de sections vertes et rouges indique une hétérogénéité de la vigueur du vignoble. Il peut exister un problème localisé d’humidité, de fertilité ou de compaction.",
+            "Le mélange de sections vertes et rouges indique une hétérogénéité de la vigueur du vignoble. Il peut exister un problème localisé d’humidité, de fertilité ou de compaction.",
+
+        "La fotografía por sí sola no confirma una deficiencia nutricional específica; confirma con revisión de campo, análisis de suelo y, de ser posible, análisis foliar.":
+            "La photographie seule ne confirme pas une carence nutritionnelle spécifique ; confirmez-la par une inspection sur le terrain, une analyse du sol et, si possible, une analyse foliaire.",
+
+        "Diagnóstico visual preliminar; confirmar en campo.":
+            "Diagnostic visuel préliminaire ; à confirmer sur le terrain.",
     }
 
-    if t.lower() in exactos:
-        return exactos[t.lower()]
     if t in exactos:
         return exactos[t]
+    if t.lower() in exactos:
+        return exactos[t.lower()]
 
-    # Diagnóstico dinámico con zona al final.
+    # Ej.: "centro, zona media"
+    m_zona = re.fullmatch(
+        r"(izquierda|centro|derecha),\s*zona\s+(superior|media|inferior)",
+        t,
+        flags=re.I,
+    )
+    if m_zona:
+        horiz = {
+            "izquierda": "gauche",
+            "centro": "centre",
+            "derecha": "droite",
+        }[m_zona.group(1).lower()]
+        vert = {
+            "superior": "supérieure",
+            "media": "moyenne",
+            "inferior": "inférieure",
+        }[m_zona.group(2).lower()]
+        return f"{horiz}, zone {vert}"
+
+    # Diagnóstico dinámico generado por el motor OpenCV actual.
+    m_cv = re.fullmatch(
+        r"OpenCV evaluó\s+(\d+)\s+posiciones sobre\s+(\d+)\s+surcos rectos\.\s*"
+        r"Detectó\s+(\d+)\s+posiciones secas, débiles o vacías\s+\(([\d\.,]+)% rojo\)\.\s*"
+        r"Los polígonos rojos se limitan a los tramos afectados detectados sobre el mismo surco\.",
+        t,
+        flags=re.I,
+    )
+    if m_cv:
+        total, surcos, rojos, pct = m_cv.groups()
+        pct = pct.replace(".", ",")
+        return (
+            f"OpenCV a évalué {total} positions sur {surcos} rangs rectilignes. "
+            f"Il a détecté {rojos} positions sèches, faibles ou vides "
+            f"({pct} % en rouge). Les polygones rouges se limitent aux sections "
+            "affectées détectées sur le même rang."
+        )
+
+    # Diagnóstico dinámico legado.
     prefijo = (
         "Se observa una afectación visual media, con mezcla de tramos vigorosos "
         "y tramos débiles o secos. La mayor afectación visual aparece en la zona "
     )
     if t.startswith(prefijo):
         zona = t[len(prefijo):].rstrip(".")
-        zona_fr = exactos.get(zona.lower(), zona)
+        zona_fr = tr_diag_texto(zona)
         return (
             "Une affectation visuelle moyenne est observée, avec un mélange de sections "
             "vigoureuses et de sections faibles ou sèches. L’affectation visuelle la plus "
@@ -171,6 +235,61 @@ def tr_diag_texto(texto):
         )
 
     return t
+
+
+def _tc_guardar_lista_idioma(valores):
+    """Traduce una lista de textos automáticos antes de guardarla."""
+    if valores is None:
+        return []
+    if isinstance(valores, str):
+        valores = [valores]
+    return [tr_diag_texto(v) for v in list(valores)]
+
+
+def _tc_guardar_valor_appsheet(valor):
+    """
+    Traduce estados/valores automáticos conocidos al francés al guardar.
+    El texto libre capturado por el usuario se conserva tal como fue escrito.
+    """
+    s = str(valor or "")
+
+    if st.session_state.get("idioma_terrocore", "ES") != "FR":
+        return s
+
+    mapa = {
+        "Sin registrar": "Non renseigné",
+        "PENDIENTE": "EN ATTENTE",
+        "Pendiente": "En attente",
+        "Sin observaciones": "Sans observations",
+        "Activa": "Active",
+        "En revisión": "En révision",
+        "Inactiva": "Inactive",
+        "Creada": "Créée",
+        "Validada": "Validée",
+        "Completado": "Terminé",
+        "Lote de fotografías": "Lot de photographies",
+        "Imagen individual": "Image individuelle",
+        "Mosaico / ortomosaico": "Mosaïque / orthomosaïque",
+        "Parcela completa": "Parcelle complète",
+        "Vuelo base": "Vol de base",
+        "Segundo vuelo": "Deuxième vol",
+        "Seguimiento": "Suivi",
+        "Verificación": "Vérification",
+        "Inventario": "Inventaire",
+        "Verde": "Verte",
+        "Roja": "Rouge",
+        "Región crítica": "Région critique",
+        "No determinado": "Non déterminé",
+        "No determinada": "Non déterminée",
+        "Sí": "Oui",
+        "No": "Non",
+        "ORIGINAL": "ORIGINALE",
+        "INVENTARIO": "INVENTAIRE",
+        "ANALISIS": "ANALYSE",
+        "POLIGONOS": "POLYGONES",
+    }
+
+    return mapa.get(s, tr_diag_texto(s))
 
 
 def probar_openai():
@@ -8721,11 +8840,13 @@ def _tg_guardar_en_hoja_parcelas(registro):
     parcela = _tg_normalizar_parcela(registro.get("parcela", ""))
     parcela_id = registro.get("parcela_id") or _tg_parcela_id(parcela)
 
-    rancho = str(st.session_state.get("tc_rancho_vinedo", "") or "").strip() or "Sin registrar"
-    kml = str(st.session_state.get("tc_kml_file_id", "") or "").strip() or "PENDIENTE"
-    ubicacion = str(st.session_state.get("tc_ubicacion", "") or "").strip() or "Sin registrar"
-    estado = str(st.session_state.get("tc_estado_parcela", "Activa") or "Activa")
-    observaciones = str(st.session_state.get("tc_observaciones_parcela", "") or "").strip() or "Sin observaciones"
+    rancho = str(st.session_state.get("tc_rancho_vinedo", "") or "").strip() or _tc_guardar_valor_appsheet("Sin registrar")
+    kml = str(st.session_state.get("tc_kml_file_id", "") or "").strip() or _tc_guardar_valor_appsheet("PENDIENTE")
+    ubicacion = str(st.session_state.get("tc_ubicacion", "") or "").strip() or _tc_guardar_valor_appsheet("Sin registrar")
+    estado = _tc_guardar_valor_appsheet(
+        st.session_state.get("tc_estado_parcela", "Activa") or "Activa"
+    )
+    observaciones = str(st.session_state.get("tc_observaciones_parcela", "") or "").strip() or _tc_guardar_valor_appsheet("Sin observaciones")
 
     existentes = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
@@ -8827,7 +8948,7 @@ def _tg_guardar_hoja_analisis(registro, backend_result, uploaded_name):
         registro.get("parcela", ""),
         fecha_cap,
         registro.get("fecha", ""),
-        "Inventario + Estado visual + Polígonos",
+        tr("Inventario + Estado visual + Polígonos", "Inventaire + État visuel + Polygones"),
         backend_result.get("metodo", "opencv-v2-straight-grid-polygons"),
         registro.get("nombre", ""),
         registro.get("imagen_original_file_id", ""),
@@ -8880,10 +9001,10 @@ def _tg_guardar_evidencias(registro):
     aid = registro.get("id", "")
     pid = registro.get("parcela_id", "")
     evidencias = [
-        ("ORIGINAL", registro.get("nombre", ""), registro.get("imagen_original_file_id", ""), registro.get("mime_original", "image/jpeg")),
-        ("INVENTARIO", registro.get("nombre_inventario", ""), registro.get("imagen_inventario_file_id", ""), "image/png"),
-        ("ANALISIS", registro.get("nombre_procesada", ""), registro.get("imagen_procesada_file_id", ""), "image/png"),
-        ("POLIGONOS", registro.get("nombre_poligonos", ""), registro.get("imagen_poligonos_file_id", ""), "image/png"),
+        (_tc_guardar_valor_appsheet("ORIGINAL"), registro.get("nombre", ""), registro.get("imagen_original_file_id", ""), registro.get("mime_original", "image/jpeg")),
+        (_tc_guardar_valor_appsheet("INVENTARIO"), registro.get("nombre_inventario", ""), registro.get("imagen_inventario_file_id", ""), "image/png"),
+        (_tc_guardar_valor_appsheet("ANALISIS"), registro.get("nombre_procesada", ""), registro.get("imagen_procesada_file_id", ""), "image/png"),
+        (_tc_guardar_valor_appsheet("POLIGONOS"), registro.get("nombre_poligonos", ""), registro.get("imagen_poligonos_file_id", ""), "image/png"),
     ]
     rows = []
     for tipo, nombre, file_id, mime in evidencias:
@@ -8973,14 +9094,20 @@ def _tg_guardar_regiones_y_zonas(registro, backend_result, uploaded_image, uploa
         tramo = f"Slots {reg['primer_slot']}-{reg['ultimo_slot']}"
         area_m2 = (area_parcela_m2 * float(reg["area_visual_pct"]) / 100.0) if area_parcela_m2 > 0 else 0.0
         rows_crit.append([
-            region_id, aid, pid, f"Región crítica {i}", poly_json,
+            region_id, aid, pid,
+            tr(f"Región crítica {i}", f"Région critique {i}"),
+            poly_json,
             reg["surco"], reg["surco"], tramo,
             round(reg["area_visual_pct"], 4), round(area_m2, 3), nivel,
-            "Tramo seco, débil o vacío", conf, "Pendiente", fecha,
+            tr("Tramo seco, débil o vacío", "Section sèche, faible ou vide"),
+            conf, _tc_guardar_valor_appsheet("Pendiente"), fecha,
         ])
         rows_zonas.append([
-            f"Z-{region_id}", aid, pid, f"Zona dañada {i}", poly_json,
-            round(area_m2, 3), nivel, str(reg["surco"]), "Pendiente", fecha,
+            f"Z-{region_id}", aid, pid,
+            tr(f"Zona dañada {i}", f"Zone affectée {i}"),
+            poly_json,
+            round(area_m2, 3), nivel, str(reg["surco"]),
+            _tc_guardar_valor_appsheet("Pendiente"), fecha,
         ])
 
     _tg_append_rows("RegionesCriticas", rows_crit, 15)
@@ -9005,10 +9132,12 @@ def _tg_guardar_validacion_muestreo(registro, uploaded_name):
         ia = int(float(_tg_valor_fila_inventario(o, ["Slots", "Emplacements"], 0) or 0))
         real = int(float(_tg_valor_fila_inventario(e, ["Slots", "Emplacements"], 0) or 0))
         error = (abs(real - ia) / max(1, ia)) * 100.0
-        tipo_zona = str(st.session_state.get("tc_tipo_zona_validacion", "Inventario") or "Inventario")
-        qr_inicio = str(st.session_state.get("tc_qr_inicio", "") or "").strip() or "PENDIENTE"
-        qr_fin = str(st.session_state.get("tc_qr_fin", "") or "").strip() or "PENDIENTE"
-        obs_val = str(st.session_state.get("tc_observaciones_validacion", "") or "").strip() or "Sin observaciones"
+        tipo_zona = _tc_guardar_valor_appsheet(
+            st.session_state.get("tc_tipo_zona_validacion", "Inventario") or "Inventario"
+        )
+        qr_inicio = str(st.session_state.get("tc_qr_inicio", "") or "").strip() or _tc_guardar_valor_appsheet("PENDIENTE")
+        qr_fin = str(st.session_state.get("tc_qr_fin", "") or "").strip() or _tc_guardar_valor_appsheet("PENDIENTE")
+        obs_val = str(st.session_state.get("tc_observaciones_validacion", "") or "").strip() or _tc_guardar_valor_appsheet("Sin observaciones")
         rows.append([
             f"VAL-{registro.get('id','')}-{i:03d}",
             registro.get("id", ""), registro.get("parcela_id", ""), str(surco),
@@ -9082,9 +9211,13 @@ def _tg_guardar_captura_base(uploaded_images, altura_vuelo=0.0):
         "nombre": master_name,
     })
 
-    metodo_union = str(st.session_state.get("tc_metodo_union", "Lote de fotografías") or "Lote de fotografías")
-    estado_captura = str(st.session_state.get("tc_estado_captura", "Creada") or "Creada")
-    obs_captura = str(st.session_state.get("tc_observaciones_captura", "") or "").strip() or "Sin observaciones"
+    metodo_union = _tc_guardar_valor_appsheet(
+        st.session_state.get("tc_metodo_union", "Lote de fotografías") or "Lote de fotografías"
+    )
+    estado_captura = _tc_guardar_valor_appsheet(
+        st.session_state.get("tc_estado_captura", "Creada") or "Creada"
+    )
+    obs_captura = str(st.session_state.get("tc_observaciones_captura", "") or "").strip() or _tc_guardar_valor_appsheet("Sin observaciones")
 
     _tg_append_rows("CapturasBase", [[
         captura_id, pid, fecha_cap, len(uploaded_images), master_file_id,
@@ -9094,13 +9227,17 @@ def _tg_guardar_captura_base(uploaded_images, altura_vuelo=0.0):
 
     # También registra el vuelo base para que la hoja Vuelos no quede vacía.
     angulo = str(st.session_state.get("tc_angulo_camara", "Nadir / 90°") or "Nadir / 90°")
-    recorrido = str(st.session_state.get("tc_recorrido_vuelo", "Parcela completa") or "Parcela completa")
-    kml = str(st.session_state.get("tc_kml_file_id", "") or "").strip() or "PENDIENTE"
-    estado_vuelo = str(st.session_state.get("tc_estado_vuelo", "Completado") or "Completado")
-    obs_vuelo = str(st.session_state.get("tc_observaciones_vuelo", "") or "").strip() or "Sin observaciones"
+    recorrido = _tc_guardar_valor_appsheet(
+        st.session_state.get("tc_recorrido_vuelo", "Parcela completa") or "Parcela completa"
+    )
+    kml = str(st.session_state.get("tc_kml_file_id", "") or "").strip() or _tc_guardar_valor_appsheet("PENDIENTE")
+    estado_vuelo = _tc_guardar_valor_appsheet(
+        st.session_state.get("tc_estado_vuelo", "Completado") or "Completado"
+    )
+    obs_vuelo = str(st.session_state.get("tc_observaciones_vuelo", "") or "").strip() or _tc_guardar_valor_appsheet("Sin observaciones")
 
     _tg_append_rows("Vuelos", [[
-        vuelo_id, pid, "PARCELA_COMPLETA", "Vuelo base", fecha_cap,
+        vuelo_id, pid, "PARCELA_COMPLETA", tr("Vuelo base", "Vol de base"), fecha_cap,
         float(altura_vuelo or 0.0), angulo, recorrido, kml,
         estado_vuelo, obs_vuelo,
     ]], 11)
@@ -9139,14 +9276,16 @@ def _tg_guardar_segundo_vuelo_nivel2(
     except Exception:
         fecha_txt = str(fecha_vuelo or ahora.date().isoformat())
 
-    kml_txt = str(kml_file_id or "").strip() or "PENDIENTE"
-    obs_vuelo = str(observaciones_vuelo or "").strip() or "Sin observaciones"
+    kml_txt = str(kml_file_id or "").strip() or _tc_guardar_valor_appsheet("PENDIENTE")
+    obs_vuelo = str(observaciones_vuelo or "").strip() or _tc_guardar_valor_appsheet("Sin observaciones")
 
     _tg_append_rows("Vuelos", [[
-        vuelo_id, pid, region_id, str(tipo_vuelo or "Segundo vuelo"), fecha_txt,
-        float(altura_m or 0.0), str(angulo_camara or "Sin registrar"),
-        str(recorrido or "Sin registrar"), kml_txt,
-        str(estado_vuelo or "Completado"), obs_vuelo,
+        vuelo_id, pid, region_id,
+        _tc_guardar_valor_appsheet(tipo_vuelo or "Segundo vuelo"), fecha_txt,
+        float(altura_m or 0.0),
+        str(angulo_camara or _tc_guardar_valor_appsheet("Sin registrar")),
+        str(recorrido or _tc_guardar_valor_appsheet("Sin registrar")), kml_txt,
+        _tc_guardar_valor_appsheet(estado_vuelo or "Completado"), obs_vuelo,
     ]], 11)
 
     evidencias_rows = []
@@ -9158,7 +9297,9 @@ def _tg_guardar_segundo_vuelo_nivel2(
         )
         evidencias_rows.append([
             f"EVS-{vuelo_id}-{idx:03d}", vuelo_id, region_id, pid,
-            "Segundo vuelo", float(altura_m or 0.0), str(angulo_camara or "Sin registrar"),
+            _tc_guardar_valor_appsheet("Segundo vuelo"),
+            float(altura_m or 0.0),
+            str(angulo_camara or _tc_guardar_valor_appsheet("Sin registrar")),
             nombre, file_id, fecha_txt, obs_vuelo,
         ])
     _tg_append_rows("EvidenciasSeguimiento", evidencias_rows, 11)
@@ -9166,17 +9307,17 @@ def _tg_guardar_segundo_vuelo_nivel2(
     # Todos los campos de AnalisisNivel2 se llenan desde el formulario.
     _tg_append_rows("AnalisisNivel2", [[
         analisis2_id, region_id, pid, fecha_txt,
-        nivel2.get("CoberturaIrregular", "No determinado"),
-        nivel2.get("DiferenciasColor", "No determinado"),
-        nivel2.get("PerdidaContinuidad", "No determinado"),
-        nivel2.get("SectoresSecos", "No determinado"),
-        nivel2.get("FallaRiegoVisible", "No determinado"),
-        nivel2.get("DanoLocalizado", "No determinado"),
-        nivel2.get("PlagasEnfermedadesVisibles", "No determinado"),
-        nivel2.get("CondicionSuelo", "Sin registrar"),
+        _tc_guardar_valor_appsheet(nivel2.get("CoberturaIrregular", "No determinado")),
+        _tc_guardar_valor_appsheet(nivel2.get("DiferenciasColor", "No determinado")),
+        _tc_guardar_valor_appsheet(nivel2.get("PerdidaContinuidad", "No determinado")),
+        _tc_guardar_valor_appsheet(nivel2.get("SectoresSecos", "No determinado")),
+        _tc_guardar_valor_appsheet(nivel2.get("FallaRiegoVisible", "No determinado")),
+        _tc_guardar_valor_appsheet(nivel2.get("DanoLocalizado", "No determinado")),
+        _tc_guardar_valor_appsheet(nivel2.get("PlagasEnfermedadesVisibles", "No determinado")),
+        str(nivel2.get("CondicionSuelo", "") or _tc_guardar_valor_appsheet("Sin registrar")),
         float(nivel2.get("Confianza", 0.0) or 0.0),
-        nivel2.get("RequiereRevisionAgronomica", "Sí"),
-        str(nivel2.get("Observaciones", "") or "Sin observaciones"),
+        _tc_guardar_valor_appsheet(nivel2.get("RequiereRevisionAgronomica", "Sí")),
+        str(nivel2.get("Observaciones", "") or _tc_guardar_valor_appsheet("Sin observaciones")),
     ]], 15)
 
     return {
@@ -9330,6 +9471,33 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
         else {}
     ) or {}
 
+    # --------------------------------------------------------
+    # IDIOMA DEL REGISTRO QUE SE GUARDA
+    # --------------------------------------------------------
+    _nivel_guardado = tr_diag_texto(
+        backend_result.get("nivel_afectacion_visual", "No determinado")
+        or "No determinado"
+    )
+    _zona_guardada = tr_diag_texto(
+        backend_result.get("zona_mas_afectada", "No determinada")
+        or "No determinada"
+    )
+    _diagnostico_guardado = tr_diag_texto(
+        backend_result.get("diagnostico_visual", "") or ""
+    )
+    _causas_guardadas = _tc_guardar_lista_idioma(
+        backend_result.get("causas_probables", []) or []
+    )
+    _explicacion_guardada = tr_diag_texto(
+        backend_result.get("explicacion_nutrientes", "") or ""
+    )
+    _recomendaciones_guardadas = _tc_guardar_lista_idioma(
+        backend_result.get("recomendaciones_iniciales", []) or []
+    )
+    _nota_guardada = tr_diag_texto(
+        backend_result.get("nota_diagnostico", "") or ""
+    )
+
     registro = {
         "id": registro_id,
         "fecha": ahora.isoformat(),
@@ -9365,31 +9533,13 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
         "verde_pct": float(backend_result.get("green_pct", 0.0) or 0.0),
         "rojo_pct": float(backend_result.get("red_pct", 0.0) or 0.0),
         "amarillo_pct": float(analisis.get("amarillo_pct", 0.0) or 0.0),
-        "nivel_visual": str(
-            backend_result.get(
-                "nivel_afectacion_visual",
-                "No determinado",
-            ) or "No determinado"
-        ),
-        "zona_mas_afectada": str(
-            backend_result.get(
-                "zona_mas_afectada",
-                "No determinada",
-            ) or "No determinada"
-        ),
-        "diagnostico_visual": str(
-            backend_result.get("diagnostico_visual", "") or ""
-        ),
-        "causas_probables":
-            backend_result.get("causas_probables", []) or [],
-        "explicacion_nutrientes": str(
-            backend_result.get("explicacion_nutrientes", "") or ""
-        ),
-        "recomendaciones":
-            backend_result.get("recomendaciones_iniciales", []) or [],
-        "nota_diagnostico": str(
-            backend_result.get("nota_diagnostico", "") or ""
-        ),
+        "nivel_visual": _nivel_guardado,
+        "zona_mas_afectada": _zona_guardada,
+        "diagnostico_visual": _diagnostico_guardado,
+        "causas_probables": _causas_guardadas,
+        "explicacion_nutrientes": _explicacion_guardada,
+        "recomendaciones": _recomendaciones_guardadas,
+        "nota_diagnostico": _nota_guardada,
     }
 
     # 1) HistorialTerroCore A:P existente.
