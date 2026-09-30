@@ -8679,6 +8679,29 @@ def _tg_normalizar_parcela(valor):
     return raw
 
 
+def _tg_nombre_parcela_guardado(valor):
+    """
+    Nombre de parcela que se guarda en Google Sheets/AppSheet.
+
+    Ejemplos:
+      ES: Parcela 1
+      FR: Parcelle 1
+
+    No modifica el ID técnico de la parcela ni la lógica de imágenes.
+    """
+    nombre = _tg_normalizar_parcela(valor)
+
+    if st.session_state.get("idioma_terrocore", "ES") != "FR":
+        return nombre
+
+    # Si ya viene en francés, conservarlo.
+    if re.match(r"(?i)^parcelle\b", nombre):
+        return nombre
+
+    # Traducir únicamente el prefijo genérico, sin alterar nombres propios.
+    return re.sub(r"(?i)^parcela\b", "Parcelle", nombre, count=1)
+
+
 def _tg_nombre_seguro(valor):
     """Nombre apto para Drive/AppSheet: letras, números y guion bajo."""
     import unicodedata
@@ -8837,8 +8860,9 @@ def _tg_guardar_en_hoja_parcelas(registro):
     spreadsheet_id = _secret_text("GSHEET_ID")
     hoja = "Parcelas"
 
-    parcela = _tg_normalizar_parcela(registro.get("parcela", ""))
-    parcela_id = registro.get("parcela_id") or _tg_parcela_id(parcela)
+    parcela_base = _tg_normalizar_parcela(registro.get("parcela", ""))
+    parcela = _tg_nombre_parcela_guardado(parcela_base)
+    parcela_id = registro.get("parcela_id") or _tg_parcela_id(parcela_base)
 
     rancho = str(st.session_state.get("tc_rancho_vinedo", "") or "").strip() or _tc_guardar_valor_appsheet("Sin registrar")
     kml = str(st.session_state.get("tc_kml_file_id", "") or "").strip() or _tc_guardar_valor_appsheet("PENDIENTE")
@@ -9177,6 +9201,7 @@ def _tg_guardar_captura_base(uploaded_images, altura_vuelo=0.0):
     from datetime import datetime, timezone
     ahora = datetime.now(timezone.utc)
     parcela = _tg_normalizar_parcela(st.session_state.get("tc_parcela_nombre", ""))
+    parcela_guardada = _tg_nombre_parcela_guardado(parcela)
     pid = _tg_parcela_id(parcela)
     captura_id = f"CB{ahora.strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:6].upper()}"
     vuelo_id = f"VU{ahora.strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:6].upper()}"
@@ -9206,7 +9231,7 @@ def _tg_guardar_captura_base(uploaded_images, altura_vuelo=0.0):
     _tg_guardar_en_hoja_parcelas({
         "id": captura_id,
         "parcela_id": pid,
-        "parcela": parcela,
+        "parcela": parcela_guardada,
         "fecha": ahora.isoformat(),
         "nombre": master_name,
     })
@@ -9342,6 +9367,7 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
     parcela = _tg_normalizar_parcela(
         st.session_state.get("tc_parcela_nombre", "")
     )
+    parcela_guardada = _tg_nombre_parcela_guardado(parcela)
 
     ahora = datetime.now(timezone.utc)
 
@@ -9510,7 +9536,10 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
         "nombre_poligonos": nombre_poligonos,
         "mime_original": uploaded_image.type or "image/jpeg",
         "metodo": backend_result.get("metodo", "opencv-v2-straight-grid-polygons"),
-        "parcela": parcela,
+        # Nombre visible en Sheets/AppSheet según el idioma.
+        "parcela": parcela_guardada,
+
+        # ID estable: no cambia entre ES y FR.
         "parcela_id": _tg_parcela_id(parcela),
 
         "imagen_original_file_id": original_file_id,
