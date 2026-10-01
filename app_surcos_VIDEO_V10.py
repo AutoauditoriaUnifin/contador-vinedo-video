@@ -10602,85 +10602,113 @@ def _tc_canvas_resultado_a_pil(canvas_result, base_display, full_size):
     return composed.convert("RGB")
 
 
-def _tc_aplicar_borrador_lineas_automaticas(
+def _tc_aplicar_borrador_sin_frangas(
     canvas_result,
     base_display,
-    imagen_actual_full,
-    imagen_original_full,
+    base_full,
+    original_full,
+    full_size,
 ):
     """
-    Borra manualmente marcas automáticas ya "horneadas" en una imagen procesada.
+    Convierte el trazo MAGENTA temporal del borrador en una máscara.
 
-    El usuario pinta sobre la línea que quiere quitar con una brocha magenta.
-    Esta función convierte esa brocha en máscara y RESTAURA únicamente esos
-    píxeles desde la fotografía original, dejando intacto el resto del análisis.
+    IMPORTANTE:
+    - El magenta NO se guarda.
+    - No se guarda canvas_result como imagen final.
+    - Solo se restauran desde la fotografía original los píxeles pintados
+      por el usuario.
+    - Todo lo demás del resultado procesado permanece intacto.
 
-    Importante: no recalcula surcos, slots, porcentajes ni polígonos; solo corrige
-    visualmente la imagen procesada.
+    Devuelve:
+        (PIL corregida, cantidad_pixeles_restaurados)
     """
-    actual = _tc_editor_a_pil(imagen_actual_full)
-    original = _tc_editor_a_pil(imagen_original_full)
+    if canvas_result is None or canvas_result.image_data is None:
+        return None, 0
 
-    if actual is None or original is None:
-        return None
+    data = np.asarray(canvas_result.image_data).astype(np.uint8)
 
-    if original.size != actual.size:
-        original = original.resize(actual.size, Image.Resampling.LANCZOS)
+    if data.ndim != 3 or data.shape[2] not in (3, 4):
+        return None, 0
 
-    # Obtener exactamente lo que se ve en el canvas a resolución de pantalla.
-    marcado = _tc_canvas_resultado_a_pil(
-        canvas_result,
-        base_display,
-        base_display.size,
+    canvas_rgb = data[:, :, :3]
+
+    # Detectar solamente el trazo temporal #FF00FF.
+    r = canvas_rgb[:, :, 0].astype(np.int16)
+    g = canvas_rgb[:, :, 1].astype(np.int16)
+    b = canvas_rgb[:, :, 2].astype(np.int16)
+
+    mask_color = (
+        (r >= 175)
+        & (b >= 175)
+        & (g <= 175)
+        & ((r + b) >= (2 * g + 120))
     )
-    if marcado is None:
-        return None
 
-    arr_base = np.asarray(base_display.convert("RGB"), dtype=np.int16)
-    arr_marc = np.asarray(marcado.convert("RGB"), dtype=np.int16)
+    # Si el canvas incluye la imagen de fondo, exigir además que el píxel
+    # haya cambiado respecto al resultado actual. Esto evita borrar por
+    # accidente una zona de la fotografía que ya fuera magenta.
+    try:
+        base_disp_arr = np.asarray(base_display.convert("RGB")).astype(np.int16)
 
-    # La goma usa magenta intenso (#FF00FF). Detectamos solo la pintura nueva,
-    # evitando confundir rojos/verdes/azules del análisis con el borrador.
-    diferencia = np.max(np.abs(arr_marc - arr_base), axis=2)
-    r = arr_marc[:, :, 0]
-    g = arr_marc[:, :, 1]
-    b = arr_marc[:, :, 2]
+        if base_disp_arr.shape[:2] == canvas_rgb.shape[:2]:
+            diff = np.max(
+                np.abs(canvas_rgb.astype(np.int16) - base_disp_arr),
+                axis=2,
+            )
+            mask_color = mask_color & (diff >= 20)
+    except Exception:
+        pass
 
-    magenta = (
-        (r >= 145)
-        & (b >= 145)
-        & (g <= 205)
-        & ((r - g) >= 25)
-        & ((b - g) >= 25)
-    )
-    mascara = (diferencia >= 12) & magenta
+    mask = (mask_color.astype(np.uint8) * 255)
 
-    if not np.any(mascara):
-        return None
+    if not np.any(mask):
+        return None, 0
 
-    # Cerrar pequeños huecos de antialiasing sin ampliar de forma agresiva.
-    mascara_u8 = (mascara.astype(np.uint8) * 255)
-    mascara_u8 = cv2.morphologyEx(
-        mascara_u8,
-        cv2.MORPH_CLOSE,
-        np.ones((3, 3), np.uint8),
+    # Cubrir también el antialias/bordes de la pincelada.
+    mask = cv2.dilate(
+        mask,
+        np.ones((5, 5), dtype=np.uint8),
         iterations=1,
     )
 
-    # Llevar la máscara a la resolución original de la imagen.
-    mascara_full = cv2.resize(
-        mascara_u8,
-        actual.size,
+    full_w, full_h = int(full_size[0]), int(full_size[1])
+
+    mask_full = cv2.resize(
+        mask,
+        (full_w, full_h),
         interpolation=cv2.INTER_NEAREST,
-    ) > 0
+    )
 
-    arr_actual = np.asarray(actual.convert("RGB"), dtype=np.uint8).copy()
-    arr_original = np.asarray(original.convert("RGB"), dtype=np.uint8)
+    base = _tc_editor_a_pil(base_full)
+    original = _tc_editor_a_pil(original_full)
 
-    # Restaurar fondo original ÚNICAMENTE donde pasó la goma.
-    arr_actual[mascara_full] = arr_original[mascara_full]
+    if base is None or original is None:
+        return None, 0
 
-    return Image.fromarray(arr_actual, mode="RGB")
+    if base.size != (full_w, full_h):
+        base = base.resize(
+            (full_w, full_h),
+            Image.Resampling.LANCZOS,
+        )
+
+    if original.size != (full_w, full_h):
+        original = original.resize(
+            (full_w, full_h),
+            Image.Resampling.LANCZOS,
+        )
+
+    base_arr = np.asarray(base.convert("RGB")).copy()
+    original_arr = np.asarray(original.convert("RGB"))
+
+    seleccion = mask_full > 0
+
+    # AQUÍ ocurre el borrado real:
+    # resultado procesado + píxeles originales únicamente en la máscara.
+    base_arr[seleccion] = original_arr[seleccion]
+
+    limpia = Image.fromarray(base_arr, mode="RGB")
+
+    return limpia, int(np.count_nonzero(seleccion))
 
 
 def _tc_editor_manual_imagen(
@@ -10693,10 +10721,6 @@ def _tc_editor_manual_imagen(
 ):
     """
     Editor visual manual para Inventario, Análisis verde/rojo y Polígonos.
-
-    Incluye un BORRADOR DE LÍNEAS AUTOMÁTICAS: el usuario pinta encima de
-    cualquier línea/marca que se salió de la parcela y el sistema restaura
-    solamente esa zona desde la fotografía original.
 
     Devuelve una PIL corregida cuando se pulsa Guardar.
     Si hay FileID, reemplaza el archivo en Drive sin cambiar su ID.
@@ -10750,74 +10774,8 @@ def _tc_editor_manual_imagen(
         key=f"{key}_base",
     )
 
-    c1, c2, c3 = st.columns([1.35, 1.0, 1.0])
-
-    opcion_borrador = tr(
-        "🧽 Borrador de líneas automáticas",
-        "🧽 Gomme des lignes automatiques",
-    )
-
-    with c1:
-        herramienta = st.selectbox(
-            tr("Herramienta", "Outil"),
-            [
-                opcion_borrador,
-                tr("Línea", "Ligne"),
-                tr("Dibujo libre", "Dessin libre"),
-                tr("Rectángulo", "Rectangle"),
-                tr("Círculo", "Cercle"),
-                tr("Punto", "Point"),
-                tr("Polígono", "Polygone"),
-            ],
-            key=f"{key}_tool",
-        )
-
-    modo_borrador = herramienta == opcion_borrador
-
-    with c2:
-        if modo_borrador:
-            st.markdown(
-                tr(
-                    "**Borrador activo**  \nPinta sobre la línea que quieres quitar.",
-                    "**Gomme active**  \nPeignez sur la ligne à supprimer.",
-                )
-            )
-            color = "#FF00FF"
-        else:
-            color = st.color_picker(
-                tr("Color", "Couleur"),
-                value=color_inicial,
-                key=f"{key}_color",
-            )
-
-    with c3:
-        grosor_default = 12 if modo_borrador else 5
-        grosor = st.slider(
-            tr("Grosor", "Épaisseur"),
-            min_value=1,
-            max_value=40,
-            value=grosor_default,
-            key=f"{key}_stroke",
-        )
-
-    usar_original = (
-        base_opcion.startswith("Imagen original")
-        or base_opcion.startswith("Image originale")
-    )
-
-    # El borrador SIEMPRE trabaja sobre el resultado actual y recupera el fondo
-    # desde la imagen original. Así sí puede quitar una línea automática ya dibujada.
-    if modo_borrador:
-        base_full = actual.copy()
-        if usar_original:
-            st.info(
-                tr(
-                    "El borrador trabaja sobre Resultado actual; usaré esa base automáticamente.",
-                    "La gomme travaille sur le résultat actuel ; cette base sera utilisée automatiquement.",
-                )
-            )
-    else:
-        base_full = original.copy() if usar_original else actual.copy()
+    usar_original = base_opcion.startswith("Imagen original") or base_opcion.startswith("Image originale")
+    base_full = original.copy() if usar_original else actual.copy()
 
     max_w = 950
     full_w, full_h = base_full.size
@@ -10830,43 +10788,118 @@ def _tc_editor_manual_imagen(
         Image.Resampling.LANCZOS,
     )
 
+    c1, c2, c3 = st.columns([1.2, 1.0, 1.0])
+
+    borrador_label = tr(
+        "🧽 Borrador de líneas automáticas",
+        "🧽 Gomme des lignes automatiques",
+    )
+
+    with c1:
+        herramienta = st.selectbox(
+            tr("Herramienta", "Outil"),
+            [
+                tr("Línea", "Ligne"),
+                tr("Dibujo libre", "Dessin libre"),
+                tr("Rectángulo", "Rectangle"),
+                tr("Círculo", "Cercle"),
+                tr("Punto", "Point"),
+                tr("Polígono", "Polygone"),
+                borrador_label,
+            ],
+            key=f"{key}_tool",
+        )
+
+    es_borrador = herramienta == borrador_label
+
+    with c2:
+        if es_borrador:
+            # Color TEMPORAL de selección. Nunca llega a Drive/AppSheet.
+            color = "#FF00FF"
+            st.markdown(
+                tr(
+                    "**Borrador activo**",
+                    "**Gomme active**",
+                )
+            )
+        else:
+            color = st.color_picker(
+                tr("Color", "Couleur"),
+                value=color_inicial,
+                key=f"{key}_color",
+            )
+
+    with c3:
+        if es_borrador:
+            grosor = st.slider(
+                tr("Grosor del borrador", "Épaisseur de la gomme"),
+                min_value=5,
+                max_value=80,
+                value=24,
+                key=f"{key}_eraser_stroke",
+            )
+        else:
+            grosor = st.slider(
+                tr("Grosor", "Épaisseur"),
+                min_value=1,
+                max_value=30,
+                value=5,
+                key=f"{key}_stroke",
+            )
+
     modos = {
-        opcion_borrador: "freedraw",
         tr("Línea", "Ligne"): "line",
         tr("Dibujo libre", "Dessin libre"): "freedraw",
         tr("Rectángulo", "Rectangle"): "rect",
         tr("Círculo", "Cercle"): "circle",
         tr("Punto", "Point"): "point",
         tr("Polígono", "Polygone"): "polygon",
+        borrador_label: "freedraw",
     }
     drawing_mode = modos.get(herramienta, "line")
 
-    if modo_borrador:
-        st.success(
+    # El borrador SIEMPRE parte del resultado actual.
+    # La foto original se usa únicamente como fuente para restaurar.
+    if es_borrador:
+        base_full = actual.copy()
+
+        full_w, full_h = base_full.size
+        scale = min(1.0, max_w / float(max(1, full_w)))
+        disp_w = max(1, int(round(full_w * scale)))
+        disp_h = max(1, int(round(full_h * scale)))
+
+        base_display = base_full.resize(
+            (disp_w, disp_h),
+            Image.Resampling.LANCZOS,
+        )
+
+    if es_borrador:
+        st.info(
             tr(
-                "🧽 Pasa la brocha magenta SOLO sobre las líneas que se salen de la parcela. "
-                "Al guardar, el magenta NO queda en la imagen: esa zona se restaura con la fotografía original.",
-                "🧽 Passez le pinceau magenta UNIQUEMENT sur les lignes qui sortent de la parcelle. "
-                "À l’enregistrement, le magenta disparaît : cette zone est restaurée avec la photo originale.",
+                "🧽 Pinta encima de las líneas que quieras eliminar. "
+                "La franja MAGENTA solo sirve para seleccionar: NO se guarda. "
+                "Al aplicar la corrección, esa zona vuelve a mostrar la fotografía original.",
+                "🧽 Peignez sur les lignes à supprimer. "
+                "La bande MAGENTA sert uniquement de sélection : elle n’est PAS enregistrée. "
+                "Lors de l’application, cette zone est restaurée depuis la photo originale.",
             )
         )
     else:
         st.caption(
             tr(
                 "Tip: para quitar todas las marcas automáticas, selecciona "
-                "'Imagen original · redibujar desde cero'. Para mover, ajustar o "
-                "borrar objetos que tú dibujaste, usa el botón de edición de la "
-                "barra del canvas.",
+                "'Imagen original · redibujar desde cero'. Para quitar solo algunas "
+                "líneas usa '🧽 Borrador de líneas automáticas'.",
                 "Astuce : pour retirer toutes les marques automatiques, choisissez "
-                "'Image originale · redessiner'. Pour déplacer, ajuster ou supprimer "
-                "vos objets, utilisez le bouton d’édition de la barre du canvas.",
+                "'Image originale · redessiner'. Pour supprimer seulement certaines "
+                "lignes, utilisez '🧽 Gomme des lignes automatiques'.",
             )
         )
 
     canvas_result = st_canvas(
         fill_color="rgba(30, 110, 245, 0.15)",
         stroke_width=int(grosor),
-        stroke_color=("#FF00FF" if modo_borrador else color),
+        stroke_color=color,
         background_color="#FFFFFF",
         background_image=base_display,
         update_streamlit=True,
@@ -10900,13 +10933,29 @@ def _tc_editor_manual_imagen(
     if not guardar:
         return None
 
-    if modo_borrador:
-        corregida = _tc_aplicar_borrador_lineas_automaticas(
-            canvas_result,
-            base_display,
-            actual,
-            original,
+    if es_borrador:
+        corregida, pixeles_restaurados = _tc_aplicar_borrador_sin_frangas(
+            canvas_result=canvas_result,
+            base_display=base_display,
+            base_full=base_full,
+            original_full=original,
+            full_size=(full_w, full_h),
         )
+
+        if corregida is None or pixeles_restaurados <= 0:
+            st.warning(
+                tr(
+                    "No detecté una selección del borrador. "
+                    "Pinta en magenta sobre la línea que quieras quitar y vuelve a aplicar.",
+                    "Aucune sélection de gomme détectée. "
+                    "Peignez en magenta sur la ligne à supprimer puis appliquez de nouveau.",
+                )
+            )
+            return None
+
+        # IMPORTANTE: 'corregida' YA NO contiene la franja del pincel.
+        # Es la imagen procesada con la zona seleccionada restaurada
+        # desde la fotografía original.
     else:
         corregida = _tc_canvas_resultado_a_pil(
             canvas_result,
@@ -10914,17 +10963,22 @@ def _tc_editor_manual_imagen(
             (full_w, full_h),
         )
 
-    if corregida is None:
-        if modo_borrador:
-            st.warning(
+        if corregida is None:
+            st.error(
                 tr(
-                    "No detecté una pasada del borrador. Pinta sobre la línea con la brocha magenta y vuelve a aplicar.",
-                    "Aucun passage de gomme détecté. Peignez sur la ligne avec le pinceau magenta puis réessayez.",
+                    "No se pudo generar la corrección.",
+                    "Impossible de générer la correction.",
                 )
             )
-        else:
-            st.error(tr("No se pudo generar la corrección.", "Impossible de générer la correction."))
-        return None
+            return None
+
+    if es_borrador:
+        st.success(
+            tr(
+                "✅ Borrado aplicado sin guardar la franja de selección.",
+                "✅ Effacement appliqué sans enregistrer la bande de sélection.",
+            )
+        )
 
     if file_id:
         try:
@@ -10933,20 +10987,12 @@ def _tc_editor_manual_imagen(
                 corregida,
             )
             if ok_drive:
-                if modo_borrador:
-                    st.success(
-                        tr(
-                            "✅ Línea borrada manualmente y guardada en Drive con el mismo FileID.",
-                            "✅ Ligne supprimée manuellement et enregistrée dans Drive avec le même FileID.",
-                        )
+                st.success(
+                    tr(
+                        "✅ Corrección guardada en Drive con el mismo FileID.",
+                        "✅ Correction enregistrée dans Drive avec le même FileID.",
                     )
-                else:
-                    st.success(
-                        tr(
-                            "✅ Corrección guardada en Drive con el mismo FileID.",
-                            "✅ Correction enregistrée dans Drive avec le même FileID.",
-                        )
-                    )
+                )
             else:
                 st.warning(str(info_drive))
         except Exception as exc:
