@@ -143,10 +143,10 @@ def tr_diag_texto(texto):
         "tomar muestras de suelo separadas en zona afectada y zona sana": "prélever séparément des échantillons de sol dans la zone affectée et la zone saine",
         "considerar análisis foliar para confirmar estado nutricional": "envisager une analyse foliaire pour confirmer l’état nutritionnel",
         "revisar raíces y presencia de plagas o enfermedades": "vérifier les racines ainsi que la présence de ravageurs ou de maladies",
-        "El análisis OpenCV es visual y no identifica nutrientes ni enfermedades por sí solo.": "L’analyse OpenCV est visuelle et n’identifie pas à elle seule les nutriments ni les maladies.",
+        "El análisis OpenCV es visual y no identifica nutrientes ni enfermedades por sí solo.": "El análisis visual no identifica nutrientes ni enfermedades por sí solo.",
         "Revisar en campo los polígonos rojos para distinguir planta seca de faltante real.": "Vérifier sur le terrain les polygones rouges afin de distinguer un plant sec d’un plant réellement manquant.",
         "Comparar la misma parcela en capturas posteriores para confirmar si la afectación persiste.": "Comparer la même parcelle lors de captures ultérieures afin de confirmer si l’affectation persiste.",
-        "Diagnóstico visual automático por OpenCV; confirmar en campo.": "Diagnostic visuel automatique par OpenCV ; à confirmer sur le terrain.",
+        "Diagnóstico visual automático por OpenCV; confirmar en campo.": "Diagnostic visuel automatique ; à confirmer sur le terrain.",
         "Diagnóstico visual preliminar; confirmar en campo.": "Diagnostic visuel préliminaire ; à confirmer sur le terrain.",
         "La fotografía por sí sola no confirma una deficiencia nutricional específica; confirma con revisión de campo, análisis de suelo y, de ser posible, análisis foliar.": "La photographie seule ne confirme pas une carence nutritionnelle spécifique ; confirmez-la par une inspection sur le terrain, une analyse du sol et, si possible, une analyse foliaire.",
     }
@@ -172,11 +172,37 @@ def tr_diag_texto(texto):
         total, surcos, rojos, pct = m_cv.groups()
         pct = pct.replace(".", ",")
         return (
-            f"OpenCV a évalué {total} positions sur {surcos} rangs rectilignes. "
-            f"Il a détecté {rojos} positions sèches, faibles ou vides ({pct} % en rouge). "
+            f"{total} positions ont été évaluées sur {surcos} rangs rectilignes. "
+            f"{rojos} positions sèches, faibles ou vides ont été détectées ({pct} % en rouge). "
             "Les polygones rouges se limitent aux sections affectées détectées sur le même rang."
         )
 
+    return t
+
+
+def _tc_quitar_nombre_motor_del_analisis(texto):
+    """
+    Quita referencias a OpenCV SOLO de los textos descriptivos del análisis.
+    El campo 'metodo' conserva OpenCV para identificar el motor utilizado.
+    """
+    t = str(texto or "").strip()
+    if not t:
+        return ""
+
+    # Resúmenes ES/FR antiguos.
+    t = re.sub(r"^OpenCV evaluó\s+", "Se evaluaron ", t, flags=re.I)
+    t = re.sub(r"^OpenCV a évalué\s+", "Ont été évaluées ", t, flags=re.I)
+
+    # Referencias directas al motor en explicaciones/notas.
+    t = re.sub(r"\bEl análisis OpenCV es visual\b", "El análisis es visual", t, flags=re.I)
+    t = re.sub(r"\bL’analyse OpenCV est visuelle\b", "L’analyse est visuelle", t, flags=re.I)
+    t = re.sub(r"\bpor OpenCV\b", "", t, flags=re.I)
+    t = re.sub(r"\bpar OpenCV\b", "", t, flags=re.I)
+    t = re.sub(r"\bOpenCV\b", "", t, flags=re.I)
+
+    # Limpieza de espacios/puntuación que pudiera quedar al retirar el nombre.
+    t = re.sub(r"\s+([,.;:])", r"\1", t)
+    t = re.sub(r"\s{2,}", " ", t).strip()
     return t
 
 
@@ -8548,6 +8574,7 @@ def _tc_analyze_health_openai(uploaded_image, rows):
         "metodo": "gemini-only-slot-health",
         "confidence": float(visual.get("confidence", 0.0)),
         "health_map": health_map,
+        "rows": rows,
     }
     result["backend"] = {
         "metodo": "gemini-only-slot-health",
@@ -9419,11 +9446,23 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
 
     _nivel_guardado = tr_diag_texto(backend_result.get("nivel_afectacion_visual", "No determinado") or "No determinado")
     _zona_guardada = tr_diag_texto(backend_result.get("zona_mas_afectada", "No determinada") or "No determinada")
-    _diagnostico_guardado = tr_diag_texto(backend_result.get("diagnostico_visual", "") or "")
-    _causas_guardadas = _tc_guardar_lista_idioma(backend_result.get("causas_probables", []) or [])
-    _explicacion_guardada = tr_diag_texto(backend_result.get("explicacion_nutrientes", "") or "")
-    _recomendaciones_guardadas = _tc_guardar_lista_idioma(backend_result.get("recomendaciones_iniciales", []) or [])
-    _nota_guardada = tr_diag_texto(backend_result.get("nota_diagnostico", "") or "")
+    _diagnostico_guardado = _tc_quitar_nombre_motor_del_analisis(
+        tr_diag_texto(backend_result.get("diagnostico_visual", "") or "")
+    )
+    _causas_guardadas = [
+        _tc_quitar_nombre_motor_del_analisis(x)
+        for x in _tc_guardar_lista_idioma(backend_result.get("causas_probables", []) or [])
+    ]
+    _explicacion_guardada = _tc_quitar_nombre_motor_del_analisis(
+        tr_diag_texto(backend_result.get("explicacion_nutrientes", "") or "")
+    )
+    _recomendaciones_guardadas = [
+        _tc_quitar_nombre_motor_del_analisis(x)
+        for x in _tc_guardar_lista_idioma(backend_result.get("recomendaciones_iniciales", []) or [])
+    ]
+    _nota_guardada = _tc_quitar_nombre_motor_del_analisis(
+        tr_diag_texto(backend_result.get("nota_diagnostico", "") or "")
+    )
 
     registro = {
         "id": registro_id,
@@ -10207,8 +10246,8 @@ def _ocv2_analyze_health(uploaded_image, rows):
 
     zona = _tg_zone_fallback(pil, visual.get("red_xy", []))
     diagnostico = (
-        f"OpenCV evaluó {visual['total_slots']} posiciones sobre {len(rows)} surcos rectos. "
-        f"Detectó {visual['red_slots']} posiciones secas, débiles o vacías ({red_pct:.1f}% rojo). "
+        f"Se evaluaron {visual['total_slots']} posiciones sobre {len(rows)} surcos rectos. "
+        f"Se detectaron {visual['red_slots']} posiciones secas, débiles o vacías ({red_pct:.1f}% rojo). "
         "Los polígonos rojos se limitan a los tramos afectados detectados sobre el mismo surco."
     )
 
@@ -10225,14 +10264,14 @@ def _ocv2_analyze_health(uploaded_image, rows):
         "result_url": "",
         "zona_mas_afectada": zona,
         "nivel_afectacion_visual": nivel,
-        "diagnostico_visual": diagnostico,
+        "diagnostico_visual": _tc_quitar_nombre_motor_del_analisis(diagnostico),
         "causas_probables": [],
-        "explicacion_nutrientes": "El análisis OpenCV es visual y no identifica nutrientes ni enfermedades por sí solo.",
+        "explicacion_nutrientes": "El análisis es visual y no identifica nutrientes ni enfermedades por sí solo.",
         "recomendaciones_iniciales": [
             "Revisar en campo los polígonos rojos para distinguir planta seca de faltante real.",
             "Comparar la misma parcela en capturas posteriores para confirmar si la afectación persiste.",
         ],
-        "nota_diagnostico": "Diagnóstico visual automático por OpenCV; confirmar en campo.",
+        "nota_diagnostico": "Diagnóstico visual automático; confirmar en campo.",
         "detalle_zonas": {},
         "metodo": "opencv-v2-straight-grid-polygons",
         "confidence": float(conf),
@@ -10602,113 +10641,411 @@ def _tc_canvas_resultado_a_pil(canvas_result, base_display, full_size):
     return composed.convert("RGB")
 
 
-def _tc_aplicar_borrador_sin_frangas(
+def _tc_aplicar_borrador_lineas_automaticas(
     canvas_result,
     base_display,
-    base_full,
-    original_full,
-    full_size,
+    imagen_actual_full,
+    imagen_original_full,
 ):
     """
-    Convierte el trazo MAGENTA temporal del borrador en una máscara.
+    Borra manualmente marcas automáticas ya "horneadas" en una imagen procesada.
 
-    IMPORTANTE:
-    - El magenta NO se guarda.
-    - No se guarda canvas_result como imagen final.
-    - Solo se restauran desde la fotografía original los píxeles pintados
-      por el usuario.
-    - Todo lo demás del resultado procesado permanece intacto.
+    El usuario pinta sobre la línea que quiere quitar con una brocha magenta.
+    Esta función convierte esa brocha en máscara y RESTAURA únicamente esos
+    píxeles desde la fotografía original, dejando intacto el resto del análisis.
 
-    Devuelve:
-        (PIL corregida, cantidad_pixeles_restaurados)
+    Importante: no recalcula surcos, slots, porcentajes ni polígonos; solo corrige
+    visualmente la imagen procesada.
     """
-    if canvas_result is None or canvas_result.image_data is None:
-        return None, 0
+    actual = _tc_editor_a_pil(imagen_actual_full)
+    original = _tc_editor_a_pil(imagen_original_full)
 
-    data = np.asarray(canvas_result.image_data).astype(np.uint8)
+    if actual is None or original is None:
+        return None
 
-    if data.ndim != 3 or data.shape[2] not in (3, 4):
-        return None, 0
+    if original.size != actual.size:
+        original = original.resize(actual.size, Image.Resampling.LANCZOS)
 
-    canvas_rgb = data[:, :, :3]
-
-    # Detectar solamente el trazo temporal #FF00FF.
-    r = canvas_rgb[:, :, 0].astype(np.int16)
-    g = canvas_rgb[:, :, 1].astype(np.int16)
-    b = canvas_rgb[:, :, 2].astype(np.int16)
-
-    mask_color = (
-        (r >= 175)
-        & (b >= 175)
-        & (g <= 175)
-        & ((r + b) >= (2 * g + 120))
+    # Obtener exactamente lo que se ve en el canvas a resolución de pantalla.
+    marcado = _tc_canvas_resultado_a_pil(
+        canvas_result,
+        base_display,
+        base_display.size,
     )
+    if marcado is None:
+        return None
 
-    # Si el canvas incluye la imagen de fondo, exigir además que el píxel
-    # haya cambiado respecto al resultado actual. Esto evita borrar por
-    # accidente una zona de la fotografía que ya fuera magenta.
-    try:
-        base_disp_arr = np.asarray(base_display.convert("RGB")).astype(np.int16)
+    arr_base = np.asarray(base_display.convert("RGB"), dtype=np.int16)
+    arr_marc = np.asarray(marcado.convert("RGB"), dtype=np.int16)
 
-        if base_disp_arr.shape[:2] == canvas_rgb.shape[:2]:
-            diff = np.max(
-                np.abs(canvas_rgb.astype(np.int16) - base_disp_arr),
-                axis=2,
-            )
-            mask_color = mask_color & (diff >= 20)
-    except Exception:
-        pass
+    # La goma usa magenta intenso (#FF00FF). Detectamos solo la pintura nueva,
+    # evitando confundir rojos/verdes/azules del análisis con el borrador.
+    diferencia = np.max(np.abs(arr_marc - arr_base), axis=2)
+    r = arr_marc[:, :, 0]
+    g = arr_marc[:, :, 1]
+    b = arr_marc[:, :, 2]
 
-    mask = (mask_color.astype(np.uint8) * 255)
+    magenta = (
+        (r >= 145)
+        & (b >= 145)
+        & (g <= 205)
+        & ((r - g) >= 25)
+        & ((b - g) >= 25)
+    )
+    mascara = (diferencia >= 12) & magenta
 
-    if not np.any(mask):
-        return None, 0
+    if not np.any(mascara):
+        return None
 
-    # Cubrir también el antialias/bordes de la pincelada.
-    mask = cv2.dilate(
-        mask,
-        np.ones((5, 5), dtype=np.uint8),
+    # Cerrar pequeños huecos de antialiasing sin ampliar de forma agresiva.
+    mascara_u8 = (mascara.astype(np.uint8) * 255)
+    mascara_u8 = cv2.morphologyEx(
+        mascara_u8,
+        cv2.MORPH_CLOSE,
+        np.ones((3, 3), np.uint8),
         iterations=1,
     )
 
-    full_w, full_h = int(full_size[0]), int(full_size[1])
-
-    mask_full = cv2.resize(
-        mask,
-        (full_w, full_h),
+    # Llevar la máscara a la resolución original de la imagen.
+    mascara_full = cv2.resize(
+        mascara_u8,
+        actual.size,
         interpolation=cv2.INTER_NEAREST,
+    ) > 0
+
+    arr_actual = np.asarray(actual.convert("RGB"), dtype=np.uint8).copy()
+    arr_original = np.asarray(original.convert("RGB"), dtype=np.uint8)
+
+    # Restaurar fondo original ÚNICAMENTE donde pasó la goma.
+    arr_actual[mascara_full] = arr_original[mascara_full]
+
+    return Image.fromarray(arr_actual, mode="RGB")
+
+
+def _tc_construir_dibujo_lineas_movibles(rows, full_size, disp_size, offsets=None):
+    """
+    Construye una capa Fabric.js con UNA línea seleccionable por cada surco.
+
+    La foto original queda como fondo limpio. Las líneas cian son únicamente
+    controles visuales para que el usuario pueda seleccionar y ARRRASTRAR el
+    surco completo. Al guardar no se conserva el cian: se reconstruye el
+    análisis verde/rojo con el desplazamiento elegido.
+    """
+    offsets = offsets or {}
+    fw, fh = int(full_size[0]), int(full_size[1])
+    dw, dh = int(disp_size[0]), int(disp_size[1])
+    sx = dw / float(max(1, fw))
+    sy = dh / float(max(1, fh))
+
+    objects = []
+    meta = []
+
+    for idx, row in enumerate(rows or []):
+        pts = _tg_norm_to_px(row.get("points_norm", []), fw, fh)
+        if len(pts) < 2:
+            continue
+
+        a = (float(pts[0][0]), float(pts[0][1]))
+        b = (float(pts[-1][0]), float(pts[-1][1]))
+
+        rid = int(row.get("id", idx + 1) or (idx + 1))
+        off = offsets.get(str(rid), offsets.get(rid, [0.0, 0.0]))
+        try:
+            off_x = float(off[0])
+            off_y = float(off[1])
+        except Exception:
+            off_x = off_y = 0.0
+
+        ax = a[0] * sx + off_x * sx
+        ay = a[1] * sy + off_y * sy
+        bx = b[0] * sx + off_x * sx
+        by = b[1] * sy + off_y * sy
+
+        # Fabric line usa left/top como origen del bounding box cuando
+        # originX/originY son left/top. Normalizamos los extremos para que
+        # mover el objeto produzca un delta limpio.
+        left = min(ax, bx)
+        top = min(ay, by)
+        x1 = ax - left
+        y1 = ay - top
+        x2 = bx - left
+        y2 = by - top
+
+        line_w = max(3.0, float(min(dw, dh)) / 500.0)
+
+        objects.append({
+            "type": "line",
+            "originX": "left",
+            "originY": "top",
+            "left": float(left),
+            "top": float(top),
+            "x1": float(x1),
+            "y1": float(y1),
+            "x2": float(x2),
+            "y2": float(y2),
+            "fill": None,
+            "stroke": "#00E5FF",
+            "strokeWidth": line_w,
+            "strokeLineCap": "round",
+            "strokeLineJoin": "round",
+            "strokeDashArray": None,
+            "scaleX": 1,
+            "scaleY": 1,
+            "angle": 0,
+            "flipX": False,
+            "flipY": False,
+            "opacity": 0.92,
+            "selectable": True,
+            "evented": True,
+            "hasControls": False,
+            "hasBorders": True,
+            "lockScalingX": True,
+            "lockScalingY": True,
+            "lockRotation": True,
+            "lockSkewingX": True,
+            "lockSkewingY": True,
+            "lockMovementX": False,
+            "lockMovementY": False,
+            "visible": True,
+        })
+
+        meta.append({
+            "row_index": int(idx),
+            "row_id": rid,
+            "left": float(left),
+            "top": float(top),
+            "scale_x": sx,
+            "scale_y": sy,
+            "offset_x": off_x,
+            "offset_y": off_y,
+        })
+
+    return {
+        "version": "4.4.0",
+        "objects": objects,
+        "background": "rgba(0,0,0,0)",
+    }, meta
+
+
+def _tc_dibujar_fila_desplazada(draw, row, health_map, full_size, delta_xy):
+    """Dibuja una fila completa con sus segmentos rojo/verde, puntos y etiqueta."""
+    w, h = full_size
+    dx, dy = float(delta_xy[0]), float(delta_xy[1])
+    pts0 = _tg_norm_to_px(row.get("points_norm", []), w, h)
+    if len(pts0) < 2:
+        return
+
+    pts = [(float(p[0]) + dx, float(p[1]) + dy) for p in pts0]
+    a = pts[0]
+    b = pts[-1]
+    line_w = max(2, int(round(min(w, h) / 600)))
+
+    rid = int(row.get("id", 0) or 0)
+    count = int(row.get("slot_count", 0) or 0)
+    red_indices = set(health_map.get(rid, {}).get("red_indices", []))
+    red_indices.update(_tg_clean_indices(row.get("vacant_indices", []), count))
+    red_indices = {i for i in red_indices if 1 <= i <= count}
+
+    # Eje verde completo.
+    draw.line(
+        (a[0], a[1], b[0], b[1]),
+        fill=(25, 220, 55, 255),
+        width=line_w,
     )
 
-    base = _tc_editor_a_pil(base_full)
-    original = _tc_editor_a_pil(original_full)
+    row_spacing = float(row.get("row_spacing_px", 18.0) or 18.0)
+    slot_pitch = float(row.get("slot_pitch_px", 0.0) or 0.0)
+    if slot_pitch <= 0:
+        slot_pitch = float(np.linalg.norm(np.asarray(b) - np.asarray(a))) / max(1, count - 1)
 
-    if base is None or original is None:
-        return None, 0
+    # Segmentos rojos exactamente sobre los slots afectados.
+    if count >= 2:
+        for group in _ocv2_group_consecutive(red_indices):
+            first = max(1, group[0])
+            last = min(count, group[-1])
+            t0 = max(0.0, (first - 1 - 0.45) / max(1, count - 1))
+            t1 = min(1.0, (last - 1 + 0.45) / max(1, count - 1))
+            p0 = _tg_point_on_polyline(pts, t0)
+            p1 = _tg_point_on_polyline(pts, t1)
+            draw.line(
+                (p0[0], p0[1], p1[0], p1[1]),
+                fill=(245, 45, 45, 255),
+                width=max(3, line_w + 1),
+            )
 
-    if base.size != (full_w, full_h):
-        base = base.resize(
-            (full_w, full_h),
-            Image.Resampling.LANCZOS,
+    # Puntos del diagnóstico también se desplazan con la línea.
+    positions0 = _ocv2_slot_positions(row, (w, h))
+    for idx_slot, p in enumerate(positions0, 1):
+        x = float(p[0]) + dx
+        y = float(p[1]) + dy
+        if idx_slot in red_indices:
+            rr = 2.3
+            col = (245, 45, 45, 255)
+        else:
+            rr = 1.6
+            col = (25, 225, 55, 255)
+        draw.ellipse((x-rr, y-rr, x+rr, y+rr), fill=col)
+
+    # Número del surco.
+    font = ImageFont.load_default()
+    top_pt = a if a[1] <= b[1] else b
+    label = f"{rid:02d}"
+    draw.text(
+        (int(top_pt[0]) - 6, max(0, int(top_pt[1]) - 13)),
+        label,
+        fill=(255, 255, 255, 255),
+        font=font,
+        stroke_width=2,
+        stroke_fill=(35, 20, 25, 255),
+    )
+
+
+def _tc_mascara_fila_original(row, full_size):
+    """Máscara estrecha para quitar del análisis la línea/slots/etiqueta viejos."""
+    w, h = full_size
+    mask = np.zeros((h, w), dtype=np.uint8)
+    pts = _tg_norm_to_px(row.get("points_norm", []), w, h)
+    if len(pts) < 2:
+        return mask
+
+    a = tuple(map(float, pts[0]))
+    b = tuple(map(float, pts[-1]))
+    line_w = max(2, int(round(min(w, h) / 600)))
+    thickness = max(5, line_w + 7)
+
+    cv2.line(
+        mask,
+        (int(round(a[0])), int(round(a[1]))),
+        (int(round(b[0])), int(round(b[1]))),
+        255,
+        thickness=thickness,
+        lineType=cv2.LINE_AA,
+    )
+
+    # Restaurar también los puntos del diagnóstico.
+    for p in _ocv2_slot_positions(row, (w, h)):
+        cv2.circle(
+            mask,
+            (int(round(p[0])), int(round(p[1]))),
+            max(5, int(round(line_w * 2.6))),
+            255,
+            -1,
+            lineType=cv2.LINE_AA,
         )
 
-    if original.size != (full_w, full_h):
-        original = original.resize(
-            (full_w, full_h),
-            Image.Resampling.LANCZOS,
+    # Restaurar el pequeño rótulo del surco.
+    top_pt = a if a[1] <= b[1] else b
+    x0 = max(0, int(round(top_pt[0])) - 16)
+    x1 = min(w - 1, int(round(top_pt[0])) + 16)
+    y0 = max(0, int(round(top_pt[1])) - 20)
+    y1 = min(h - 1, int(round(top_pt[1])) + 3)
+    if x1 >= x0 and y1 >= y0:
+        mask[y0:y1+1, x0:x1+1] = 255
+
+    return mask
+
+
+def _tc_aplicar_movimiento_lineas_surco(
+    canvas_result,
+    imagen_procesada_full,
+    imagen_original_full,
+    rows,
+    health_map,
+    initial_meta,
+):
+    """
+    Aplica los desplazamientos de las líneas seleccionables.
+
+    NO recalcula OpenCV. NO cambia slots ni porcentajes. Solo:
+      1) restaura la zona del surco viejo desde la foto original;
+      2) desplaza el eje completo, puntos y segmentos rojo/verde;
+      3) devuelve la imagen procesada corregida.
+    """
+    if canvas_result is None or not getattr(canvas_result, "json_data", None):
+        return None, {}
+
+    actual = _tc_editor_a_pil(imagen_procesada_full)
+    original = _tc_editor_a_pil(imagen_original_full)
+    if actual is None or original is None:
+        return None, {}
+
+    if original.size != actual.size:
+        original = original.resize(actual.size, Image.Resampling.LANCZOS)
+
+    full_w, full_h = actual.size
+    objects = canvas_result.json_data.get("objects", []) or []
+
+    # La herramienta está pensada para NO borrar líneas. Si el usuario quitó
+    # objetos del canvas, no intentamos adivinar qué fila corresponde.
+    if len(objects) != len(initial_meta):
+        return None, {}
+
+    sx = float(initial_meta[0].get("scale_x", 1.0)) if initial_meta else 1.0
+    sy = float(initial_meta[0].get("scale_y", 1.0)) if initial_meta else 1.0
+    sx = sx if abs(sx) > 1e-9 else 1.0
+    sy = sy if abs(sy) > 1e-9 else 1.0
+
+    offsets_final = {}
+    movimientos = []
+
+    for idx, meta in enumerate(initial_meta):
+        obj = objects[idx] or {}
+        if str(obj.get("type", "")) != "line":
+            return None, {}
+
+        moved_left = float(obj.get("left", meta["left"]) or meta["left"])
+        moved_top = float(obj.get("top", meta["top"]) or meta["top"])
+
+        delta_x_display = moved_left - float(meta["left"])
+        delta_y_display = moved_top - float(meta["top"])
+        delta_x = delta_x_display / sx
+        delta_y = delta_y_display / sy
+
+        # Si el usuario escaló/rotó por accidente, ignoramos esas operaciones:
+        # la función solo permite mover la línea completa.
+        delta_x = float(np.clip(delta_x, -full_w, full_w))
+        delta_y = float(np.clip(delta_y, -full_h, full_h))
+
+        rid = int(meta.get("row_id", idx + 1))
+        old_off_x = float(meta.get("offset_x", 0.0) or 0.0)
+        old_off_y = float(meta.get("offset_y", 0.0) or 0.0)
+        new_off_x = old_off_x + delta_x
+        new_off_y = old_off_y + delta_y
+
+        offsets_final[str(rid)] = [new_off_x, new_off_y]
+        movimientos.append((idx, (delta_x, delta_y)))
+
+    # Primero quitar TODOS los gráficos viejos que se van a mover.
+    restaurar_mask = np.zeros((full_h, full_w), dtype=np.uint8)
+    for idx, delta in movimientos:
+        if abs(delta[0]) < 0.35 and abs(delta[1]) < 0.35:
+            continue
+        restaurar_mask = cv2.bitwise_or(
+            restaurar_mask,
+            _tc_mascara_fila_original(rows[idx], (full_w, full_h)),
         )
 
-    base_arr = np.asarray(base.convert("RGB")).copy()
-    original_arr = np.asarray(original.convert("RGB"))
+    arr_actual = np.asarray(actual.convert("RGB"), dtype=np.uint8).copy()
+    arr_original = np.asarray(original.convert("RGB"), dtype=np.uint8)
+    if np.any(restaurar_mask):
+        arr_actual[restaurar_mask > 0] = arr_original[restaurar_mask > 0]
 
-    seleccion = mask_full > 0
+    resultado = Image.fromarray(arr_actual, mode="RGB")
+    draw = ImageDraw.Draw(resultado, "RGBA")
 
-    # AQUÍ ocurre el borrado real:
-    # resultado procesado + píxeles originales únicamente en la máscara.
-    base_arr[seleccion] = original_arr[seleccion]
+    # Volver a dibujar SOLO las filas que realmente se movieron.
+    for idx, delta in movimientos:
+        if abs(delta[0]) < 0.35 and abs(delta[1]) < 0.35:
+            continue
+        _tc_dibujar_fila_desplazada(
+            draw,
+            rows[idx],
+            health_map or {},
+            (full_w, full_h),
+            delta,
+        )
 
-    limpia = Image.fromarray(base_arr, mode="RGB")
-
-    return limpia, int(np.count_nonzero(seleccion))
+    return resultado, offsets_final
 
 
 def _tc_editor_manual_imagen(
@@ -10718,9 +11055,16 @@ def _tc_editor_manual_imagen(
     titulo,
     color_inicial="#FF0000",
     file_id="",
+    line_rows=None,
+    line_health_map=None,
 ):
     """
     Editor visual manual para Inventario, Análisis verde/rojo y Polígonos.
+
+    Incluye: BORRADOR DE LÍNEAS AUTOMÁTICAS y, cuando se pasan las filas de
+    OpenCV, MOVER LÍNEAS DE SURCO. El modo mover presenta cada eje como un
+    objeto seleccionable para arrastrarlo completo; al guardar se reconstruyen
+    el eje verde, los segmentos rojos, puntos y etiqueta en la nueva posición.
 
     Devuelve una PIL corregida cuando se pulsa Guardar.
     Si hay FileID, reemplaza el archivo en Drive sin cambiar su ID.
@@ -10774,8 +11118,95 @@ def _tc_editor_manual_imagen(
         key=f"{key}_base",
     )
 
-    usar_original = base_opcion.startswith("Imagen original") or base_opcion.startswith("Image originale")
-    base_full = original.copy() if usar_original else actual.copy()
+    c1, c2, c3 = st.columns([1.35, 1.0, 1.0])
+
+    opcion_borrador = tr(
+        "🧽 Borrador de líneas automáticas",
+        "🧽 Gomme des lignes automatiques",
+    )
+
+    opcion_mover_lineas = tr(
+        "↔️ Mover líneas de surco",
+        "↔️ Déplacer les lignes de rang",
+    )
+
+    opciones_herramienta = [
+        opcion_borrador,
+        tr("Línea", "Ligne"),
+        tr("Dibujo libre", "Dessin libre"),
+        tr("Rectángulo", "Rectangle"),
+        tr("Círculo", "Cercle"),
+        tr("Punto", "Point"),
+        tr("Polígono", "Polygone"),
+    ]
+    if line_rows:
+        opciones_herramienta.insert(1, opcion_mover_lineas)
+
+    with c1:
+        herramienta = st.selectbox(
+            tr("Herramienta", "Outil"),
+            opciones_herramienta,
+            key=f"{key}_tool",
+        )
+
+    modo_borrador = herramienta == opcion_borrador
+    modo_mover_lineas = bool(line_rows) and herramienta == opcion_mover_lineas
+
+    with c2:
+        if modo_borrador:
+            st.markdown(
+                tr(
+                    "**Borrador activo**  \nPinta sobre la línea que quieres quitar.",
+                    "**Gomme active**  \nPeignez sur la ligne à supprimer.",
+                )
+            )
+            color = "#FF00FF"
+        elif modo_mover_lineas:
+            st.markdown(
+                tr(
+                    "**Mover líneas activo**  \nSelecciona una línea cian y arrástrala completa.",
+                    "**Déplacement actif**  \nSélectionnez une ligne cyan et déplacez-la entière.",
+                )
+            )
+            color = "#00E5FF"
+        else:
+            color = st.color_picker(
+                tr("Color", "Couleur"),
+                value=color_inicial,
+                key=f"{key}_color",
+            )
+
+    with c3:
+        grosor_default = 12 if modo_borrador else (4 if modo_mover_lineas else 5)
+        grosor = st.slider(
+            tr("Grosor", "Épaisseur"),
+            min_value=1,
+            max_value=40,
+            value=grosor_default,
+            key=f"{key}_stroke",
+        )
+
+    usar_original = (
+        base_opcion.startswith("Imagen original")
+        or base_opcion.startswith("Image originale")
+    )
+
+    # El borrador trabaja sobre el resultado actual y restaura desde original.
+    # El modo MOVER trabaja sobre la foto original limpia y dibuja líneas cian
+    # seleccionables por encima; al guardar se reconstruye el diagnóstico real.
+    if modo_borrador:
+        base_full = actual.copy()
+        if usar_original:
+            st.info(
+                tr(
+                    "El borrador trabaja sobre Resultado actual; usaré esa base automáticamente.",
+                    "La gomme travaille sur le résultat actuel ; cette base sera utilisée automatiquement.",
+                )
+            )
+    elif modo_mover_lineas:
+        base_full = original.copy()
+    else:
+        base_full = original.copy() if usar_original else actual.copy()
 
     max_w = 950
     full_w, full_h = base_full.size
@@ -10788,124 +11219,73 @@ def _tc_editor_manual_imagen(
         Image.Resampling.LANCZOS,
     )
 
-    c1, c2, c3 = st.columns([1.2, 1.0, 1.0])
-
-    borrador_label = tr(
-        "🧽 Borrador de líneas automáticas",
-        "🧽 Gomme des lignes automatiques",
-    )
-
-    with c1:
-        herramienta = st.selectbox(
-            tr("Herramienta", "Outil"),
-            [
-                tr("Línea", "Ligne"),
-                tr("Dibujo libre", "Dessin libre"),
-                tr("Rectángulo", "Rectangle"),
-                tr("Círculo", "Cercle"),
-                tr("Punto", "Point"),
-                tr("Polígono", "Polygone"),
-                borrador_label,
-            ],
-            key=f"{key}_tool",
-        )
-
-    es_borrador = herramienta == borrador_label
-
-    with c2:
-        if es_borrador:
-            # Color TEMPORAL de selección. Nunca llega a Drive/AppSheet.
-            color = "#FF00FF"
-            st.markdown(
-                tr(
-                    "**Borrador activo**",
-                    "**Gomme active**",
-                )
-            )
-        else:
-            color = st.color_picker(
-                tr("Color", "Couleur"),
-                value=color_inicial,
-                key=f"{key}_color",
-            )
-
-    with c3:
-        if es_borrador:
-            grosor = st.slider(
-                tr("Grosor del borrador", "Épaisseur de la gomme"),
-                min_value=5,
-                max_value=80,
-                value=24,
-                key=f"{key}_eraser_stroke",
-            )
-        else:
-            grosor = st.slider(
-                tr("Grosor", "Épaisseur"),
-                min_value=1,
-                max_value=30,
-                value=5,
-                key=f"{key}_stroke",
-            )
-
     modos = {
+        opcion_borrador: "freedraw",
+        opcion_mover_lineas: "freedraw",
         tr("Línea", "Ligne"): "line",
         tr("Dibujo libre", "Dessin libre"): "freedraw",
         tr("Rectángulo", "Rectangle"): "rect",
         tr("Círculo", "Cercle"): "circle",
         tr("Punto", "Point"): "point",
         tr("Polígono", "Polygone"): "polygon",
-        borrador_label: "freedraw",
     }
     drawing_mode = modos.get(herramienta, "line")
 
-    # El borrador SIEMPRE parte del resultado actual.
-    # La foto original se usa únicamente como fuente para restaurar.
-    if es_borrador:
-        base_full = actual.copy()
-
-        full_w, full_h = base_full.size
-        scale = min(1.0, max_w / float(max(1, full_w)))
-        disp_w = max(1, int(round(full_w * scale)))
-        disp_h = max(1, int(round(full_h * scale)))
-
-        base_display = base_full.resize(
+    initial_drawing = None
+    line_initial_meta = []
+    if modo_mover_lineas:
+        offsets_key = f"{key}_line_offsets"
+        saved_offsets = st.session_state.get(offsets_key, {}) or {}
+        initial_drawing, line_initial_meta = _tc_construir_dibujo_lineas_movibles(
+            line_rows,
+            (full_w, full_h),
             (disp_w, disp_h),
-            Image.Resampling.LANCZOS,
+            offsets=saved_offsets,
         )
+        st.session_state[f"{key}_line_initial_meta"] = line_initial_meta
 
-    if es_borrador:
-        st.info(
+    if modo_borrador:
+        st.success(
             tr(
-                "🧽 Pinta encima de las líneas que quieras eliminar. "
-                "La franja MAGENTA solo sirve para seleccionar: NO se guarda. "
-                "Al aplicar la corrección, esa zona vuelve a mostrar la fotografía original.",
-                "🧽 Peignez sur les lignes à supprimer. "
-                "La bande MAGENTA sert uniquement de sélection : elle n’est PAS enregistrée. "
-                "Lors de l’application, cette zone est restaurée depuis la photo originale.",
+                "🧽 Pasa la brocha magenta SOLO sobre las líneas que se salen de la parcela. "
+                "Al guardar, el magenta NO queda en la imagen: esa zona se restaura con la fotografía original.",
+                "🧽 Passez le pinceau magenta UNIQUEMENT sur les lignes qui sortent de la parcelle. "
+                "À l’enregistrement, le magenta disparaît : cette zone est restaurée avec la photo originale.",
+            )
+        )
+    elif modo_mover_lineas:
+        st.success(
+            tr(
+                "↔️ Activa el botón de edición del canvas, selecciona una línea cian y ARRÁSTRALA completa hasta el surco correcto. "
+                "No se cambia el tamaño ni el ángulo.",
+                "↔️ Activez le bouton d’édition du canvas, sélectionnez une ligne cyan et DÉPLACEZ-LA entière jusqu’au rang correct. "
+                "La taille et l’angle ne changent pas.",
             )
         )
     else:
         st.caption(
             tr(
                 "Tip: para quitar todas las marcas automáticas, selecciona "
-                "'Imagen original · redibujar desde cero'. Para quitar solo algunas "
-                "líneas usa '🧽 Borrador de líneas automáticas'.",
+                "'Imagen original · redibujar desde cero'. Para mover, ajustar o "
+                "borrar objetos que tú dibujaste, usa el botón de edición de la "
+                "barra del canvas.",
                 "Astuce : pour retirer toutes les marques automatiques, choisissez "
-                "'Image originale · redessiner'. Pour supprimer seulement certaines "
-                "lignes, utilisez '🧽 Gomme des lignes automatiques'.",
+                "'Image originale · redessiner'. Pour déplacer, ajuster ou supprimer "
+                "vos objets, utilisez le bouton d’édition de la barre du canvas.",
             )
         )
 
     canvas_result = st_canvas(
         fill_color="rgba(30, 110, 245, 0.15)",
         stroke_width=int(grosor),
-        stroke_color=color,
+        stroke_color=("#FF00FF" if modo_borrador else color),
         background_color="#FFFFFF",
         background_image=base_display,
         update_streamlit=True,
         height=disp_h,
         width=disp_w,
         drawing_mode=drawing_mode,
+        initial_drawing=initial_drawing,
         point_display_radius=max(3, int(grosor)),
         return_image_data=True,
         max_display_height=820,
@@ -10933,52 +11313,48 @@ def _tc_editor_manual_imagen(
     if not guardar:
         return None
 
-    if es_borrador:
-        corregida, pixeles_restaurados = _tc_aplicar_borrador_sin_frangas(
-            canvas_result=canvas_result,
-            base_display=base_display,
-            base_full=base_full,
-            original_full=original,
-            full_size=(full_w, full_h),
+    if modo_borrador:
+        corregida = _tc_aplicar_borrador_lineas_automaticas(
+            canvas_result,
+            base_display,
+            actual,
+            original,
         )
-
-        if corregida is None or pixeles_restaurados <= 0:
-            st.warning(
-                tr(
-                    "No detecté una selección del borrador. "
-                    "Pinta en magenta sobre la línea que quieras quitar y vuelve a aplicar.",
-                    "Aucune sélection de gomme détectée. "
-                    "Peignez en magenta sur la ligne à supprimer puis appliquez de nouveau.",
-                )
-            )
-            return None
-
-        # IMPORTANTE: 'corregida' YA NO contiene la franja del pincel.
-        # Es la imagen procesada con la zona seleccionada restaurada
-        # desde la fotografía original.
+        mover_offsets = None
+    elif modo_mover_lineas:
+        line_initial_meta = st.session_state.get(
+            f"{key}_line_initial_meta",
+            line_initial_meta,
+        ) or []
+        corregida, mover_offsets = _tc_aplicar_movimiento_lineas_surco(
+            canvas_result=canvas_result,
+            imagen_procesada_full=actual,
+            imagen_original_full=original,
+            rows=line_rows or [],
+            health_map=line_health_map or {},
+            initial_meta=line_initial_meta,
+        )
+        if mover_offsets is not None:
+            st.session_state[f"{key}_line_offsets"] = mover_offsets
     else:
         corregida = _tc_canvas_resultado_a_pil(
             canvas_result,
             base_display,
             (full_w, full_h),
         )
+        mover_offsets = None
 
-        if corregida is None:
-            st.error(
+    if corregida is None:
+        if modo_borrador:
+            st.warning(
                 tr(
-                    "No se pudo generar la corrección.",
-                    "Impossible de générer la correction.",
+                    "No detecté una pasada del borrador. Pinta sobre la línea con la brocha magenta y vuelve a aplicar.",
+                    "Aucun passage de gomme détecté. Peignez sur la ligne avec le pinceau magenta puis réessayez.",
                 )
             )
-            return None
-
-    if es_borrador:
-        st.success(
-            tr(
-                "✅ Borrado aplicado sin guardar la franja de selección.",
-                "✅ Effacement appliqué sans enregistrer la bande de sélection.",
-            )
-        )
+        else:
+            st.error(tr("No se pudo generar la corrección.", "Impossible de générer la correction."))
+        return None
 
     if file_id:
         try:
@@ -10987,12 +11363,27 @@ def _tc_editor_manual_imagen(
                 corregida,
             )
             if ok_drive:
-                st.success(
-                    tr(
-                        "✅ Corrección guardada en Drive con el mismo FileID.",
-                        "✅ Correction enregistrée dans Drive avec le même FileID.",
+                if modo_borrador:
+                    st.success(
+                        tr(
+                            "✅ Línea borrada manualmente y guardada en Drive con el mismo FileID.",
+                            "✅ Ligne supprimée manuellement et enregistrée dans Drive avec le même FileID.",
+                        )
                     )
-                )
+                elif modo_mover_lineas:
+                    st.success(
+                        tr(
+                            "✅ Líneas movidas al surco seleccionado y guardadas en Drive con el mismo FileID.",
+                            "✅ Lignes déplacées vers le rang sélectionné et enregistrées dans Drive avec le même FileID.",
+                        )
+                    )
+                else:
+                    st.success(
+                        tr(
+                            "✅ Corrección guardada en Drive con el mismo FileID.",
+                            "✅ Correction enregistrée dans Drive avec le même FileID.",
+                        )
+                    )
             else:
                 st.warning(str(info_drive))
         except Exception as exc:
@@ -11775,6 +12166,8 @@ with main_col:
                                 "detalle_zonas": backend_result.get("detalle_zonas", {}),
                                 "metodo": backend_result.get("metodo", "opencv-v2-straight-grid-polygons"),
                                 "confidence": backend_result.get("confidence", 0.0),
+                                "health_map": backend_result.get("health_map", {}),
+                                "rows": backend_result.get("rows", rows_ai),
                             })
 
                         except Exception as exc_img:
@@ -11882,6 +12275,8 @@ with main_col:
                             ),
                             color_inicial="#FF3030",
                             file_id=file_id_salud,
+                            line_rows=item.get("rows", []) or [],
+                            line_health_map=item.get("health_map", {}) or {},
                         )
 
                         if corregida_salud is not None:
