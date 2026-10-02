@@ -11423,6 +11423,155 @@ def _tc_aplicar_movimiento_lineas_surco(
     return resultado, offsets_final, angles_final
 
 
+def _tc_transformar_puntos_fila_movida(row, full_size, offset_xy, angle_deg):
+    """Devuelve la geometría normalizada de un surco después de moverlo/girarlo."""
+    w, h = full_size
+    pts0 = _tg_norm_to_px(row.get("points_norm", []), w, h)
+    if len(pts0) < 2:
+        return list(row.get("points_norm", []) or [])
+
+    dx, dy = float(offset_xy[0]), float(offset_xy[1])
+    theta = math.radians(float(angle_deg or 0.0))
+    ct, st = math.cos(theta), math.sin(theta)
+    pivot = np.asarray([
+        (float(pts0[0][0]) + float(pts0[-1][0])) / 2.0,
+        (float(pts0[0][1]) + float(pts0[-1][1])) / 2.0,
+    ], dtype=np.float32)
+
+    transformed = []
+    for p in pts0:
+        q = np.asarray([float(p[0]), float(p[1])], dtype=np.float32) - pivot
+        r = np.asarray([
+            q[0] * ct - q[1] * st,
+            q[0] * st + q[1] * ct,
+        ], dtype=np.float32) + pivot
+        r[0] += dx
+        r[1] += dy
+        r[0] = np.clip(r[0], 0, max(0, w - 1))
+        r[1] = np.clip(r[1], 0, max(0, h - 1))
+        transformed.append((float(r[0]), float(r[1])))
+
+    # Mantener el mismo esquema de puntos normalizados que usa el motor.
+    return _ocv2_norm_points_from_px(transformed, w, h, n=max(6, len(pts0)))
+
+
+def _tc_renderizar_inventario_con_filas(pil_original, rows):
+    """Redibuja la capa de Inventario usando las geometrías manualmente alineadas."""
+    pil = _tc_editor_a_pil(pil_original)
+    if pil is None:
+        return None
+
+    pil = pil.convert("RGB")
+    w, h = pil.size
+    band_h = max(46, int(round(h * 0.065)))
+    canvas = Image.new("RGB", (w, h + band_h), (91, 37, 46))
+    canvas.paste(pil, (0, band_h))
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default()
+    line_w = max(1, int(round(min(w, h) / 950)))
+
+    for row in rows or []:
+        rid = int(row.get("id", 0) or 0)
+        pts = _tg_norm_to_px(row.get("points_norm", []), w, h)
+        if len(pts) < 2:
+            continue
+
+        a, b = pts[0], pts[-1]
+        ay = a[1] + band_h
+        by = b[1] + band_h
+        draw.line(
+            (a[0], ay, b[0], by),
+            fill=(245, 245, 245),
+            width=line_w,
+        )
+
+        count = int(row.get("slot_count", 0) or 0)
+        vacant = set(_tg_clean_indices(row.get("vacant_indices", []), count))
+        positions = _ocv2_slot_positions(row, (w, h))
+        for idx_slot, p in enumerate(positions, 1):
+            x = float(p[0])
+            y = float(p[1] + band_h)
+            if idx_slot in vacant:
+                rr = 2.5
+                fill = (255, 145, 35)       # vacío
+            else:
+                rr = 1.8
+                fill = (45, 190, 255)        # ocupado
+            draw.ellipse((x-rr, y-rr, x+rr, y+rr), fill=fill)
+
+        label = f"{rid:02d}"
+        bbox = draw.textbbox((0, 0), label, font=font)
+        tw = max(10, bbox[2] - bbox[0])
+        top = a if a[1] <= b[1] else b
+        tx = int(np.clip(top[0] - tw / 2, 1, max(1, w - tw - 2)))
+        ty = 5 if rid % 2 else 20
+        draw.text(
+            (tx, ty),
+            label,
+            fill=(255, 255, 255),
+            font=font,
+            stroke_width=2,
+            stroke_fill=(35, 20, 25),
+        )
+
+    return canvas
+
+
+def _tc_aplicar_movimiento_lineas_inventario(
+    canvas_result,
+    imagen_original_full,
+    rows,
+    initial_meta,
+):
+    """
+    Mueve/gira las líneas del Inventario y actualiza su geometría real.
+
+    La edición se hace sobre la foto original (sin la franja superior), para que
+    las coordenadas coincidan exactamente con la fotografía. Al guardar se
+    reconstruye la imagen de Inventario con sus líneas y slots en la nueva posición.
+    """
+    if canvas_result is None or not getattr(canvas_result, "json_data", None):
+        return None, {}, {}, None
+
+    original = _tc_editor_a_pil(imagen_original_full)
+    if original is None:
+        return None, {}, {}, None
+
+    # Reutilizamos la misma lógica estable de movimiento diagonal/giro.
+    _tmp, offsets_final, angles_final = _tc_aplicar_movimiento_lineas_surco(
+        canvas_result=canvas_result,
+        imagen_procesada_full=original,
+        imagen_original_full=original,
+        rows=rows or [],
+        health_map={},
+        initial_meta=initial_meta or [],
+    )
+    if _tmp is None:
+        return None, {}, {}, None
+
+    updated_rows = [dict(r) for r in (rows or [])]
+    for meta in initial_meta or []:
+        idx = int(meta.get("row_index", -1))
+        rid = int(meta.get("row_id", idx + 1))
+        if idx < 0 or idx >= len(updated_rows):
+            continue
+
+        off = offsets_final.get(str(rid), [0.0, 0.0])
+        ang = angles_final.get(str(rid), 0.0)
+        updated_rows[idx]["points_norm"] = _tc_transformar_puntos_fila_movida(
+            updated_rows[idx],
+            original.size,
+            off,
+            ang,
+        )
+        updated_rows[idx]["manual_position"] = True
+        updated_rows[idx]["manual_offset"] = [float(off[0]), float(off[1])]
+        updated_rows[idx]["manual_angle"] = float(ang)
+
+    corregida = _tc_renderizar_inventario_con_filas(original, updated_rows)
+    return corregida, offsets_final, angles_final, updated_rows
+
+
 def _tc_editor_manual_imagen(
     imagen_actual,
     imagen_original,
@@ -11433,11 +11582,13 @@ def _tc_editor_manual_imagen(
     line_rows=None,
     line_health_map=None,
     solo_poligonos_manuales=False,
+    modo_inventario=False,
 ):
     """
     Editor visual manual para Inventario, Análisis verde/rojo y Polígonos.
 
     Cuando solo_poligonos_manuales=True, el editor se dedica exclusivamente a dibujar múltiples polígonos manuales sobre la imagen.
+    Cuando modo_inventario=True, las líneas del Inventario se pueden mover y girar sobre la foto original; los slots se desplazan con ellas.
 
     Incluye: BORRADOR DE LÍNEAS AUTOMÁTICAS y, cuando se pasan las filas de
     análisis, MOVER LÍNEAS DE SURCO. El modo mover presenta cada eje como un
@@ -11505,9 +11656,16 @@ def _tc_editor_manual_imagen(
         "🧽 Gomme des lignes automatiques",
     )
 
-    opcion_mover_lineas = tr(
-        "↔️ Mover líneas de surco",
-        "↔️ Déplacer les lignes de rang",
+    opcion_mover_lineas = (
+        tr(
+            "↔️ Mover líneas del inventario",
+            "↔️ Déplacer les lignes de l’inventaire",
+        )
+        if modo_inventario
+        else tr(
+            "↔️ Mover líneas de surco",
+            "↔️ Déplacer les lignes de rang",
+        )
     )
 
     opcion_poligonos_manuales = tr(
@@ -11659,10 +11817,20 @@ def _tc_editor_manual_imagen(
     elif modo_mover_lineas:
         st.success(
             tr(
-                "↔️ Activa el botón de edición, selecciona una línea cian y ARRÁSTRALA libremente, incluso en diagonal. "
-                "Usa el control circular para GIRARLA y alinearla con el surco.",
-                "↔️ Activez l’édition, sélectionnez une ligne cyan et DÉPLACEZ-LA librement, même en diagonale. "
-                "Utilisez le contrôle circulaire pour la TOURNER et l’aligner sur le rang.",
+                (
+                    "↔️ Inventario: selecciona una línea cian y ARRÁSTRALA libremente, incluso en diagonal. "
+                    "Los puntos/slots se moverán con ella. Usa el control circular para GIRARLA y alinearla con el surco real."
+                    if modo_inventario
+                    else "↔️ Activa el botón de edición, selecciona una línea cian y ARRÁSTRALA libremente, incluso en diagonal. "
+                    "Usa el control circular para GIRARLA y alinearla con el surco."
+                ),
+                (
+                    "↔️ Inventaire : sélectionnez une ligne cyan et DÉPLACEZ-LA librement, même en diagonale. "
+                    "Les emplacements se déplacent avec elle. Utilisez le contrôle circulaire pour la TOURNER et l’aligner sur le rang réel."
+                    if modo_inventario
+                    else "↔️ Activez l’édition, sélectionnez une ligne cyan et DÉPLACEZ-LA librement, même en diagonale. "
+                    "Utilisez le contrôle circulaire pour la TOURNER et l’aligner sur le rang."
+                ),
             )
         )
     elif modo_poligonos_manuales:
@@ -11758,17 +11926,31 @@ def _tc_editor_manual_imagen(
             f"{key}_line_initial_meta",
             line_initial_meta,
         ) or []
-        corregida, mover_offsets, mover_angles = _tc_aplicar_movimiento_lineas_surco(
-            canvas_result=canvas_result,
-            imagen_procesada_full=actual,
-            imagen_original_full=original,
-            rows=line_rows or [],
-            health_map=line_health_map or {},
-            initial_meta=line_initial_meta,
-        )
-        if mover_offsets is not None:
-            st.session_state[f"{key}_line_offsets"] = mover_offsets
-            st.session_state[f"{key}_line_angles"] = mover_angles or {}
+        if modo_inventario:
+            corregida, mover_offsets, mover_angles, updated_inventory_rows = _tc_aplicar_movimiento_lineas_inventario(
+                canvas_result=canvas_result,
+                imagen_original_full=original,
+                rows=line_rows or [],
+                initial_meta=line_initial_meta,
+            )
+            if updated_inventory_rows is not None:
+                st.session_state[f"{key}_updated_inventory_rows"] = updated_inventory_rows
+            # La geometría ya quedó escrita en points_norm; no volver a sumar offsets
+            # al abrir de nuevo el editor.
+            st.session_state[f"{key}_line_offsets"] = {}
+            st.session_state[f"{key}_line_angles"] = {}
+        else:
+            corregida, mover_offsets, mover_angles = _tc_aplicar_movimiento_lineas_surco(
+                canvas_result=canvas_result,
+                imagen_procesada_full=actual,
+                imagen_original_full=original,
+                rows=line_rows or [],
+                health_map=line_health_map or {},
+                initial_meta=line_initial_meta,
+            )
+            if mover_offsets is not None:
+                st.session_state[f"{key}_line_offsets"] = mover_offsets
+                st.session_state[f"{key}_line_angles"] = mover_angles or {}
     else:
         corregida = _tc_canvas_resultado_a_pil(
             canvas_result,
@@ -11813,8 +11995,18 @@ def _tc_editor_manual_imagen(
                 elif modo_mover_lineas:
                     st.success(
                         tr(
-                            "✅ Líneas movidas y/o giradas hasta el surco seleccionado y guardadas en Drive con el mismo FileID.",
-                            "✅ Lignes déplacées et/ou tournées vers le rang sélectionné et enregistrées dans Drive avec le même FileID.",
+                            (
+                                "✅ Líneas del Inventario movidas/giradas y slots alineados con los surcos reales. "
+                                "Guardado en Drive con el mismo FileID."
+                                if modo_inventario
+                                else "✅ Líneas movidas y/o giradas hasta el surco seleccionado y guardadas en Drive con el mismo FileID."
+                            ),
+                            (
+                                "✅ Lignes de l’inventaire déplacées/tournées et emplacements alignés sur les rangs réels. "
+                                "Enregistré dans Drive avec le même FileID."
+                                if modo_inventario
+                                else "✅ Lignes déplacées et/ou tournées vers le rang sélectionné et enregistrées dans Drive avec le même FileID."
+                            ),
                         )
                     )
                 elif modo_poligonos_manuales:
@@ -12402,17 +12594,37 @@ with main_col:
 
                         file_id_inv = _tc_file_id_guardado(up.name, "inventario")
 
+                        key_inv_editor = f"tc_edit_inv_{idx}_{up.name}"
                         corregida_inv = _tc_editor_manual_imagen(
                             inv_individual.get("image"),
                             original_editor_inv,
-                            key=f"tc_edit_inv_{idx}_{up.name}",
+                            key=key_inv_editor,
                             titulo=tr(
                                 "Corregir Inventario",
                                 "Corriger l’inventaire"
                             ),
                             color_inicial="#00BFFF",
                             file_id=file_id_inv,
+                            line_rows=inv_individual.get("rows", []) or [],
+                            line_health_map={},
+                            modo_inventario=True,
                         )
+
+                        # Si se movieron líneas del Inventario, actualizamos la geometría
+                        # real que después utiliza el análisis de Salud.
+                        filas_inv_actualizadas = st.session_state.get(
+                            f"{key_inv_editor}_updated_inventory_rows"
+                        )
+                        if filas_inv_actualizadas is not None:
+                            inv_individual["rows"] = filas_inv_actualizadas
+                            inv_individual["count"] = len(filas_inv_actualizadas)
+                            if up.name == ref_name:
+                                st.session_state.tc_inventario_rows_ai = filas_inv_actualizadas
+                            # Ya consumimos la corrección; evitar reaplicarla en cada rerun.
+                            st.session_state.pop(
+                                f"{key_inv_editor}_updated_inventory_rows",
+                                None,
+                            )
 
                         if corregida_inv is not None:
                             inv_individual["image"] = corregida_inv
