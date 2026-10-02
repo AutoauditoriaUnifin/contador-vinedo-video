@@ -5686,6 +5686,12 @@ _estado_nuevo = {
     "tc_inventarios_por_imagen": {},
     "tc_salud_procesada": False,
 
+    # Correcciones manuales de conteos, separadas por fotografía.
+    # No cambian la geometría ni el motor; solo corrigen los valores reportados.
+    "tc_surcos_reales_por_imagen": {},
+    "tc_poligonos_reales_por_imagen": {},
+    "tc_conteos_guardados": {},
+
     # Metadatos de PARCELA / GOOGLE SHEETS
     "tc_rancho_vinedo": "",
     "tc_kml_file_id": "",
@@ -5742,6 +5748,9 @@ def _tc_reiniciar_parcela():
     st.session_state.tc_inventario_debug = {}
     st.session_state.tc_inventarios_por_imagen = {}
     st.session_state.tc_salud_procesada = False
+    st.session_state.tc_surcos_reales_por_imagen = {}
+    st.session_state.tc_poligonos_reales_por_imagen = {}
+    st.session_state.tc_conteos_guardados = {}
     st.session_state.tc_captura_maestra_file_id = ""
     st.session_state.tc_vuelo_base_id = ""
 
@@ -8734,6 +8743,16 @@ def _tg_guardar_extras_historial(registro):
         # Estas columnas adicionales sí se llenan desde la app.
         "ImagenAnalisisAppSheet": registro.get("imagen_procesada_appsheet", ""),
         "NombreFoto": registro.get("nombre_fuente", registro.get("nombre", "")),
+
+        # Conteos corregibles manualmente.
+        "SurcosAutomaticos": int(registro.get("surcos_automaticos", registro.get("surcos", 0)) or 0),
+        "SurcosReales": int(registro.get("surcos_reales", registro.get("surcos", 0)) or 0),
+        "PoligonosAutomaticos": int(registro.get("poligonos_automaticos", 0) or 0),
+        "PoligonosReales": int(registro.get("poligonos_reales", 0) or 0),
+        "SlotsReales": int(registro.get("slots_reales", 0) or 0),
+        "OcupadosReales": int(registro.get("ocupados_reales", 0) or 0),
+        "VaciosReales": int(registro.get("vacios_reales", 0) or 0),
+
         "LegacyExtra": json.dumps({
             "captura_base_id": st.session_state.get("tc_captura_base_id", ""),
             "vuelo_base_id": st.session_state.get("tc_vuelo_base_id", ""),
@@ -8879,6 +8898,272 @@ def _tg_guardar_en_hoja_parcelas(registro):
         pass
 
 
+
+def _tc_sincronizar_tabla_inventario_editada(uploaded_name, tabla_editada):
+    """
+    Copia la tabla editable de Streamlit al inventario real de esa fotografía.
+
+    No cambia las líneas dibujadas ni las coordenadas de los surcos.
+    Solo actualiza:
+      - slot_count
+      - vacant_indices
+      - tabla visible
+      - conteo de surcos reportado
+    """
+    if not uploaded_name or tabla_editada is None:
+        return
+
+    inv_map = st.session_state.get("tc_inventarios_por_imagen", {}) or {}
+    inv = inv_map.get(uploaded_name)
+    if not inv:
+        return
+
+    tabla = tabla_editada.copy()
+    inv["table"] = tabla
+
+    rows = list(inv.get("rows", []) or [])
+    registros = tabla.to_dict(orient="records") if hasattr(tabla, "to_dict") else []
+
+    col_slots = tr("Slots", "Emplacements")
+    col_occ = tr("Ocupados", "Occupés")
+    col_empty = tr("Vacíos", "Vides")
+
+    for idx, fila in enumerate(registros):
+        if idx >= len(rows):
+            break
+
+        row = rows[idx]
+        try:
+            slots = max(0, int(float(_tg_valor_fila_inventario(
+                fila, [col_slots, "Slots", "Emplacements"], row.get("slot_count", 0)
+            ) or 0)))
+        except Exception:
+            slots = max(0, int(row.get("slot_count", 0) or 0))
+
+        try:
+            ocupados = max(0, int(float(_tg_valor_fila_inventario(
+                fila, [col_occ, "Ocupados", "Occupés"], 0
+            ) or 0)))
+        except Exception:
+            ocupados = 0
+
+        try:
+            vacios = max(0, int(float(_tg_valor_fila_inventario(
+                fila, [col_empty, "Vacíos", "Vides"], 0
+            ) or 0)))
+        except Exception:
+            vacios = 0
+
+        # La tabla ya se valida antes de llegar aquí. Aun así, hacemos
+        # una protección para no crear geometrías incoherentes.
+        if slots != ocupados + vacios:
+            continue
+
+        old_vacant = list(_tg_clean_indices(
+            row.get("vacant_indices", []), slots
+        ))
+
+        # Conservamos índices vacíos existentes cuando sea posible.
+        new_vacant = [i for i in old_vacant if i <= slots][:vacios]
+        if len(new_vacant) < vacios:
+            disponibles = [
+                i for i in range(slots, 0, -1)
+                if i not in set(new_vacant)
+            ]
+            new_vacant.extend(disponibles[:vacios])
+        new_vacant = sorted(set(new_vacant))[:vacios]
+
+        row["slot_count"] = int(slots)
+        row["vacant_indices"] = new_vacant
+        row["manual_inventory"] = True
+
+    inv["rows"] = rows
+    inv["count"] = len(rows)
+    inv["manual_inventory"] = True
+
+    st.session_state.tc_inventarios_por_imagen = inv_map
+
+    if uploaded_name == st.session_state.get("tc_inventario_fuente", ""):
+        st.session_state.tc_tabla_inventario = tabla
+        st.session_state.tc_inventario_rows_ai = rows
+        st.session_state.tc_inventario_imagen = inv.get("image")
+
+
+def _tc_diagnostico_con_surcos_reales(texto, surcos_reales):
+    """Actualiza solo el número de surcos mostrado; no toca el análisis."""
+    t = str(texto or "")
+    n = int(surcos_reales or 0)
+    if n <= 0:
+        return t
+
+    t = re.sub(
+        r"(Se evaluaron\s+\d+\s+posiciones\s+sobre\s+)\d+(\s+surcos\s+rectos)",
+        rf"\g<1>{n}\g<2>",
+        t,
+        flags=re.I,
+    )
+    t = re.sub(
+        r"(Ont été évaluées\s+\d+\s+positions\s+sur\s+)\d+(\s+rangs\s+rectilignes)",
+        rf"\g<1>{n}\g<2>",
+        t,
+        flags=re.I,
+    )
+    return t
+
+
+def _tg_buscar_fila_por_id_hoja(sheets_service, spreadsheet_id, hoja, registro_id):
+    """Busca un ID en la columna A de cualquier hoja relacional."""
+    try:
+        valores = sheets_service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{hoja}'!A2:A",
+        ).execute().get("values", [])
+    except Exception:
+        return None
+
+    objetivo = str(registro_id or "").strip()
+    for offset, fila in enumerate(valores, 2):
+        valor = str(fila[0] if fila else "").strip()
+        if valor == objetivo:
+            return offset
+    return None
+
+
+def _tg_actualizar_campo_hoja_por_id(
+    sheets_service,
+    spreadsheet_id,
+    hoja,
+    registro_id,
+    encabezado,
+    valor,
+):
+    """
+    Crea el encabezado si no existe y actualiza el campo de una fila
+    identificada por la columna A.
+    """
+    fila = _tg_buscar_fila_por_id_hoja(
+        sheets_service, spreadsheet_id, hoja, registro_id
+    )
+    if not fila:
+        return False
+
+    col = _tg_buscar_o_crear_encabezado(
+        sheets_service,
+        spreadsheet_id,
+        hoja,
+        encabezado,
+    )
+    letra = _tg_letra_columna(col)
+
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{hoja}'!{letra}{fila}",
+        valueInputOption="RAW",
+        body={"values": [[valor]]},
+    ).execute()
+    return True
+
+
+def _tg_actualizar_conteos_google(
+    registro_id,
+    surcos_reales,
+    poligonos_reales,
+    slots_reales,
+    ocupados_reales,
+    vacios_reales,
+    surcos_automaticos=None,
+    poligonos_automaticos=None,
+):
+    """
+    Actualiza los conteos corregidos sin crear un nuevo análisis.
+
+    HistorialTerroCore:
+      - Surcos se actualiza en su campo existente.
+      - Se agregan campos explícitos para valores reales/automáticos.
+
+    Analisis:
+      - También se guardan los mismos valores para que las tablas
+        relacionales reflejen la corrección.
+    """
+    if not historial_google_configurado() or not registro_id:
+        return False, "Historial de Google no configurado o ID vacío."
+
+    try:
+        _, sheets_service = obtener_google_clients()
+        spreadsheet_id = _secret_text("GSHEET_ID")
+
+        # Historial: el campo original "Surcos" conserva el valor corregido.
+        fila_hist = _tg_buscar_fila_historial_por_id(
+            sheets_service, spreadsheet_id, registro_id
+        )
+        if fila_hist:
+            try:
+                headers = sheets_service.spreadsheets().values().get(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"'{HISTORIAL_SHEET_NAME}'!1:1",
+                ).execute().get("values", [[]])
+                headers = headers[0] if headers else []
+                for idx, h in enumerate(headers, 1):
+                    if str(h).strip().casefold() == "surcos":
+                        letra = _tg_letra_columna(idx)
+                        sheets_service.spreadsheets().values().update(
+                            spreadsheetId=spreadsheet_id,
+                            range=f"'{HISTORIAL_SHEET_NAME}'!{letra}{fila_hist}",
+                            valueInputOption="RAW",
+                            body={"values": [[int(surcos_reales)]]},
+                        ).execute()
+                        break
+            except Exception:
+                pass
+
+        extras = {
+            "SurcosAutomaticos": int(surcos_automaticos if surcos_automaticos is not None else surcos_reales),
+            "SurcosReales": int(surcos_reales),
+            "PoligonosAutomaticos": int(poligonos_automaticos if poligonos_automaticos is not None else poligonos_reales),
+            "PoligonosReales": int(poligonos_reales),
+            "SlotsReales": int(slots_reales),
+            "OcupadosReales": int(ocupados_reales),
+            "VaciosReales": int(vacios_reales),
+        }
+        for encabezado, valor in extras.items():
+            _tg_actualizar_campo_hoja_por_id(
+                sheets_service,
+                spreadsheet_id,
+                HISTORIAL_SHEET_NAME,
+                registro_id,
+                encabezado,
+                valor,
+            )
+
+        # Analisis: campos explícitos sin alterar la estructura histórica.
+        for encabezado, valor in extras.items():
+            _tg_actualizar_campo_hoja_por_id(
+                sheets_service,
+                spreadsheet_id,
+                "Analisis",
+                registro_id,
+                encabezado,
+                valor,
+            )
+
+        # Si existe un campo "Surcos" en Analisis, también lo actualizamos.
+        try:
+            _tg_actualizar_campo_hoja_por_id(
+                sheets_service,
+                spreadsheet_id,
+                "Analisis",
+                registro_id,
+                "Surcos",
+                int(surcos_reales),
+            )
+        except Exception:
+            pass
+
+        return True, "Conteos corregidos guardados en Google Sheets."
+    except Exception as exc:
+        return False, str(exc)
+
+
 def _tg_tabla_inventario_de_imagen(uploaded_name):
     inv_map = st.session_state.get("tc_inventarios_por_imagen", {}) or {}
     inv = inv_map.get(uploaded_name) or {}
@@ -8940,6 +9225,31 @@ def _tg_guardar_hoja_analisis(registro, backend_result, uploaded_name):
         registro.get("nota_diagnostico", ""),
         registro.get("idioma", _tc_idioma_actual()),
     ]], 26)
+
+    # Campos de conteo corregible, sin modificar las 26 columnas históricas.
+    extras_analisis = {
+        "SurcosAutomaticos": int(registro.get("surcos_automaticos", registro.get("surcos", 0)) or 0),
+        "SurcosReales": int(registro.get("surcos_reales", registro.get("surcos", 0)) or 0),
+        "PoligonosAutomaticos": int(registro.get("poligonos_automaticos", 0) or 0),
+        "PoligonosReales": int(registro.get("poligonos_reales", 0) or 0),
+        "SlotsReales": int(slots),
+        "OcupadosReales": int(ocupados),
+        "VaciosReales": int(vacios),
+    }
+    _, _sheets = obtener_google_clients()
+    _ssid = _secret_text("GSHEET_ID")
+    for _enc, _val in extras_analisis.items():
+        try:
+            _tg_actualizar_campo_hoja_por_id(
+                _sheets,
+                _ssid,
+                "Analisis",
+                registro.get("id", ""),
+                _enc,
+                _val,
+            )
+        except Exception:
+            pass
 
 
 def _tg_guardar_inventario_surcos(registro, uploaded_name):
@@ -9496,7 +9806,34 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
         "imagen_original_appsheet": f"Originales/{nombre_original}",
         "imagen_procesada_appsheet": f"Procesadas/{nombre_procesada}",
 
-        "surcos": int(backend_result.get("count", 0) or 0),
+        "surcos": int(
+            backend_result.get(
+                "surcos_reales",
+                backend_result.get("count", 0),
+            ) or 0
+        ),
+        "surcos_automaticos": int(
+            backend_result.get(
+                "surcos_automaticos",
+                backend_result.get("count", 0),
+            ) or 0
+        ),
+        "surcos_reales": int(
+            backend_result.get(
+                "surcos_reales",
+                backend_result.get("count", 0),
+            ) or 0
+        ),
+        "poligonos_automaticos": int(
+            backend_result.get("poligonos_automaticos", 0) or 0
+        ),
+        "poligonos_reales": int(
+            backend_result.get("poligonos_reales", 0) or 0
+        ),
+        "slots_reales": int(backend_result.get("slots_reales", 0) or 0),
+        "ocupados_reales": int(backend_result.get("ocupados_reales", 0) or 0),
+        "vacios_reales": int(backend_result.get("vacios_reales", 0) or 0),
+
         "verde_pct": float(backend_result.get("green_pct", 0.0) or 0.0),
         "rojo_pct": float(backend_result.get("red_pct", 0.0) or 0.0),
         "amarillo_pct": float(analisis.get("amarillo_pct", 0.0) or 0.0),
@@ -11404,6 +11741,9 @@ def _tc_editor_manual_imagen(
             obj for obj in objetos
             if str((obj or {}).get("type", "")).lower() == "polygon"
         ]
+        # Guardamos el número de polígonos dibujados para que el usuario
+        # pueda confirmar/corregir el conteo real en el resultado.
+        st.session_state[f"{key}_polygon_count"] = int(len(poligonos))
         corregida = (
             _tc_canvas_resultado_a_pil(
                 canvas_result,
@@ -12016,6 +12356,33 @@ with main_col:
                             f"{float(inv_individual.get('confidence', 0.0))*100:.1f}%"
                         )
 
+                        # Corrección manual del número REAL de surcos.
+                        # Esto NO borra geometrías: solo corrige el número reportado.
+                        surcos_auto_img = int(inv_individual.get("count", 0) or 0)
+                        surcos_guardados_img = st.session_state.get(
+                            "tc_surcos_reales_por_imagen", {}
+                        ).get(up.name, surcos_auto_img)
+
+                        surcos_reales_img = st.number_input(
+                            tr("Surcos reales", "Rangs réels"),
+                            min_value=0,
+                            max_value=10000,
+                            value=int(surcos_guardados_img),
+                            step=1,
+                            key=f"tc_surcos_reales_inv_{idx}_{up.name}",
+                            help=tr(
+                                "Corrige solo el número real de surcos que quieres reportar.",
+                                "Corrigez uniquement le nombre réel de rangs à enregistrer.",
+                            ),
+                        )
+                        st.session_state.tc_surcos_reales_por_imagen[up.name] = int(
+                            surcos_reales_img
+                        )
+                        inv_individual["surcos_reales"] = int(surcos_reales_img)
+                        inv_individual["surcos_automaticos"] = surcos_auto_img
+                        inv_map[up.name] = inv_individual
+                        st.session_state.tc_inventarios_por_imagen = inv_map
+
                         _tc_ui_image(
                             inv_individual.get("image"),
                             caption=(
@@ -12083,18 +12450,42 @@ with main_col:
             num_rows="fixed",
             key="tc_editor_inventario_video_flow",
             column_config={
-                "Surco": st.column_config.TextColumn("Surco", disabled=True, width="small"),
-                "Slots": st.column_config.NumberColumn("Slots", min_value=0, step=1, format="%d"),
-                "Ocupados": st.column_config.NumberColumn("Ocupados", min_value=0, step=1, format="%d"),
-                "Vacíos": st.column_config.NumberColumn("Vacíos", min_value=0, step=1, format="%d"),
-                "Confianza": st.column_config.NumberColumn(
-                    "Confianza", min_value=0.0, max_value=100.0, format="%.1f %%", disabled=True
+                tr("Surco", "Rang"): st.column_config.TextColumn(
+                    tr("Surco", "Rang"), disabled=True, width="small"
                 ),
-                "Estado": st.column_config.TextColumn("Estado", disabled=True, width="medium"),
+                tr("Slots", "Emplacements"): st.column_config.NumberColumn(
+                    tr("Slots", "Emplacements"), min_value=0, step=1, format="%d"
+                ),
+                tr("Ocupados", "Occupés"): st.column_config.NumberColumn(
+                    tr("Ocupados", "Occupés"), min_value=0, step=1, format="%d"
+                ),
+                tr("Vacíos", "Vides"): st.column_config.NumberColumn(
+                    tr("Vacíos", "Vides"), min_value=0, step=1, format="%d"
+                ),
+                tr("Confianza", "Confiance"): st.column_config.NumberColumn(
+                    tr("Confianza", "Confiance"),
+                    min_value=0.0,
+                    max_value=100.0,
+                    format="%.1f %%",
+                    disabled=True,
+                ),
+                tr("Estado", "État"): st.column_config.TextColumn(
+                    tr("Estado", "État"), disabled=True, width="medium"
+                ),
             }
         )
 
         st.session_state.tc_tabla_inventario = edited
+
+        # IMPORTANTE: la edición de Slots/Ocupados/Vacíos ya no se queda
+        # solo en la tabla visual. Se sincroniza con las filas que utilizará
+        # el análisis de estado visual.
+        if ref_name:
+            _tc_sincronizar_tabla_inventario_editada(
+                ref_name,
+                edited,
+            )
+
         total_slots, total_ocupados, total_vacios, inventario_valido = _tc_metricas_tabla(
             edited.copy()
         )
@@ -12219,6 +12610,59 @@ with main_col:
                                 rows_ai
                             )
 
+                            # Conteo de surcos: la geometría automática permanece intacta,
+                            # pero el usuario puede corregir el número REAL reportado.
+                            surcos_automaticos = int(backend_result.get("count", 0) or 0)
+                            surcos_reales = int(
+                                (st.session_state.get("tc_surcos_reales_por_imagen", {}) or {}).get(
+                                    uploaded_image.name,
+                                    surcos_automaticos,
+                                )
+                            )
+                            backend_result["surcos_automaticos"] = surcos_automaticos
+                            backend_result["surcos_reales"] = surcos_reales
+                            backend_result["count"] = surcos_reales
+                            backend_result["diagnostico_visual"] = _tc_diagnostico_con_surcos_reales(
+                                backend_result.get("diagnostico_visual", ""),
+                                surcos_reales,
+                            )
+
+                            # Polígonos automáticos: contamos las regiones reales que
+                            # genera el motor. El usuario podrá cambiar este número
+                            # después de dibujarlos manualmente.
+                            try:
+                                _regiones_auto, _ = _tg_poligonos_automaticos(
+                                    uploaded_image,
+                                    backend_result,
+                                    uploaded_image.name,
+                                )
+                                poligonos_automaticos = len(_regiones_auto)
+                            except Exception:
+                                poligonos_automaticos = 1 if float(
+                                    backend_result.get("red_pct", 0.0) or 0.0
+                                ) > 0 else 0
+
+                            poligonos_reales = int(
+                                (st.session_state.get("tc_poligonos_reales_por_imagen", {}) or {}).get(
+                                    uploaded_image.name,
+                                    poligonos_automaticos,
+                                )
+                            )
+                            backend_result["poligonos_automaticos"] = poligonos_automaticos
+                            backend_result["poligonos_reales"] = poligonos_reales
+
+                            # Resumen de inventario REAL después de las correcciones.
+                            try:
+                                _inv_tmp, _tab_tmp, slots_real, ocup_real, vacios_real = _tg_resumen_inventario(
+                                    uploaded_image.name
+                                )
+                            except Exception:
+                                slots_real = ocup_real = vacios_real = 0
+
+                            backend_result["slots_reales"] = int(slots_real)
+                            backend_result["ocupados_reales"] = int(ocup_real)
+                            backend_result["vacios_reales"] = int(vacios_real)
+
                             # guardar_analisis_en_google toma el Inventario desde
                             # session_state. Cambiamos SOLO esa referencia durante
                             # el guardado para que cada registro suba SU inventario.
@@ -12251,6 +12695,13 @@ with main_col:
                                 "source_name": uploaded_image.name,
                                 "inventory_image": inventario_img_actual,
                                 "count": int(backend_result.get("count", 0)),
+                                "surcos_automaticos": int(backend_result.get("surcos_automaticos", backend_result.get("count", 0)) or 0),
+                                "surcos_reales": int(backend_result.get("surcos_reales", backend_result.get("count", 0)) or 0),
+                                "poligonos_automaticos": int(backend_result.get("poligonos_automaticos", 0) or 0),
+                                "poligonos_reales": int(backend_result.get("poligonos_reales", 0) or 0),
+                                "slots_reales": int(backend_result.get("slots_reales", 0) or 0),
+                                "ocupados_reales": int(backend_result.get("ocupados_reales", 0) or 0),
+                                "vacios_reales": int(backend_result.get("vacios_reales", 0) or 0),
                                 "green_pct": float(backend_result.get("green_pct", 0.0)),
                                 "red_pct": float(backend_result.get("red_pct", 0.0)),
                                 "green_slots": int(backend_result.get("green_slots", 0) or 0),
@@ -12389,6 +12840,49 @@ with main_col:
                         if corregida_salud is not None:
                             item["annotated"] = corregida_salud
 
+                        # --------------------------------------------
+                        # CORRECCIÓN MANUAL DE CONTEOS 2/3
+                        # --------------------------------------------
+                        source_count_name = item.get("source_name", "") or item.get("name", "")
+                        surcos_auto = int(
+                            item.get("surcos_automaticos", item.get("count", 0)) or 0
+                        )
+                        surcos_default = int(
+                            item.get("surcos_reales", surcos_auto) or 0
+                        )
+                        surcos_real = st.number_input(
+                            tr("Surcos reales del análisis", "Rangs réels de l’analyse"),
+                            min_value=0,
+                            max_value=10000,
+                            value=surcos_default,
+                            step=1,
+                            key=f"tc_surcos_reales_analisis_{idx}_{source_count_name}",
+                            help=tr(
+                                "Corrige el número real que quieres mostrar y guardar. No mueve ni elimina líneas.",
+                                "Corrigez le nombre réel à afficher et enregistrer. Les lignes ne sont ni déplacées ni supprimées.",
+                            ),
+                        )
+                        item["surcos_automaticos"] = surcos_auto
+                        item["surcos_reales"] = int(surcos_real)
+                        item["count"] = int(surcos_real)
+
+                        item["diagnostico_visual"] = _tc_diagnostico_con_surcos_reales(
+                            item.get("diagnostico_visual", ""),
+                            int(surcos_real),
+                        )
+
+                        # Inventario real asociado a esta fotografía.
+                        try:
+                            _inv_i, _tab_i, slots_i, ocup_i, vac_i = _tg_resumen_inventario(
+                                source_count_name
+                            )
+                        except Exception:
+                            slots_i = ocup_i = vac_i = 0
+
+                        item["slots_reales"] = int(slots_i)
+                        item["ocupados_reales"] = int(ocup_i)
+                        item["vacios_reales"] = int(vac_i)
+
                         diagnostico = str(item.get("diagnostico_visual", "") or "").strip()
                         if diagnostico:
                             st.markdown(tr("#### Descripción visual preliminar", "#### Description visuelle préliminaire"))
@@ -12464,11 +12958,47 @@ with main_col:
                                 item["polygon_image"] = corregida_poly
                                 polygon_image = corregida_poly
 
+                            # ----------------------------------------
+                            # CONTEO REAL DE POLÍGONOS
+                            # ----------------------------------------
+                            source_poly_count = item.get("source_name", "") or item.get("name", "")
+                            auto_poly_count = int(
+                                item.get("poligonos_automaticos", 0) or 0
+                            )
+
+                            # Si el usuario dibujó polígonos manuales, el editor
+                            # dejó el conteo exacto en session_state.
+                            polygon_editor_key = f"tc_edit_poly_{idx}_{source_poly_count}_polygon_count"
+                            polygon_editor_count = st.session_state.get(
+                                polygon_editor_key,
+                                None,
+                            )
+                            if polygon_editor_count is not None:
+                                item["poligonos_reales"] = int(polygon_editor_count)
+
+                            poly_default = int(
+                                item.get("poligonos_reales", auto_poly_count) or 0
+                            )
+                            poligonos_reales = st.number_input(
+                                tr("Polígonos reales", "Polygones réels"),
+                                min_value=0,
+                                max_value=10000,
+                                value=poly_default,
+                                step=1,
+                                key=f"tc_poligonos_reales_{idx}_{source_poly_count}",
+                                help=tr(
+                                    "Corrige cuántos polígonos reales dibujaste. No cambia la imagen.",
+                                    "Corrigez le nombre de polygones réels dessinés. L’image ne change pas.",
+                                ),
+                            )
+                            item["poligonos_automaticos"] = auto_poly_count
+                            item["poligonos_reales"] = int(poligonos_reales)
+
                             p1, p2, p3 = st.columns(3)
                             red_pct_item = float(item.get("red_pct", 0.0) or 0.0)
                             p1.metric(
-                                tr("Zonas detectadas", "Zones détectées"),
-                                1 if red_pct_item > 0 else 0
+                                tr("Polígonos", "Polygones"),
+                                int(item.get("poligonos_reales", 0) or 0)
                             )
                             p2.metric(
                                 tr("Área visual diferente", "Zone visuelle différente"),
@@ -12493,6 +13023,91 @@ with main_col:
                                     "Aucune image de polygones n’est disponible pour ce résultat."
                                 )
                             )
+
+                st.markdown(
+                    tr(
+                        "### 💾 Guardar correcciones de conteo",
+                        "### 💾 Enregistrer les corrections de comptage"
+                    )
+                )
+                st.caption(
+                    tr(
+                        "Aquí se guardan los números reales que corregiste para Surcos, Polígonos e Inventario.",
+                        "Ici sont enregistrés les nombres réels corrigés pour les Rangs, Polygones et Inventaire."
+                    )
+                )
+
+                if st.button(
+                    tr(
+                        "💾 Guardar conteos corregidos en Google Sheets",
+                        "💾 Enregistrer les comptages corrigés dans Google Sheets"
+                    ),
+                    type="primary",
+                    use_container_width=True,
+                    key="tc_guardar_conteos_corregidos",
+                ):
+                    errores_conteos = []
+                    guardados_conteos = 0
+
+                    for item_conteo in (resultados or []):
+                        source_conteo = item_conteo.get("source_name", "") or item_conteo.get("name", "")
+                        info_hist = item_conteo.get("historial_google_info", {})
+                        registro_id = (
+                            info_hist.get("id", "")
+                            if isinstance(info_hist, dict)
+                            else ""
+                        )
+
+                        if not registro_id:
+                            continue
+
+                        try:
+                            _inv_c, _tab_c, slots_c, ocup_c, vac_c = _tg_resumen_inventario(
+                                source_conteo
+                            )
+                        except Exception:
+                            slots_c = ocup_c = vac_c = 0
+
+                        ok_c, info_c = _tg_actualizar_conteos_google(
+                            registro_id=registro_id,
+                            surcos_reales=int(item_conteo.get("surcos_reales", item_conteo.get("count", 0)) or 0),
+                            poligonos_reales=int(item_conteo.get("poligonos_reales", 0) or 0),
+                            slots_reales=int(slots_c),
+                            ocupados_reales=int(ocup_c),
+                            vacios_reales=int(vac_c),
+                            surcos_automaticos=int(item_conteo.get("surcos_automaticos", item_conteo.get("count", 0)) or 0),
+                            poligonos_automaticos=int(item_conteo.get("poligonos_automaticos", 0) or 0),
+                        )
+
+                        if ok_c:
+                            guardados_conteos += 1
+                            st.session_state.tc_conteos_guardados[registro_id] = True
+                        else:
+                            errores_conteos.append(
+                                f"{source_conteo}: {info_c}"
+                            )
+
+                    if errores_conteos:
+                        st.warning(
+                            tr(
+                                "Algunos conteos no pudieron guardarse: " + " | ".join(errores_conteos),
+                                "Certains comptages n’ont pas pu être enregistrés : " + " | ".join(errores_conteos),
+                            )
+                        )
+                    elif guardados_conteos:
+                        st.success(
+                            tr(
+                                f"✅ {guardados_conteos} registro(s) actualizado(s) en Google Sheets.",
+                                f"✅ {guardados_conteos} enregistrement(s) mis à jour dans Google Sheets.",
+                            )
+                        )
+                    else:
+                        st.info(
+                            tr(
+                                "No encontré registros guardados para actualizar.",
+                                "Aucun enregistrement enregistré à mettre à jour.",
+                            )
+                        )
 
                 st.markdown("---")
 
