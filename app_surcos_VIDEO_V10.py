@@ -744,78 +744,7 @@ def crear_mascara_exclusion_ia(datos_ia, width, height):
 
     return mask
 
-# ============================================================
-# AJUSTES MANUALES DE SURCOS / POLÍGONOS / INVENTARIO
-# ============================================================
 
-def mostrar_editor_resultados(resultados):
-    """
-    Muestra los resultados del análisis y permite al usuario
-    corregir manualmente surcos, polígonos e inventario.
-    """
-    st.subheader("Resultados del análisis IA (ajustables)")
-
-    # Surcos detectados vs reales
-    surcos_reales = st.number_input(
-        "Surcos reales (ajustar manualmente):",
-        min_value=0,
-        value=int(resultados.get("count", 0))
-    )
-
-    # Polígonos detectados vs reales
-    poligonos_reales = st.number_input(
-        "Cantidad de polígonos (ajustar manualmente):",
-        min_value=0,
-        value=len(resultados.get("backend", {}).get("zonas_excluir", []))
-    )
-
-    # Inventario ajustable
-    inventario_revisado = st.number_input(
-        "Inventario corregido:",
-        min_value=0,
-        value=int(resultados.get("backend", {}).get("inventario", 0))
-    )
-
-    # Botón para confirmar ajustes
-    if st.button("Guardar ajustes manuales"):
-        resultados["count"] = surcos_reales
-        resultados["poligonos"] = poligonos_reales
-        resultados["inventario"] = inventario_revisado
-
-        st.success("✅ Ajustes guardados. Se usarán los valores corregidos en el historial.")
-
-    return resultados
-
-
-# ============================================================
-# EJEMPLO DE USO EN EL FLUJO PRINCIPAL
-# ============================================================
-
-# Supongamos que ya tienes resultados del backend:
-ok, resultados = analizar_1_imagen_con_ia(uploaded_file)
-
-if ok:
-    # Mostrar imagen procesada
-    st.image(resultados["annotated"], caption="Imagen procesada por IA")
-
-    # Mostrar editor manual
-    resultados_finales = mostrar_editor_resultados(resultados)
-
-    # Aquí ya puedes guardar en Google Sheets con los valores corregidos:
-    datos_finales = {
-        "Surcos": resultados_finales["count"],
-        "Poligonos": resultados_finales.get("poligonos", 0),
-        "Inventario": resultados_finales.get("inventario", 0),
-        "VerdePct": resultados_finales.get("green_pct", 0.0),
-        "RojoPct": resultados_finales.get("red_pct", 0.0),
-        "ZonaMasAfectada": resultados_finales.get("zona_mas_afectada", ""),
-        "DiagnosticoVisual": resultados_finales.get("diagnostico_visual", ""),
-        "Recomendaciones": resultados_finales.get("recomendaciones_iniciales", []),
-    }
-
-    st.write("Datos listos para guardar en historial:", datos_finales)
-else:
-    st.error(f"Error al procesar imagen: {resultados}")
 
 
 # ============================================================
@@ -842,51 +771,6 @@ HISTORIAL_HEADERS = [
     "Recomendaciones",
     "NotaDiagnostico",
 ]
-
-def guardar_en_historial(datos_finales, nombre="Parcela"):
-    """
-    Inserta una fila en Google Sheets con los valores corregidos
-    usando las mismas columnas definidas en HISTORIAL_HEADERS.
-    """
-    try:
-        drive_service, sheets_service = obtener_google_clients()
-
-        sheet_id = _secret_text("GSHEET_ID")
-        if not sheet_id:
-            raise RuntimeError("Falta GSHEET_ID en Streamlit Secrets.")
-
-        fila = [
-            str(int(pd.Timestamp.now().timestamp())),   # ID único
-            pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),  # Fecha
-            nombre,
-            datos_finales.get("ImagenOriginalFileID", ""),
-            datos_finales.get("ImagenProcesadaFileID", ""),
-            datos_finales.get("Surcos", 0),            # Surcos corregidos
-            datos_finales.get("VerdePct", 0.0),
-            datos_finales.get("RojoPct", 0.0),
-            datos_finales.get("AmarilloPct", 0.0),
-            datos_finales.get("NivelVisual", ""),
-            datos_finales.get("ZonaMasAfectada", ""),
-            datos_finales.get("DiagnosticoVisual", ""),
-            ", ".join(datos_finales.get("CausasProbables", [])),
-            datos_finales.get("ExplicacionNutrientes", ""),
-            ", ".join(datos_finales.get("Recomendaciones", [])),
-            datos_finales.get("NotaDiagnostico", ""),
-        ]
-
-        body = {"values": [fila]}
-
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=sheet_id,
-            range=HISTORIAL_SHEET_NAME,
-            valueInputOption="RAW",
-            body=body
-        ).execute()
-
-        st.success("✅ Datos guardados en HistorialTerroCore (Google Sheets).")
-
-    except Exception as e:
-        st.error(f"Error al guardar en historial: {e}")
 
 
 def _secret_text(nombre, default=""):
