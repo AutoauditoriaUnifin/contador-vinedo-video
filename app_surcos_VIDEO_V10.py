@@ -10722,7 +10722,7 @@ def _tc_aplicar_borrador_lineas_automaticas(
     return Image.fromarray(arr_actual, mode="RGB")
 
 
-def _tc_construir_dibujo_lineas_movibles(rows, full_size, disp_size, offsets=None):
+def _tc_construir_dibujo_lineas_movibles(rows, full_size, disp_size, offsets=None, angles=None):
     """
     Construye una capa Fabric.js con UNA línea seleccionable por cada surco.
 
@@ -10732,6 +10732,7 @@ def _tc_construir_dibujo_lineas_movibles(rows, full_size, disp_size, offsets=Non
     análisis verde/rojo con el desplazamiento elegido.
     """
     offsets = offsets or {}
+    angles = angles or {}
     fw, fh = int(full_size[0]), int(full_size[1])
     dw, dh = int(disp_size[0]), int(disp_size[1])
     sx = dw / float(max(1, fw))
@@ -10755,6 +10756,12 @@ def _tc_construir_dibujo_lineas_movibles(rows, full_size, disp_size, offsets=Non
             off_y = float(off[1])
         except Exception:
             off_x = off_y = 0.0
+
+        ang_raw = angles.get(str(rid), angles.get(rid, 0.0))
+        try:
+            angle_deg = float(ang_raw)
+        except Exception:
+            angle_deg = 0.0
 
         ax = a[0] * sx + off_x * sx
         ay = a[1] * sy + off_y * sy
@@ -10791,17 +10798,18 @@ def _tc_construir_dibujo_lineas_movibles(rows, full_size, disp_size, offsets=Non
             "strokeDashArray": None,
             "scaleX": 1,
             "scaleY": 1,
-            "angle": 0,
+            "angle": float(angle_deg),
             "flipX": False,
             "flipY": False,
             "opacity": 0.92,
             "selectable": True,
             "evented": True,
-            "hasControls": False,
+            "hasControls": True,
             "hasBorders": True,
+            "hasRotatingPoint": True,
             "lockScalingX": True,
             "lockScalingY": True,
-            "lockRotation": True,
+            "lockRotation": False,
             "lockSkewingX": True,
             "lockSkewingY": True,
             "lockMovementX": False,
@@ -10814,10 +10822,15 @@ def _tc_construir_dibujo_lineas_movibles(rows, full_size, disp_size, offsets=Non
             "row_id": rid,
             "left": float(left),
             "top": float(top),
+            "center_x": float((ax + bx) / 2.0),
+            "center_y": float((ay + by) / 2.0),
+            "line_width": float(abs(x2 - x1)),
+            "line_height": float(abs(y2 - y1)),
             "scale_x": sx,
             "scale_y": sy,
             "offset_x": off_x,
             "offset_y": off_y,
+            "angle": float(angle_deg),
         })
 
     return {
@@ -10827,15 +10840,29 @@ def _tc_construir_dibujo_lineas_movibles(rows, full_size, disp_size, offsets=Non
     }, meta
 
 
-def _tc_dibujar_fila_desplazada(draw, row, health_map, full_size, delta_xy):
-    """Dibuja una fila completa con sus segmentos rojo/verde, puntos y etiqueta."""
+def _tc_dibujar_fila_desplazada(draw, row, health_map, full_size, delta_xy, delta_angle_deg=0.0):
+    """
+    Dibuja una fila completa con sus segmentos rojo/verde, puntos y etiqueta.
+    El movimiento puede ser X+Y (diagonal) y también puede incluir giro.
+    """
     w, h = full_size
     dx, dy = float(delta_xy[0]), float(delta_xy[1])
     pts0 = _tg_norm_to_px(row.get("points_norm", []), w, h)
     if len(pts0) < 2:
         return
 
-    pts = [(float(p[0]) + dx, float(p[1]) + dy) for p in pts0]
+    theta = math.radians(float(delta_angle_deg or 0.0))
+    ct = math.cos(theta)
+    st = math.sin(theta)
+    pivot = np.asarray([(float(pts0[0][0]) + float(pts0[-1][0])) / 2.0,
+                        (float(pts0[0][1]) + float(pts0[-1][1])) / 2.0], dtype=np.float32)
+
+    def _transform_point(p):
+        q = np.asarray([float(p[0]), float(p[1])], dtype=np.float32) - pivot
+        r = np.asarray([q[0] * ct - q[1] * st, q[0] * st + q[1] * ct], dtype=np.float32) + pivot
+        return (float(r[0]) + dx, float(r[1]) + dy)
+
+    pts = [_transform_point(p) for p in pts0]
     a = pts[0]
     b = pts[-1]
     line_w = max(2, int(round(min(w, h) / 600)))
@@ -10876,8 +10903,7 @@ def _tc_dibujar_fila_desplazada(draw, row, health_map, full_size, delta_xy):
     # Puntos del diagnóstico también se desplazan con la línea.
     positions0 = _ocv2_slot_positions(row, (w, h))
     for idx_slot, p in enumerate(positions0, 1):
-        x = float(p[0]) + dx
-        y = float(p[1]) + dy
+        x, y = _transform_point(p)
         if idx_slot in red_indices:
             rr = 2.3
             col = (245, 45, 45, 255)
@@ -10954,31 +10980,27 @@ def _tc_aplicar_movimiento_lineas_surco(
     initial_meta,
 ):
     """
-    Aplica los desplazamientos de las líneas seleccionables.
+    Aplica los desplazamientos y giros de las líneas seleccionables.
 
-    NO recalcula OpenCV. NO cambia slots ni porcentajes. Solo:
-      1) restaura la zona del surco viejo desde la foto original;
-      2) desplaza el eje completo, puntos y segmentos rojo/verde;
-      3) devuelve la imagen procesada corregida.
+    La línea completa puede moverse libremente en X e Y (incluido movimiento
+    diagonal) y puede girarse para alinearla con el surco real. No recalcula
+    el diagnóstico: conserva slots, porcentajes y clasificación existentes.
     """
     if canvas_result is None or not getattr(canvas_result, "json_data", None):
-        return None, {}
+        return None, {}, {}
 
     actual = _tc_editor_a_pil(imagen_procesada_full)
     original = _tc_editor_a_pil(imagen_original_full)
     if actual is None or original is None:
-        return None, {}
+        return None, {}, {}
 
     if original.size != actual.size:
         original = original.resize(actual.size, Image.Resampling.LANCZOS)
 
     full_w, full_h = actual.size
     objects = canvas_result.json_data.get("objects", []) or []
-
-    # La herramienta está pensada para NO borrar líneas. Si el usuario quitó
-    # objetos del canvas, no intentamos adivinar qué fila corresponde.
     if len(objects) != len(initial_meta):
-        return None, {}
+        return None, {}, {}
 
     sx = float(initial_meta[0].get("scale_x", 1.0)) if initial_meta else 1.0
     sy = float(initial_meta[0].get("scale_y", 1.0)) if initial_meta else 1.0
@@ -10986,39 +11008,55 @@ def _tc_aplicar_movimiento_lineas_surco(
     sy = sy if abs(sy) > 1e-9 else 1.0
 
     offsets_final = {}
+    angles_final = {}
     movimientos = []
 
     for idx, meta in enumerate(initial_meta):
         obj = objects[idx] or {}
         if str(obj.get("type", "")) != "line":
-            return None, {}
+            return None, {}, {}
 
         moved_left = float(obj.get("left", meta["left"]) or meta["left"])
         moved_top = float(obj.get("top", meta["top"]) or meta["top"])
 
-        delta_x_display = moved_left - float(meta["left"])
-        delta_y_display = moved_top - float(meta["top"])
+        # Fabric rota alrededor del centro del objeto. Para que el arrastre
+        # diagonal sea independiente del ángulo, calculamos el centro actual.
+        obj_w = float(obj.get("width", meta.get("line_width", 0.0)) or meta.get("line_width", 0.0))
+        obj_h = float(obj.get("height", meta.get("line_height", 0.0)) or meta.get("line_height", 0.0))
+        obj_sx = float(obj.get("scaleX", 1.0) or 1.0)
+        obj_sy = float(obj.get("scaleY", 1.0) or 1.0)
+        center_x_display = moved_left + (obj_w * obj_sx) / 2.0
+        center_y_display = moved_top + (obj_h * obj_sy) / 2.0
+
+        delta_x_display = center_x_display - float(meta.get("center_x", meta["left"]))
+        delta_y_display = center_y_display - float(meta.get("center_y", meta["top"]))
         delta_x = delta_x_display / sx
         delta_y = delta_y_display / sy
 
-        # Si el usuario escaló/rotó por accidente, ignoramos esas operaciones:
-        # la función solo permite mover la línea completa.
         delta_x = float(np.clip(delta_x, -full_w, full_w))
         delta_y = float(np.clip(delta_y, -full_h, full_h))
+
+        angle_now = float(obj.get("angle", meta.get("angle", 0.0)) or 0.0)
+        angle_old = float(meta.get("angle", 0.0) or 0.0)
+        delta_angle = angle_now - angle_old
+        # Normalizar para evitar acumulaciones extrañas de 360°.
+        delta_angle = ((delta_angle + 180.0) % 360.0) - 180.0
 
         rid = int(meta.get("row_id", idx + 1))
         old_off_x = float(meta.get("offset_x", 0.0) or 0.0)
         old_off_y = float(meta.get("offset_y", 0.0) or 0.0)
         new_off_x = old_off_x + delta_x
         new_off_y = old_off_y + delta_y
+        new_angle = angle_old + delta_angle
 
         offsets_final[str(rid)] = [new_off_x, new_off_y]
-        movimientos.append((idx, (delta_x, delta_y)))
+        angles_final[str(rid)] = new_angle
+        movimientos.append((idx, (delta_x, delta_y), delta_angle))
 
-    # Primero quitar TODOS los gráficos viejos que se van a mover.
+    # Restaurar primero las zonas antiguas desde la fotografía original.
     restaurar_mask = np.zeros((full_h, full_w), dtype=np.uint8)
-    for idx, delta in movimientos:
-        if abs(delta[0]) < 0.35 and abs(delta[1]) < 0.35:
+    for idx, delta, delta_angle in movimientos:
+        if abs(delta[0]) < 0.35 and abs(delta[1]) < 0.35 and abs(delta_angle) < 0.15:
             continue
         restaurar_mask = cv2.bitwise_or(
             restaurar_mask,
@@ -11033,9 +11071,8 @@ def _tc_aplicar_movimiento_lineas_surco(
     resultado = Image.fromarray(arr_actual, mode="RGB")
     draw = ImageDraw.Draw(resultado, "RGBA")
 
-    # Volver a dibujar SOLO las filas que realmente se movieron.
-    for idx, delta in movimientos:
-        if abs(delta[0]) < 0.35 and abs(delta[1]) < 0.35:
+    for idx, delta, delta_angle in movimientos:
+        if abs(delta[0]) < 0.35 and abs(delta[1]) < 0.35 and abs(delta_angle) < 0.15:
             continue
         _tc_dibujar_fila_desplazada(
             draw,
@@ -11043,9 +11080,10 @@ def _tc_aplicar_movimiento_lineas_surco(
             health_map or {},
             (full_w, full_h),
             delta,
+            delta_angle_deg=delta_angle,
         )
 
-    return resultado, offsets_final
+    return resultado, offsets_final, angles_final
 
 
 def _tc_editor_manual_imagen(
@@ -11062,9 +11100,10 @@ def _tc_editor_manual_imagen(
     Editor visual manual para Inventario, Análisis verde/rojo y Polígonos.
 
     Incluye: BORRADOR DE LÍNEAS AUTOMÁTICAS y, cuando se pasan las filas de
-    OpenCV, MOVER LÍNEAS DE SURCO. El modo mover presenta cada eje como un
-    objeto seleccionable para arrastrarlo completo; al guardar se reconstruyen
-    el eje verde, los segmentos rojos, puntos y etiqueta en la nueva posición.
+    análisis, MOVER LÍNEAS DE SURCO. El modo mover presenta cada eje como un
+    objeto seleccionable para arrastrarlo completo en X/Y (incluido diagonal)
+    y girarlo; al guardar se reconstruyen el eje verde, los segmentos rojos,
+    puntos y etiqueta en la nueva posición.
 
     Devuelve una PIL corregida cuando se pulsa Guardar.
     Si hay FileID, reemplaza el archivo en Drive sin cambiar su ID.
@@ -11235,12 +11274,15 @@ def _tc_editor_manual_imagen(
     line_initial_meta = []
     if modo_mover_lineas:
         offsets_key = f"{key}_line_offsets"
+        angles_key = f"{key}_line_angles"
         saved_offsets = st.session_state.get(offsets_key, {}) or {}
+        saved_angles = st.session_state.get(angles_key, {}) or {}
         initial_drawing, line_initial_meta = _tc_construir_dibujo_lineas_movibles(
             line_rows,
             (full_w, full_h),
             (disp_w, disp_h),
             offsets=saved_offsets,
+            angles=saved_angles,
         )
         st.session_state[f"{key}_line_initial_meta"] = line_initial_meta
 
@@ -11256,10 +11298,10 @@ def _tc_editor_manual_imagen(
     elif modo_mover_lineas:
         st.success(
             tr(
-                "↔️ Activa el botón de edición del canvas, selecciona una línea cian y ARRÁSTRALA completa hasta el surco correcto. "
-                "No se cambia el tamaño ni el ángulo.",
-                "↔️ Activez le bouton d’édition du canvas, sélectionnez une ligne cyan et DÉPLACEZ-LA entière jusqu’au rang correct. "
-                "La taille et l’angle ne changent pas.",
+                "↔️ Activa el botón de edición, selecciona una línea cian y ARRÁSTRALA libremente, incluso en diagonal. "
+                "Usa el control circular para GIRARLA y alinearla con el surco.",
+                "↔️ Activez l’édition, sélectionnez une ligne cyan et DÉPLACEZ-LA librement, même en diagonale. "
+                "Utilisez le contrôle circulaire pour la TOURNER et l’aligner sur le rang.",
             )
         )
     else:
@@ -11326,7 +11368,7 @@ def _tc_editor_manual_imagen(
             f"{key}_line_initial_meta",
             line_initial_meta,
         ) or []
-        corregida, mover_offsets = _tc_aplicar_movimiento_lineas_surco(
+        corregida, mover_offsets, mover_angles = _tc_aplicar_movimiento_lineas_surco(
             canvas_result=canvas_result,
             imagen_procesada_full=actual,
             imagen_original_full=original,
@@ -11336,6 +11378,7 @@ def _tc_editor_manual_imagen(
         )
         if mover_offsets is not None:
             st.session_state[f"{key}_line_offsets"] = mover_offsets
+            st.session_state[f"{key}_line_angles"] = mover_angles or {}
     else:
         corregida = _tc_canvas_resultado_a_pil(
             canvas_result,
@@ -11373,8 +11416,8 @@ def _tc_editor_manual_imagen(
                 elif modo_mover_lineas:
                     st.success(
                         tr(
-                            "✅ Líneas movidas al surco seleccionado y guardadas en Drive con el mismo FileID.",
-                            "✅ Lignes déplacées vers le rang sélectionné et enregistrées dans Drive avec le même FileID.",
+                            "✅ Líneas movidas y/o giradas hasta el surco seleccionado y guardadas en Drive con el mismo FileID.",
+                            "✅ Lignes déplacées et/ou tournées vers le rang sélectionné et enregistrées dans Drive avec le même FileID.",
                         )
                     )
                 else:
