@@ -1009,89 +1009,100 @@ def _tc_historial_pil(file_id):
 
 
 def _asegurar_hoja_historial():
+    """Asegura HistorialTerroCore sin sobrescribir encabezados ni formulas."""
     _, sheets_service = obtener_google_clients()
-
     spreadsheet_id = _secret_text("GSHEET_ID")
-
     meta = sheets_service.spreadsheets().get(
         spreadsheetId=spreadsheet_id,
         fields="sheets.properties"
     ).execute()
-
-    nombres = [
-        s.get("properties", {}).get("title", "")
-        for s in meta.get("sheets", [])
-    ]
-
+    nombres = [s.get("properties", {}).get("title", "") for s in meta.get("sheets", [])]
     if HISTORIAL_SHEET_NAME not in nombres:
         sheets_service.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id,
-            body={
-                "requests": [
-                    {
-                        "addSheet": {
-                            "properties": {
-                                "title": HISTORIAL_SHEET_NAME
-                            }
-                        }
-                    }
-                ]
-            }
+            body={"requests": [{"addSheet": {"properties": {"title": HISTORIAL_SHEET_NAME}}}]},
         ).execute()
 
-    rango_header = f"{HISTORIAL_SHEET_NAME}!A1:P1"
-
+    required = [
+        "ID", "Fecha", "Nombre", "ImagenOriginalFileID", "ImagenProcesadaFileID",
+        "ImagenInventarioFileID", "ImagenAnalisisFileID", "ImagenPoligonosFileID",
+        "Surcos", "VerdePct", "RojoPct", "AmarilloPct", "NivelVisual",
+        "ZonaMasAfectada", "DiagnosticoVisual", "CausasProbables",
+        "ExplicacionNutrientes", "Recomendaciones", "NotaDiagnostico",
+    ]
     actual = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range=rango_header,
+        range=f"'{HISTORIAL_SHEET_NAME}'!1:1",
     ).execute().get("values", [])
-
-    if not actual or actual[0] != HISTORIAL_HEADERS:
+    headers = list(actual[0]) if actual else []
+    if not headers:
         sheets_service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range=rango_header,
+            range=f"'{HISTORIAL_SHEET_NAME}'!A1:S1",
             valueInputOption="RAW",
-            body={
-                "values": [HISTORIAL_HEADERS]
-            },
+            body={"values": [required]},
+        ).execute()
+        return
+    existing = {str(h or "").strip().casefold() for h in headers if str(h or "").strip()}
+    faltantes = [h for h in required if h.casefold() not in existing]
+    if faltantes:
+        first_col = len(headers) + 1
+        last_col = first_col + len(faltantes) - 1
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{HISTORIAL_SHEET_NAME}'!{_tg_letra_columna(first_col)}1:{_tg_letra_columna(last_col)}1",
+            valueInputOption="RAW",
+            body={"values": [faltantes]},
         ).execute()
 
 
 def guardar_registro_google_sheets(registro):
+    """Guarda HistorialTerroCore respetando el orden real de columnas del Sheet."""
     _, sheets_service = obtener_google_clients()
-
     _asegurar_hoja_historial()
-
     spreadsheet_id = _secret_text("GSHEET_ID")
-
-    row = [[
-        registro.get("id", ""),
-        registro.get("fecha", ""),
-        registro.get("nombre", ""),
-        registro.get("imagen_original_file_id", ""),
-        registro.get("imagen_procesada_file_id", ""),
-        int(registro.get("surcos", 0) or 0),
-        float(registro.get("verde_pct", 0.0) or 0.0),
-        float(registro.get("rojo_pct", 0.0) or 0.0),
-        float(registro.get("amarillo_pct", 0.0) or 0.0),
-        registro.get("nivel_visual", ""),
-        registro.get("zona_mas_afectada", ""),
-        registro.get("diagnostico_visual", ""),
-        json.dumps(
-            registro.get("causas_probables", []),
-            ensure_ascii=False
-        ),
-        registro.get("explicacion_nutrientes", ""),
-        json.dumps(
-            registro.get("recomendaciones", []),
-            ensure_ascii=False
-        ),
-        registro.get("nota_diagnostico", ""),
-    ]]
-
+    values = {
+        "ID": registro.get("id", ""),
+        "Fecha": registro.get("fecha", ""),
+        "Nombre": registro.get("nombre", ""),
+        "ImagenOriginalFileID": registro.get("imagen_original_file_id", ""),
+        "ImagenProcesadaFileID": registro.get("imagen_procesada_file_id", ""),
+        "ImagenInventarioFileID": registro.get("imagen_inventario_file_id", ""),
+        "ImagenAnalisisFileID": registro.get("imagen_procesada_file_id", ""),
+        "ImagenPoligonosFileID": registro.get("imagen_poligonos_file_id", ""),
+        "Surcos": int(registro.get("surcos", 0) or 0),
+        "VerdePct": float(registro.get("verde_pct", 0.0) or 0.0),
+        "RojoPct": float(registro.get("rojo_pct", 0.0) or 0.0),
+        "AmarilloPct": float(registro.get("amarillo_pct", 0.0) or 0.0),
+        "NivelVisual": registro.get("nivel_visual", ""),
+        "ZonaMasAfectada": registro.get("zona_mas_afectada", ""),
+        "DiagnosticoVisual": registro.get("diagnostico_visual", ""),
+        "CausasProbables": json.dumps(registro.get("causas_probables", []), ensure_ascii=False),
+        "ExplicacionNutrientes": registro.get("explicacion_nutrientes", ""),
+        "Recomendaciones": json.dumps(registro.get("recomendaciones", []), ensure_ascii=False),
+        "NotaDiagnostico": registro.get("nota_diagnostico", ""),
+    }
+    headers = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{HISTORIAL_SHEET_NAME}'!1:1",
+    ).execute().get("values", [[]])
+    headers = headers[0] if headers else []
+    known = {str(h or "").strip().casefold() for h in headers}
+    missing = [k for k in values if k.casefold() not in known]
+    if missing:
+        first_col = len(headers) + 1
+        last_col = first_col + len(missing) - 1
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{HISTORIAL_SHEET_NAME}'!{_tg_letra_columna(first_col)}1:{_tg_letra_columna(last_col)}1",
+            valueInputOption="RAW",
+            body={"values": [missing]},
+        ).execute()
+        headers = headers + missing
+    row = [[values.get(str(h or "").strip(), "") for h in headers]]
     sheets_service.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
-        range=f"{HISTORIAL_SHEET_NAME}!A:P",
+        range=f"'{HISTORIAL_SHEET_NAME}'!A:{_tg_letra_columna(len(headers))}",
         valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
         body={"values": row},
@@ -8710,6 +8721,40 @@ def _tg_buscar_fila_historial_por_id(sheets_service, spreadsheet_id, registro_id
     return None
 
 
+def _tg_guardar_ids_imagenes_historial(registro):
+    """Escribe los FileID de Drive por nombre de encabezado, sin usar letras fijas."""
+    _, sheets_service = obtener_google_clients()
+    spreadsheet_id = _secret_text("GSHEET_ID")
+    fila = _tg_buscar_fila_historial_por_id(
+        sheets_service, spreadsheet_id, registro.get("id", "")
+    )
+    if not fila:
+        raise RuntimeError(
+            f"No se encontró el registro {registro.get('id','')} en HistorialTerroCore."
+        )
+    ids = {
+        "ImagenOriginalFileID": str(registro.get("imagen_original_file_id", "") or "").strip(),
+        "ImagenProcesadaFileID": str(registro.get("imagen_procesada_file_id", "") or "").strip(),
+        "ImagenInventarioFileID": str(registro.get("imagen_inventario_file_id", "") or "").strip(),
+        "ImagenAnalisisFileID": str(registro.get("imagen_procesada_file_id", "") or "").strip(),
+        "ImagenPoligonosFileID": str(registro.get("imagen_poligonos_file_id", "") or "").strip(),
+    }
+    data=[]
+    for encabezado, valor in ids.items():
+        col = _tg_buscar_o_crear_encabezado(
+            sheets_service, spreadsheet_id, HISTORIAL_SHEET_NAME, encabezado
+        )
+        data.append({
+            "range": f"'{HISTORIAL_SHEET_NAME}'!{_tg_letra_columna(col)}{fila}",
+            "values": [[valor]],
+        })
+    sheets_service.spreadsheets().values().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"valueInputOption": "RAW", "data": data},
+    ).execute()
+    return ids
+
+
 def _tg_guardar_extras_historial(registro):
     """
     Guarda automáticamente columnas adicionales en HistorialTerroCore:
@@ -9009,6 +9054,35 @@ def _tc_diagnostico_con_surcos_reales(texto, surcos_reales):
         flags=re.I,
     )
     return t
+
+
+def _tg_buscar_registro_historial_por_nombre_fuente(sheets_service, spreadsheet_id, nombre_fuente):
+    """Recupera el ID del registro guardado usando NombreFoto o Nombre.
+
+    Sirve como respaldo cuando Streamlit pierde historial_google_info después
+    de un rerun, aunque el registro ya exista en HistorialTerroCore.
+    """
+    objetivo = str(nombre_fuente or "").strip()
+    if not objetivo:
+        return None, None
+    try:
+        valores = sheets_service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{HISTORIAL_SHEET_NAME}'!A:AZ",
+        ).execute().get("values", [])
+    except Exception:
+        return None, None
+    if not valores:
+        return None, None
+    headers = [str(x or "").strip().casefold() for x in (valores[0] or [])]
+    candidatos = [i for i, h in enumerate(headers) if h in ("nombrefoto", "nombre")]
+    for fila_num, fila in reversed(list(enumerate(valores[1:], 2))):
+        for idx_col in candidatos:
+            if idx_col < len(fila) and str(fila[idx_col] or "").strip() == objetivo:
+                registro_id = str(fila[0] if fila else "").strip()
+                if registro_id:
+                    return registro_id, fila_num
+    return None, None
 
 
 def _tg_buscar_fila_por_id_hoja(sheets_service, spreadsheet_id, hoja, registro_id):
@@ -9847,17 +9921,41 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
     }
 
     # 1) HistorialTerroCore A:P existente.
+    # El registro principal queda guardado aunque alguna tabla secundaria falle.
     guardar_registro_google_sheets(registro)
 
-    # 2) Columnas extra del mismo renglón:
-    #    Parcelas + URLs + rutas AppSheet.
-    _tg_guardar_extras_historial(registro)
+    # Persistimos el ID por fotografía para sobrevivir a reruns de Streamlit.
+    try:
+        mapa_ids = st.session_state.get("tc_registro_id_por_imagen", {}) or {}
+        mapa_ids[str(uploaded_image.name)] = str(registro.get("id", ""))
+        st.session_state.tc_registro_id_por_imagen = mapa_ids
+    except Exception:
+        pass
 
-    # 3) Tablas relacionales del flujo REAL ejecutado:
-    #    Parcelas, Analisis, InventarioSurcos, Evidencias, NotaDiagnostico,
-    #    RegionesCriticas, ZonasDañadas y ValidacionMuestreo.
-    _tg_guardar_tablas_relacionales(registro, backend_result, uploaded_image)
+    errores_secundarios = []
 
+    # 2) Columnas extra del mismo renglón.
+    try:
+        _tg_guardar_extras_historial(registro)
+    except Exception as exc:
+        errores_secundarios.append(f"Extras Historial: {exc}")
+
+    # 2.1) Garantía explícita de los FileID en HistorialTerroCore.
+    try:
+        _tg_guardar_ids_imagenes_historial(registro)
+    except Exception as exc:
+        errores_secundarios.append(f"IDs imágenes Historial: {exc}")
+
+    # 3) Tablas relacionales.
+    try:
+        _tg_guardar_tablas_relacionales(registro, backend_result, uploaded_image)
+    except Exception as exc:
+        errores_secundarios.append(f"Tablas relacionales: {exc}")
+
+    if errores_secundarios:
+        registro["errores_guardado_secundario"] = errores_secundarios
+
+    # HistorialTerroCore sí quedó guardado; devolvemos su ID para poder editarlo.
     return True, registro
 
 # Gemini reemplaza también la ayuda visual de IA usada por el flujo legado/video.
@@ -12901,6 +12999,14 @@ with main_col:
                                 else f"{idx_img}_{uploaded_image.name}"
                             )
 
+                            if historial_google_ok and isinstance(historial_google_info, dict):
+                                try:
+                                    mapa_ids = st.session_state.get("tc_registro_id_por_imagen", {}) or {}
+                                    mapa_ids[str(uploaded_image.name)] = str(historial_google_info.get("id", ""))
+                                    st.session_state.tc_registro_id_por_imagen = mapa_ids
+                                except Exception:
+                                    pass
+
                             resultados_salud.append({
                                 "id": id_resultado,
                                 "name": nombre_resultado,
@@ -13270,7 +13376,36 @@ with main_col:
                             else ""
                         )
 
+                        # 1) ID persistido en la sesión.
                         if not registro_id:
+                            try:
+                                mapa_ids = st.session_state.get("tc_registro_id_por_imagen", {}) or {}
+                                registro_id = str(mapa_ids.get(source_conteo, "") or "").strip()
+                            except Exception:
+                                registro_id = ""
+
+                        # 2) Si la sesión no lo tiene, buscar el registro ya guardado
+                        # directamente en HistorialTerroCore por NombreFoto/Nombre.
+                        if not registro_id and historial_google_configurado():
+                            try:
+                                _, sheets_service_c = obtener_google_clients()
+                                spreadsheet_id_c = _secret_text("GSHEET_ID")
+                                registro_id, _fila_c = _tg_buscar_registro_historial_por_nombre_fuente(
+                                    sheets_service_c,
+                                    spreadsheet_id_c,
+                                    source_conteo,
+                                )
+                                if registro_id:
+                                    mapa_ids = st.session_state.get("tc_registro_id_por_imagen", {}) or {}
+                                    mapa_ids[source_conteo] = registro_id
+                                    st.session_state.tc_registro_id_por_imagen = mapa_ids
+                            except Exception:
+                                registro_id = ""
+
+                        if not registro_id:
+                            errores_conteos.append(
+                                f"{source_conteo}: no se pudo identificar el registro guardado en Google Sheets."
+                            )
                             continue
 
                         try:
@@ -13316,8 +13451,8 @@ with main_col:
                     else:
                         st.info(
                             tr(
-                                "No encontré registros guardados para actualizar.",
-                                "Aucun enregistrement enregistré à mettre à jour.",
+                                "No encontré registros guardados para actualizar. Si el análisis ya fue guardado, vuelve a pulsar el botón: ahora la app también busca el registro por NombreFoto en Google Sheets.",
+                                "Aucun enregistrement enregistré à mettre à jour. Si l’analyse est déjà enregistrée, appuyez à nouveau sur le bouton : l’application recherche aussi par NombreFoto dans Google Sheets.",
                             )
                         )
 
