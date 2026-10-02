@@ -11095,9 +11095,12 @@ def _tc_editor_manual_imagen(
     file_id="",
     line_rows=None,
     line_health_map=None,
+    solo_poligonos_manuales=False,
 ):
     """
     Editor visual manual para Inventario, Análisis verde/rojo y Polígonos.
+
+    Cuando solo_poligonos_manuales=True, el editor se dedica exclusivamente a dibujar múltiples polígonos manuales sobre la imagen.
 
     Incluye: BORRADOR DE LÍNEAS AUTOMÁTICAS y, cuando se pasan las filas de
     análisis, MOVER LÍNEAS DE SURCO. El modo mover presenta cada eje como un
@@ -11153,6 +11156,7 @@ def _tc_editor_manual_imagen(
             tr("Resultado actual", "Résultat actuel"),
             tr("Imagen original · redibujar desde cero", "Image originale · redessiner"),
         ],
+        index=1 if solo_poligonos_manuales else 0,
         horizontal=True,
         key=f"{key}_base",
     )
@@ -11169,6 +11173,11 @@ def _tc_editor_manual_imagen(
         "↔️ Déplacer les lignes de rang",
     )
 
+    opcion_poligonos_manuales = tr(
+        "🔷 Dibujar polígonos manualmente",
+        "🔷 Dessiner les polygones manuellement",
+    )
+
     opciones_herramienta = [
         opcion_borrador,
         tr("Línea", "Ligne"),
@@ -11180,6 +11189,8 @@ def _tc_editor_manual_imagen(
     ]
     if line_rows:
         opciones_herramienta.insert(1, opcion_mover_lineas)
+    if solo_poligonos_manuales:
+        opciones_herramienta = [opcion_poligonos_manuales]
 
     with c1:
         herramienta = st.selectbox(
@@ -11190,6 +11201,7 @@ def _tc_editor_manual_imagen(
 
     modo_borrador = herramienta == opcion_borrador
     modo_mover_lineas = bool(line_rows) and herramienta == opcion_mover_lineas
+    modo_poligonos_manuales = solo_poligonos_manuales or herramienta == opcion_poligonos_manuales
 
     with c2:
         if modo_borrador:
@@ -11208,6 +11220,14 @@ def _tc_editor_manual_imagen(
                 )
             )
             color = "#00E5FF"
+        elif modo_poligonos_manuales:
+            st.markdown(
+                tr(
+                    "**Polígonos manuales activos**  \nHaz clic punto por punto y cierra cada polígono. Puedes dibujar varios.",
+                    "**Polygones manuels actifs**  \nCliquez point par point et fermez chaque polygone. Vous pouvez en dessiner plusieurs.",
+                )
+            )
+            color = "#1E6EF5"
         else:
             color = st.color_picker(
                 tr("Color", "Couleur"),
@@ -11229,6 +11249,9 @@ def _tc_editor_manual_imagen(
         base_opcion.startswith("Imagen original")
         or base_opcion.startswith("Image originale")
     )
+
+    # En polígonos manuales, la opción recomendada es Imagen original para
+    # reemplazar los polígonos automáticos; Resultado actual permite conservarlos.
 
     # El borrador trabaja sobre el resultado actual y restaura desde original.
     # El modo MOVER trabaja sobre la foto original limpia y dibuja líneas cian
@@ -11260,7 +11283,8 @@ def _tc_editor_manual_imagen(
 
     modos = {
         opcion_borrador: "freedraw",
-        opcion_mover_lineas: "transform",
+        opcion_mover_lineas: "freedraw",
+        opcion_poligonos_manuales: "polygon",
         tr("Línea", "Ligne"): "line",
         tr("Dibujo libre", "Dessin libre"): "freedraw",
         tr("Rectángulo", "Rectangle"): "rect",
@@ -11304,6 +11328,13 @@ def _tc_editor_manual_imagen(
                 "Utilisez le contrôle circulaire pour la TOURNER et l’aligner sur le rang.",
             )
         )
+    elif modo_poligonos_manuales:
+        st.success(
+            tr(
+                "🔷 Dibuja cada polígono manualmente sobre la parcela. Haz clic punto por punto y cierra el polígono. Puedes crear varios.",
+                "🔷 Dessinez chaque polygone manuellement sur la parcelle. Cliquez point par point et fermez le polygone. Vous pouvez en créer plusieurs.",
+            )
+        )
     else:
         st.caption(
             tr(
@@ -11317,14 +11348,10 @@ def _tc_editor_manual_imagen(
             )
         )
 
-    # MOVER LÍNEAS: NO enviamos los píxeles completos de la imagen en cada
-    # movimiento. Solo necesitamos json_data (posición/ángulo de los objetos).
-    # Esto evita que Streamlit procese una imagen RGBA completa en cada mouse-up,
-    # que era lo que hacía que la app se cerrara al editar.
-    mover_return_image_data = False if modo_mover_lineas else True
+    canvas_fill = "rgba(30, 110, 245, 0.20)" if modo_poligonos_manuales else "rgba(30, 110, 245, 0.15)"
 
     canvas_result = st_canvas(
-        fill_color="rgba(30, 110, 245, 0.15)",
+        fill_color=canvas_fill,
         stroke_width=int(grosor),
         stroke_color=("#FF00FF" if modo_borrador else color),
         background_color="#FFFFFF",
@@ -11335,7 +11362,7 @@ def _tc_editor_manual_imagen(
         drawing_mode=drawing_mode,
         initial_drawing=initial_drawing,
         point_display_radius=max(3, int(grosor)),
-        return_image_data=mover_return_image_data,
+        return_image_data=True,
         max_display_height=820,
         key=f"{key}_canvas",
     )
@@ -11367,6 +11394,23 @@ def _tc_editor_manual_imagen(
             base_display,
             actual,
             original,
+        )
+        mover_offsets = None
+    elif modo_poligonos_manuales:
+        objetos = []
+        if canvas_result is not None and getattr(canvas_result, "json_data", None):
+            objetos = canvas_result.json_data.get("objects", []) or []
+        poligonos = [
+            obj for obj in objetos
+            if str((obj or {}).get("type", "")).lower() == "polygon"
+        ]
+        corregida = (
+            _tc_canvas_resultado_a_pil(
+                canvas_result,
+                base_display,
+                (full_w, full_h),
+            )
+            if poligonos else None
         )
         mover_offsets = None
     elif modo_mover_lineas:
@@ -11401,6 +11445,13 @@ def _tc_editor_manual_imagen(
                     "Aucun passage de gomme détecté. Peignez sur la ligne avec le pinceau magenta puis réessayez.",
                 )
             )
+        elif modo_poligonos_manuales:
+            st.warning(
+                tr(
+                    "No detecté ningún polígono. Dibuja al menos uno haciendo clic punto por punto y ciérralo antes de guardar.",
+                    "Aucun polygone détecté. Dessinez-en au moins un point par point et fermez-le avant d’enregistrer.",
+                )
+            )
         else:
             st.error(tr("No se pudo generar la corrección.", "Impossible de générer la correction."))
         return None
@@ -11424,6 +11475,13 @@ def _tc_editor_manual_imagen(
                         tr(
                             "✅ Líneas movidas y/o giradas hasta el surco seleccionado y guardadas en Drive con el mismo FileID.",
                             "✅ Lignes déplacées et/ou tournées vers le rang sélectionné et enregistrées dans Drive avec le même FileID.",
+                        )
+                    )
+                elif modo_poligonos_manuales:
+                    st.success(
+                        tr(
+                            "✅ Polígonos dibujados manualmente y guardados en Drive con el mismo FileID.",
+                            "✅ Polygones dessinés manuellement et enregistrés dans Drive avec le même FileID.",
                         )
                     )
                 else:
@@ -12353,8 +12411,8 @@ with main_col:
                 )
                 st.caption(
                     tr(
-                        "Los polígonos azules se muestran exactamente con la salida producida por la lógica actual.",
-                        "Les polygones bleus sont affichés exactement avec la sortie produite par la logique actuelle."
+                        "Puedes conservar los polígonos automáticos o dibujar manualmente tus propios polígonos sobre la parcela.",
+                        "Vous pouvez conserver les polygones automatiques ou dessiner manuellement vos propres polygones sur la parcelle."
                     )
                 )
 
@@ -12399,6 +12457,7 @@ with main_col:
                                 ),
                                 color_inicial="#1E6EF5",
                                 file_id=file_id_poly,
+                                solo_poligonos_manuales=True,
                             )
 
                             if corregida_poly is not None:
