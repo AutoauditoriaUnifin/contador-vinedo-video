@@ -8,6 +8,8 @@ import zipfile
 import tempfile
 import requests
 import re
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -8664,55 +8666,47 @@ def _tg_letra_columna(numero):
     return salida
 
 
-def _tg_asegurar_columnas_grid(sheets_service, spreadsheet_id, hoja, columnas_necesarias):
-    """Asegura que la pestaña tenga suficientes columnas antes de escribir."""
-    try:
-        meta = sheets_service.spreadsheets().get(
-            spreadsheetId=spreadsheet_id,
-            fields="sheets(properties(sheetId,title,gridProperties(columnCount)))",
-        ).execute()
-    except Exception:
-        return
+def _tg_asegurar_columnas_hoja(sheets_service, spreadsheet_id, hoja, required_columns):
+    """Asegura que la cuadrícula real de Google Sheets tenga las columnas necesarias.
 
-    sheet_id = None
-    column_count = 26
-    for sh in meta.get("sheets", []):
-        props = sh.get("properties", {}) or {}
-        if str(props.get("title", "")) == str(hoja):
-            sheet_id = props.get("sheetId")
-            gp = props.get("gridProperties", {}) or {}
-            column_count = int(gp.get("columnCount", 26) or 26)
-            break
-
-    if sheet_id is None:
-        return
-
-    necesarias = int(columnas_necesarias or 0)
-    if necesarias <= column_count:
-        return
-
-    faltantes = necesarias - column_count
-    sheets_service.spreadsheets().batchUpdate(
+    Google Sheets no permite escribir AE1 si la hoja solo tiene 30 columnas (AD).
+    Esta función amplía la cuadrícula antes de crear/actualizar encabezados.
+    """
+    required_columns = max(1, int(required_columns or 1))
+    meta = sheets_service.spreadsheets().get(
         spreadsheetId=spreadsheet_id,
-        body={
-            "requests": [{
-                "appendDimension": {
-                    "sheetId": int(sheet_id),
-                    "dimension": "COLUMNS",
-                    "length": int(faltantes),
-                }
-            }]
-        },
+        fields="sheets.properties(sheetId,title,gridProperties.columnCount)",
     ).execute()
+
+    for sheet in meta.get("sheets", []):
+        props = sheet.get("properties", {}) or {}
+        if str(props.get("title", "")) != str(hoja):
+            continue
+
+        grid = props.get("gridProperties", {}) or {}
+        current_columns = int(grid.get("columnCount", 0) or 0)
+        if current_columns >= required_columns:
+            return
+
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "requests": [{
+                    "appendDimension": {
+                        "sheetId": int(props.get("sheetId")),
+                        "dimension": "COLUMNS",
+                        "length": required_columns - current_columns,
+                    }
+                }]
+            },
+        ).execute()
+        return
 
 
 def _tg_buscar_o_crear_encabezado(sheets_service, spreadsheet_id, hoja, encabezado):
     """
     Busca un encabezado en fila 1 (sin distinguir mayúsculas).
-    Si no existe, agrega físicamente la columna al grid antes de escribirla.
-
-    Esto evita el error:
-      Range (...!AE1) exceeds grid limits. Max columns: 30
+    Si no existe, lo agrega al final y devuelve el número de columna (1-based).
     """
     valores = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
@@ -8727,14 +8721,14 @@ def _tg_buscar_o_crear_encabezado(sheets_service, spreadsheet_id, hoja, encabeza
             return i
 
     nueva_col = len(headers) + 1
-    _tg_asegurar_columnas_grid(
+    _tg_asegurar_columnas_hoja(
         sheets_service,
         spreadsheet_id,
         hoja,
         nueva_col,
     )
-
     letra = _tg_letra_columna(nueva_col)
+
     sheets_service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
         range=f"'{hoja}'!{letra}1",
@@ -8763,17 +8757,8 @@ def _tg_buscar_fila_historial_por_id(sheets_service, spreadsheet_id, registro_id
 
 def _tg_guardar_extras_historial(registro):
     """
-    Guarda automáticamente las columnas adicionales de HistorialTerroCore.
-
-    IMPORTANTE:
-    - A:P = historial base existente.
-    - Las columnas extra se crean automáticamente aunque la hoja solo tenga
-      30 columnas actualmente.
-    - Los IDs de Drive y las rutas relativas de AppSheet se guardan juntos.
-    - Las rutas tienen el formato que AppSheet necesita, por ejemplo:
-        Procesadas/Parcela_1_20260929_191625_C7FB68_procesada.png
-        Inventarios/Parcela_1_20260929_191625_C7FB68_inventario.png
-        Poligonos/Parcela_1_20260929_191625_C7FB68_poligonos.png
+    Guarda automáticamente columnas adicionales en HistorialTerroCore:
+    Parcelas, URLs de Drive y rutas relativas para AppSheet.
     """
     _, sheets_service = obtener_google_clients()
     spreadsheet_id = _secret_text("GSHEET_ID")
@@ -8786,48 +8771,22 @@ def _tg_guardar_extras_historial(registro):
     if not fila:
         return
 
-    nombre_original = str(registro.get("nombre", "") or "").strip()
-    nombre_procesada = str(registro.get("nombre_procesada", "") or "").strip()
-    nombre_inventario = str(registro.get("nombre_inventario", "") or "").strip()
-    nombre_poligonos = str(registro.get("nombre_poligonos", "") or "").strip()
-
     extras = {
         "Parcelas": registro.get("parcela", ""),
         "Idioma": registro.get("idioma", _tc_idioma_actual()),
         "ImagenOriginalURL": registro.get("imagen_original_url", ""),
         "ImagenProcesadaURL": registro.get("imagen_procesada_url", ""),
-
-        # Rutas para columnas Image/File de AppSheet.
-        "ImagenOriginalAppSheet": registro.get(
-            "imagen_original_appsheet",
-            f"Originales/{nombre_original}" if nombre_original else "",
-        ),
-        "ImagenProcesadaAppSheet": registro.get(
-            "imagen_procesada_appsheet",
-            f"Procesadas/{nombre_procesada}" if nombre_procesada else "",
-        ),
-        "ImagenInventarioAppSheet": registro.get(
-            "imagen_inventario_appsheet",
-            f"Inventarios/{nombre_inventario}" if nombre_inventario else "",
-        ),
-        "ImagenPoligonosAppSheet": registro.get(
-            "imagen_poligonos_appsheet",
-            f"Poligonos/{nombre_poligonos}" if nombre_poligonos else "",
-        ),
-        "ImagenAnalisisAppSheet": registro.get(
-            "imagen_analisis_appsheet",
-            f"Procesadas/{nombre_procesada}" if nombre_procesada else "",
-        ),
-        "ImagenLineasAppSheet": registro.get(
-            "imagen_lineas_appsheet",
-            f"Procesadas/{nombre_procesada}" if nombre_procesada else "",
-        ),
+        "ImagenOriginalAppSheet": registro.get("imagen_original_appsheet", ""),
+        "ImagenProcesadaAppSheet": registro.get("imagen_procesada_appsheet", ""),
+        "ImagenInventarioAppSheet": registro.get("imagen_inventario_appsheet", ""),
+        "ImagenPoligonosAppSheet": registro.get("imagen_poligonos_appsheet", ""),
+        "ImagenAnalisisAppSheet": registro.get("imagen_procesada_appsheet", ""),
 
         # IDs reales de Google Drive.
         "ImagenInventarioFileID": registro.get("imagen_inventario_file_id", ""),
         "ImagenPoligonosFileID": registro.get("imagen_poligonos_file_id", ""),
         "ImagenAnalisisFileID": registro.get("imagen_procesada_file_id", ""),
-
+        "ImagenPoligonosURL": registro.get("imagen_poligonos_url", ""),
         "NombreFoto": registro.get("nombre_fuente", registro.get("nombre", "")),
 
         # Conteos corregibles manualmente.
@@ -8847,21 +8806,15 @@ def _tg_guardar_extras_historial(registro):
         }, ensure_ascii=False),
     }
 
-    # Crear/asegurar todas las columnas primero. Esto evita que una columna
-    # como AE1 falle y deje sin guardar las columnas posteriores.
-    columnas = {}
-    for encabezado in extras:
-        columnas[encabezado] = _tg_buscar_o_crear_encabezado(
+    data = []
+    for encabezado, valor in extras.items():
+        col = _tg_buscar_o_crear_encabezado(
             sheets_service,
             spreadsheet_id,
             HISTORIAL_SHEET_NAME,
             encabezado,
         )
-
-    # Una sola escritura batch para todo el registro extra.
-    data = []
-    for encabezado, valor in extras.items():
-        letra = _tg_letra_columna(columnas[encabezado])
+        letra = _tg_letra_columna(col)
         data.append({
             "range": f"'{HISTORIAL_SHEET_NAME}'!{letra}{fila}",
             "values": [[valor]],
@@ -8878,12 +8831,19 @@ def _tg_guardar_extras_historial(registro):
 
 
 def _tg_append_rows(hoja, rows, total_cols):
-    """Agrega varias filas a una hoja existente sin tocar sus encabezados."""
+    """Agrega varias filas y asegura que la cuadrícula tenga el ancho requerido."""
     if not rows:
         return
     _, sheets_service = obtener_google_clients()
     spreadsheet_id = _secret_text("GSHEET_ID")
-    ultima = _tg_letra_columna(int(total_cols))
+    total_cols = int(total_cols or 1)
+    _tg_asegurar_columnas_hoja(
+        sheets_service,
+        spreadsheet_id,
+        hoja,
+        total_cols,
+    )
+    ultima = _tg_letra_columna(total_cols)
     sheets_service.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
         range=f"'{hoja}'!A:{ultima}",
@@ -9183,116 +9143,6 @@ def _tg_actualizar_campo_hoja_por_id(
         body={"values": [[valor]]},
     ).execute()
     return True
-
-
-def _tg_reparar_enlaces_appsheet_historial(limite=100):
-    """
-    Repara los últimos registros que ya tienen IDs de Drive pero dejaron vacías
-    las rutas de AppSheet. También crea las columnas faltantes y expande el grid.
-
-    Se usa el nombre real de cada archivo de Drive para construir:
-      Originales/...
-      Procesadas/...
-      Inventarios/...
-      Poligonos/...
-    """
-    if not historial_google_configurado():
-        return False, "Historial de Google no configurado."
-
-    try:
-        drive_service, sheets_service = obtener_google_clients()
-        spreadsheet_id = _secret_text("GSHEET_ID")
-
-        # Asegurar que todas las columnas existan antes de leer/escribir.
-        encabezados_necesarios = [
-            "ImagenOriginalAppSheet", "ImagenProcesadaAppSheet",
-            "ImagenInventarioAppSheet", "ImagenPoligonosAppSheet",
-            "ImagenAnalisisAppSheet", "ImagenLineasAppSheet",
-            "ImagenInventarioFileID", "ImagenPoligonosFileID",
-            "ImagenAnalisisFileID",
-        ]
-        col_map = {}
-        for h in encabezados_necesarios:
-            col_map[h] = _tg_buscar_o_crear_encabezado(
-                sheets_service, spreadsheet_id, HISTORIAL_SHEET_NAME, h
-            )
-
-        rows = sheets_service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id,
-            range=f"'{HISTORIAL_SHEET_NAME}'!A:AZ",
-        ).execute().get("values", [])
-        if not rows:
-            return True, "No hay registros para reparar."
-
-        headers = [str(x or "").strip() for x in rows[0]]
-        idx = {h.casefold(): i for i, h in enumerate(headers)}
-        updates = []
-        reparados = 0
-
-        def cell(row, name):
-            i = idx.get(name.casefold())
-            if i is None or i >= len(row):
-                return ""
-            return str(row[i] or "").strip()
-
-        def drive_name(file_id):
-            if not file_id:
-                return ""
-            try:
-                return str(drive_service.files().get(
-                    fileId=file_id,
-                    fields="name",
-                    supportsAllDrives=True,
-                ).execute().get("name", "") or "").strip()
-            except Exception:
-                return ""
-
-        for fila_num, row in reversed(list(enumerate(rows[1:], 2))):
-            if reparados >= int(limite):
-                break
-
-            original_id = cell(row, "ImagenOriginalFileID")
-            processed_id = cell(row, "ImagenProcesadaFileID")
-            inv_id = cell(row, "ImagenInventarioFileID")
-            poly_id = cell(row, "ImagenPoligonosFileID")
-            analysis_id = cell(row, "ImagenAnalisisFileID") or processed_id
-
-            if not any((original_id, processed_id, inv_id, poly_id)):
-                continue
-
-            original_name = cell(row, "Nombre") or drive_name(original_id)
-            processed_name = drive_name(processed_id)
-            inv_name = drive_name(inv_id)
-            poly_name = drive_name(poly_id)
-
-            paths = {
-                "ImagenOriginalAppSheet": f"Originales/{original_name}" if original_name else "",
-                "ImagenProcesadaAppSheet": f"Procesadas/{processed_name}" if processed_name else "",
-                "ImagenInventarioAppSheet": f"Inventarios/{inv_name}" if inv_name else "",
-                "ImagenPoligonosAppSheet": f"Poligonos/{poly_name}" if poly_name else "",
-                "ImagenAnalisisAppSheet": f"Procesadas/{processed_name}" if processed_name else "",
-                "ImagenLineasAppSheet": f"Procesadas/{processed_name}" if processed_name else "",
-            }
-
-            for header, value in paths.items():
-                if value:
-                    letra = _tg_letra_columna(col_map[header])
-                    updates.append({
-                        "range": f"'{HISTORIAL_SHEET_NAME}'!{letra}{fila_num}",
-                        "values": [[value]],
-                    })
-
-            reparados += 1
-
-        if updates:
-            sheets_service.spreadsheets().values().batchUpdate(
-                spreadsheetId=spreadsheet_id,
-                body={"valueInputOption": "RAW", "data": updates},
-            ).execute()
-
-        return True, f"Se repararon los enlaces AppSheet de {reparados} registros."
-    except Exception as exc:
-        return False, str(exc)
 
 
 def _tg_actualizar_conteos_google(
@@ -10036,10 +9886,12 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
         # Rutas relativas listas para columnas Image de AppSheet.
         "imagen_original_appsheet": f"Originales/{nombre_original}",
         "imagen_procesada_appsheet": f"Procesadas/{nombre_procesada}",
-        "imagen_inventario_appsheet": f"Inventarios/{nombre_inventario}",
-        "imagen_poligonos_appsheet": f"Poligonos/{nombre_poligonos}",
-        "imagen_analisis_appsheet": f"Procesadas/{nombre_procesada}",
-        "imagen_lineas_appsheet": f"Procesadas/{nombre_procesada}",
+        "imagen_inventario_appsheet": f"Inventarios/{nombre_inventario}" if inventario_file_id else "",
+        "imagen_poligonos_appsheet": f"Poligonos/{nombre_poligonos}" if poligonos_file_id else "",
+        "imagen_poligonos_url": (
+            f"https://drive.google.com/file/d/{poligonos_file_id}/view"
+            if poligonos_file_id else ""
+        ),
 
         "surcos": int(
             backend_result.get(
@@ -11181,6 +11033,17 @@ def _tc_file_id_guardado(nombre_fuente, tipo):
       analisis   -> ImagenProcesadaFileID
       poligonos  -> ImagenPoligonosFileID
     """
+    # Una corrección manual de polígonos crea un NUEVO archivo para evitar
+    # caché de AppSheet. Ese ID tiene prioridad sobre el ID del análisis original.
+    if str(tipo or "").lower() == "poligonos":
+        try:
+            mapa = st.session_state.get("tc_poligono_file_id_por_imagen", {}) or {}
+            latest = str(mapa.get(nombre_fuente, "") or "").strip()
+            if latest:
+                return latest
+        except Exception:
+            pass
+
     item = _tc_resultado_guardado_por_fuente(nombre_fuente)
     if not item:
         return ""
@@ -11196,6 +11059,156 @@ def _tc_file_id_guardado(nombre_fuente, tipo):
     }.get(str(tipo or "").lower(), "")
 
     return str(info.get(campo, "") or "").strip()
+
+
+def _tc_guardar_poligonos_manuales_nuevo_archivo(
+    imagen,
+    registro_id,
+    nombre_fuente,
+    nombre_poligonos_anterior="",
+):
+    """Guarda la corrección manual de polígonos como NUEVO archivo/ID.
+
+    No reemplaza el archivo automático. Esto evita que AppSheet conserve la
+    referencia/cache del archivo anterior. También actualiza en Sheets tanto
+    el FileID como la ruta relativa que usa AppSheet.
+    """
+    registro_id = str(registro_id or "").strip()
+    nombre_fuente = str(nombre_fuente or "foto").strip()
+    anterior = str(nombre_poligonos_anterior or "").strip()
+
+    pil = _tc_editor_a_pil(imagen)
+    if pil is None:
+        return False, {}, "No se pudo convertir la imagen manual a PIL."
+
+    base = Path(anterior).stem if anterior else Path(nombre_fuente).stem
+    corto = uuid.uuid4().hex[:8].upper()
+    nombre_nuevo = f"{base}_manual_{corto}.png"
+    contenido = _tc_pil_a_png_bytes(pil)
+    if not contenido:
+        return False, {}, "No se pudo convertir la imagen manual a PNG."
+
+    nuevo_file_id = subir_bytes_google_drive(
+        contenido,
+        nombre_nuevo,
+        "image/png",
+        "Poligonos",
+    )
+    ruta_appsheet = f"Poligonos/{nombre_nuevo}"
+    url_drive = f"https://drive.google.com/file/d/{nuevo_file_id}/view"
+
+    if registro_id and historial_google_configurado():
+        _, sheets_service = obtener_google_clients()
+        spreadsheet_id = _secret_text("GSHEET_ID")
+        fila = _tg_buscar_fila_historial_por_id(
+            sheets_service,
+            spreadsheet_id,
+            registro_id,
+        )
+        if not fila:
+            raise RuntimeError(
+                f"No encontré la fila {registro_id} en HistorialTerroCore."
+            )
+
+        # Actualiza el ID y la ruta en la MISMA fila del análisis.
+        for encabezado, valor in [
+            ("ImagenPoligonosFileID", nuevo_file_id),
+            ("ImagenPoligonosAppSheet", ruta_appsheet),
+            ("ImagenPoligonosURL", url_drive),
+        ]:
+            col = _tg_buscar_o_crear_encabezado(
+                sheets_service,
+                spreadsheet_id,
+                HISTORIAL_SHEET_NAME,
+                encabezado,
+            )
+            letra = _tg_letra_columna(col)
+            sheets_service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"'{HISTORIAL_SHEET_NAME}'!{letra}{fila}",
+                valueInputOption="RAW",
+                body={"values": [[valor]]},
+            ).execute()
+
+        # Mantener también Analisis sincronizado con el nuevo ID/ruta.
+        for encabezado, valor in [
+            ("ImagenPoligonosFileID", nuevo_file_id),
+            ("ImagenPoligonosAppSheet", ruta_appsheet),
+        ]:
+            try:
+                _tg_actualizar_campo_hoja_por_id(
+                    sheets_service,
+                    spreadsheet_id,
+                    "Analisis",
+                    registro_id,
+                    encabezado,
+                    valor,
+                )
+            except Exception:
+                pass
+
+        # Mantener Evidencias sincronizada con el nuevo ID.
+        evidencia_actualizada = False
+        for tipo_evidencia in ("POLIGONOS", "POLYGONES"):
+            ev_id = f"EV-{registro_id}-{tipo_evidencia}"
+            if _tg_buscar_fila_por_id_hoja(
+                sheets_service,
+                spreadsheet_id,
+                "Evidencias",
+                ev_id,
+            ):
+                _tg_actualizar_campo_hoja_por_id(
+                    sheets_service,
+                    spreadsheet_id,
+                    "Evidencias",
+                    ev_id,
+                    "NombreArchivo",
+                    nombre_nuevo,
+                )
+                _tg_actualizar_campo_hoja_por_id(
+                    sheets_service,
+                    spreadsheet_id,
+                    "Evidencias",
+                    ev_id,
+                    "DriveFileID",
+                    nuevo_file_id,
+                )
+                evidencia_actualizada = True
+                break
+
+        if not evidencia_actualizada:
+            # Si por alguna razón no existe la evidencia, créala sin duplicar
+            # el análisis principal.
+            tipo_guardado = _tc_guardar_valor_appsheet("POLIGONOS")
+            _tg_append_rows(
+                "Evidencias",
+                [[
+                    f"EV-{registro_id}-{tipo_guardado}",
+                    registro_id,
+                    "",
+                    tipo_guardado,
+                    nombre_nuevo,
+                    nuevo_file_id,
+                    "image/png",
+                    datetime.now(timezone.utc).isoformat(),
+                    "TerroCore image AI - corrección manual",
+                    _tc_idioma_actual(),
+                ]],
+                10,
+            )
+
+    # Persistir el nuevo ID en la sesión para que el siguiente rerun/editor
+    # no vuelva a usar el ID automático anterior.
+    mapa = st.session_state.get("tc_poligono_file_id_por_imagen", {}) or {}
+    mapa[nombre_fuente] = nuevo_file_id
+    st.session_state.tc_poligono_file_id_por_imagen = mapa
+
+    return True, {
+        "file_id": nuevo_file_id,
+        "nombre": nombre_nuevo,
+        "ruta_appsheet": ruta_appsheet,
+        "url": url_drive,
+    }, "OK"
 
 
 def _tc_canvas_resultado_a_pil(canvas_result, base_display, full_size):
@@ -12231,7 +12244,7 @@ def _tc_editor_manual_imagen(
             st.error(tr("No se pudo generar la corrección.", "Impossible de générer la correction."))
         return None
 
-    if file_id:
+    if file_id and not modo_poligonos_manuales:
         try:
             ok_drive, info_drive = _tc_reemplazar_imagen_drive_mismo_id(
                 file_id,
@@ -12265,8 +12278,8 @@ def _tc_editor_manual_imagen(
                 elif modo_poligonos_manuales:
                     st.success(
                         tr(
-                            "✅ Polígonos dibujados manualmente y guardados en Drive con el mismo FileID.",
-                            "✅ Polygones dessinés manuellement et enregistrés dans Drive avec le même FileID.",
+                            "✅ Polígonos manuales preparados. Se guardarán como un NUEVO archivo/ID para que AppSheet muestre la versión manual.",
+                            "✅ Polygones manuels préparés. Ils seront enregistrés comme un NOUVEAU fichier/ID afin qu’AppSheet affiche la version manuelle.",
                         )
                     )
                 else:
@@ -13414,10 +13427,11 @@ with main_col:
                                 "poligonos"
                             )
 
+                            key_poly_editor = f"tc_edit_poly_{idx}_{source_name_poly}"
                             corregida_poly = _tc_editor_manual_imagen(
                                 item.get("polygon_image"),
                                 original_editor_poly,
-                                key=f"tc_edit_poly_{idx}_{source_name_poly}",
+                                key=key_poly_editor,
                                 titulo=tr(
                                     "Corregir polígonos",
                                     "Corriger les polygones"
@@ -13430,6 +13444,55 @@ with main_col:
                             if corregida_poly is not None:
                                 item["polygon_image"] = corregida_poly
                                 polygon_image = corregida_poly
+
+                                # IMPORTANTE: los polígonos manuales usan un NUEVO
+                                # archivo/ID. El automático queda intacto y AppSheet
+                                # recibe el nuevo ID + nueva ruta.
+                                info_poly = item.get("historial_google_info") or {}
+                                registro_id_poly = ""
+                                if isinstance(info_poly, dict):
+                                    registro_id_poly = str(info_poly.get("id", "") or "").strip()
+                                if not registro_id_poly:
+                                    registro_id_poly = str(item.get("id", "") or "").strip()
+
+                                try:
+                                    ok_poly_new, datos_poly_new, msg_poly_new = _tc_guardar_poligonos_manuales_nuevo_archivo(
+                                        imagen=corregida_poly,
+                                        registro_id=registro_id_poly,
+                                        nombre_fuente=source_name_poly,
+                                        nombre_poligonos_anterior=(
+                                            info_poly.get("nombre_poligonos", "")
+                                            if isinstance(info_poly, dict)
+                                            else ""
+                                        ),
+                                    )
+                                    if ok_poly_new:
+                                        # Actualizar el objeto en sesión para que el
+                                        # siguiente rerun use el nuevo ID.
+                                        if isinstance(info_poly, dict):
+                                            info_poly["imagen_poligonos_file_id"] = datos_poly_new["file_id"]
+                                            info_poly["imagen_poligonos_appsheet"] = datos_poly_new["ruta_appsheet"]
+                                            info_poly["imagen_poligonos_url"] = datos_poly_new["url"]
+                                            info_poly["nombre_poligonos"] = datos_poly_new["nombre"]
+                                            item["historial_google_info"] = info_poly
+                                        item["imagen_poligonos_file_id"] = datos_poly_new["file_id"]
+                                        item["imagen_poligonos_appsheet"] = datos_poly_new["ruta_appsheet"]
+                                        item["nombre_poligonos"] = datos_poly_new["nombre"]
+                                        st.success(
+                                            tr(
+                                                f"✅ Polígonos manuales guardados. Nuevo FileID: {datos_poly_new['file_id']}",
+                                                f"✅ Polygones manuels enregistrés. Nouveau FileID : {datos_poly_new['file_id']}",
+                                            )
+                                        )
+                                    else:
+                                        st.warning(str(msg_poly_new))
+                                except Exception as exc_poly:
+                                    st.error(
+                                        tr(
+                                            f"No se pudo actualizar el nuevo ID de polígonos en Sheets: {exc_poly}",
+                                            f"Impossible de mettre à jour le nouvel ID des polygones dans Sheets : {exc_poly}",
+                                        )
+                                    )
 
                             # ----------------------------------------
                             # CONTEO REAL DE POLÍGONOS
@@ -13612,23 +13675,6 @@ with main_col:
                         )
 
                 st.markdown("---")
-
-                # ----------------------------------------------------
-                # REPARAR ENLACES DE IMAGEN PARA APPSHEET
-                # ----------------------------------------------------
-                if st.button(
-                    tr(
-                        "🔧 Reparar enlaces de imágenes para AppSheet",
-                        "🔧 Réparer les liens d’images pour AppSheet"
-                    ),
-                    use_container_width=True,
-                    key="tc_reparar_enlaces_appsheet",
-                ):
-                    ok_rep, info_rep = _tg_reparar_enlaces_appsheet_historial(limite=100)
-                    if ok_rep:
-                        st.success(tr("✅ " + info_rep, "✅ " + info_rep))
-                    else:
-                        st.error(tr("❌ " + info_rep, "❌ " + info_rep))
 
                 # ====================================================
                 # ⑤ y ⑥ - SE CONSERVAN COMO ETAPAS VISUALES SIN
