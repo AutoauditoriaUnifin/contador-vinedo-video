@@ -14774,11 +14774,26 @@ def _tc_v33_listar_registros():
     return registros, pestana
 
 
+# ------------------------------------------------------------
+# IDIOMA DEL MODULO DE VIDEOS
+# Utiliza el boton ES / FR que ya existe en TerraCore.
+# ------------------------------------------------------------
+
+def _tc_v33_texto(espanol, frances):
+    idioma = str(
+        st.session_state.get("idioma_terrocore", "ES")
+    ).strip().upper()
+
+    if idioma == "FR":
+        return frances
+
+    return espanol
+
+
 
 # ------------------------------------------------------------
-# INTERFAZ AUTOMATICA DE VIDEOS TERRACORE
+# INTERFAZ DE VIDEOS TERRACORE - ESPANOL / FRANCES
 # ------------------------------------------------------------
-
 
 def render_seccion_video_v33():
 
@@ -14786,30 +14801,52 @@ def render_seccion_video_v33():
     import secrets
     import streamlit as st
 
+    t = _tc_v33_texto
+
     st.divider()
-    st.header("📹 Videos de TerraCore")
+
+    st.header(
+        t(
+            "📹 Videos de TerraCore",
+            "📹 Vidéos TerraCore"
+        )
+    )
 
     st.write(
-        "Carga tus dos videos. TerraCore generará un ID "
-        "de 8 dígitos y creará un registro nuevo en Google Sheets."
+        t(
+            "Carga tus dos videos. TerraCore generará un ID "
+            "de 8 dígitos y creará un registro nuevo en Google Sheets.",
+            "Importez vos deux vidéos. TerraCore générera un ID "
+            "à 8 chiffres et créera un nouvel enregistrement "
+            "dans Google Sheets."
+        )
     )
 
     with st.form("tc_videos_nuevo_registro"):
 
         video = st.file_uploader(
-            "🎬 Selecciona el video principal",
+            t(
+                "🎬 Selecciona el video principal",
+                "🎬 Sélectionnez la vidéo principale"
+            ),
             type=["mp4", "mov", "avi", "mkv", "webm"],
             key="tc_video_principal_nuevo"
         )
 
         video_simulacion = st.file_uploader(
-            "🎥 Selecciona el video de simulación",
+            t(
+                "🎥 Selecciona el video de simulación",
+                "🎥 Sélectionnez la vidéo de simulation"
+            ),
             type=["mp4", "mov", "avi", "mkv", "webm"],
             key="tc_video_simulacion_nuevo"
         )
 
         enviar = st.form_submit_button(
-            "☁️ Subir los dos videos y registrar",
+            t(
+                "☁️ Subir los dos videos y registrar",
+                "☁️ Importer les deux vidéos et enregistrer"
+            ),
             type="primary",
             use_container_width=True
         )
@@ -14819,13 +14856,22 @@ def render_seccion_video_v33():
 
     if video is None or video_simulacion is None:
         st.error(
-            "Debes seleccionar los dos videos antes de guardar."
+            t(
+                "Debes seleccionar los dos videos antes de guardar.",
+                "Vous devez sélectionner les deux vidéos avant "
+                "l'enregistrement."
+            )
         )
         return
 
     try:
-        # Comprobar los IDs existentes para evitar duplicados.
-        with st.spinner("Preparando un ID único..."):
+
+        with st.spinner(
+            t(
+                "Preparando un ID único...",
+                "Préparation d'un ID unique..."
+            )
+        ):
 
             _, sheets, spreadsheet_id, _ = (
                 _tc_v33_conectar_google()
@@ -14840,8 +14886,12 @@ def render_seccion_video_v33():
 
             if "uniqueid" not in indices:
                 st.error(
-                    "No se encontró la columna UNIQUEID "
-                    "en los encabezados de Google Sheets."
+                    t(
+                        "No se encontró la columna UNIQUEID "
+                        "en Google Sheets.",
+                        "La colonne UNIQUEID est introuvable "
+                        "dans Google Sheets."
+                    )
                 )
                 return
 
@@ -14849,6 +14899,7 @@ def render_seccion_video_v33():
             ids_existentes = set()
 
             for fila in filas[1:]:
+
                 if posicion_id < len(fila):
                     valor = str(
                         fila[posicion_id]
@@ -14857,8 +14908,9 @@ def render_seccion_video_v33():
                     if valor:
                         ids_existentes.add(valor)
 
-            # Generar un ID nuevo de exactamente 8 dígitos.
+            # ID nuevo de exactamente 8 dígitos.
             while True:
+
                 uniqueid = str(
                     secrets.randbelow(90_000_000)
                     + 10_000_000
@@ -14867,19 +14919,24 @@ def render_seccion_video_v33():
                 if uniqueid not in ids_existentes:
                     break
 
-        # Crear automáticamente nombre y descripción.
+        # Datos generados automáticamente a partir de los archivos.
         nombre = os.path.splitext(
             os.path.basename(video.name)
         )[0]
 
-        descripcion = (
+        descripcion = t(
             f"Video principal: {video.name} | "
-            f"Video simulación: {video_simulacion.name}"
+            f"Video simulación: {video_simulacion.name}",
+            f"Vidéo principale : {video.name} | "
+            f"Vidéo de simulation : {video_simulacion.name}"
         )
 
-        # Subir ambos archivos y registrar una fila nueva.
         with st.spinner(
-            "Subiendo videos a Google Drive y guardando el registro..."
+            t(
+                "Subiendo videos a Google Drive y guardando el registro...",
+                "Importation des vidéos dans Google Drive et "
+                "enregistrement des données..."
+            )
         ):
 
             resultado = _tc_v33_guardar_videos(
@@ -14893,35 +14950,63 @@ def render_seccion_video_v33():
         accion, pestana_guardado, enlaces = resultado
 
         st.success(
-            "¡Los dos videos se procesaron y el registro fue guardado!"
+            t(
+                "¡Los dos videos se guardaron correctamente!",
+                "Les deux vidéos ont été enregistrées avec succès !"
+            )
         )
 
-        st.subheader("Registro creado")
-        st.write("**UNIQUEID:**", uniqueid)
-        st.write("**NOMBRE:**", nombre)
-        st.write("**DESCRIPCION:**", descripcion)
+        st.subheader(
+            t(
+                "📋 Registro creado",
+                "📋 Enregistrement créé"
+            )
+        )
+
+        st.markdown(
+            f"**{t('ID único', 'ID unique')}:** `{uniqueid}`"
+        )
+
+        st.markdown(
+            f"**{t('Nombre', 'Nom')}:** {nombre}"
+        )
+
+        st.markdown(
+            f"**{t('Descripción', 'Description')}:** "
+            f"{descripcion}"
+        )
 
         if enlaces.get("video"):
+
             st.markdown(
-                f"[🎬 Abrir video principal]({enlaces['video']})"
+                f"[🎬 {t('Abrir video principal', 'Ouvrir la vidéo principale')}]"
+                f"({enlaces['video']})"
             )
 
         if enlaces.get("video_simulacion"):
+
             st.markdown(
-                "[🎥 Abrir video de simulación]"
+                f"[🎥 {t('Abrir video de simulación', 'Ouvrir la vidéo de simulation')}]"
                 f"({enlaces['video_simulacion']})"
             )
 
         st.caption(
-            f"Hoja de Google Sheets: {pestana_guardado}"
+            t(
+                f"Hoja de Google Sheets: {pestana_guardado}",
+                f"Feuille Google Sheets : {pestana_guardado}"
+            )
         )
 
     except Exception as error:
-        st.error(
-            "No se pudo completar la carga y el registro."
-        )
-        st.code(str(error))
 
+        st.error(
+            t(
+                "No se pudo completar la carga y el registro.",
+                "Le téléchargement et l'enregistrement ont échoué."
+            )
+        )
+
+        st.code(str(error))
 
 # ------------------------------------------------------------
 # 10. MOSTRAR EL MODULO
