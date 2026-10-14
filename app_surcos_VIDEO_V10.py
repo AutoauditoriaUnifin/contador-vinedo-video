@@ -14024,25 +14024,26 @@ else:
             )
         )
 
+
 # ============================================================
-# TERROCORE - MODULO ADICIONAL DE VIDEO V3.3
-# NO ELIMINA NI REEMPLAZA LAS FUNCIONES EXISTENTES
-# Permite cargar hasta 2 videos por parcela.
-# Exporta resultados CSV y permite guardar en Drive y Sheets.
+# TERRACORE - MODULO DE CARGA DE VIDEOS V3.4
+# SOLO SUBE VIDEOS A GOOGLE DRIVE Y GUARDA EN GOOGLE SHEETS
+# NO ANALIZA VIDEOS
+# NO PROCESA FOTOGRAMAS
+# NO GENERA REPORTES CSV
+#
+# Columnas requeridas:
+# UNIQUEID | NOMBRE | DESCRIPCION | Video | Video simulación
 # ============================================================
 
-import io
 import json
 import mimetypes
 import os
 import re
-import tempfile
+import unicodedata
 from pathlib import Path
 from datetime import datetime
 
-import cv2
-import numpy as np
-import pandas as pd
 import streamlit as st
 
 from google.oauth2 import service_account
@@ -14051,196 +14052,7 @@ from googleapiclient.http import MediaIoBaseUpload
 
 
 # ------------------------------------------------------------
-# 1. ANALISIS DE VEGETACION
-# ------------------------------------------------------------
-
-def _tc_v33_mascara_verde(frame_bgr):
-    """Detecta vegetacion verde utilizando HSV."""
-
-    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-
-    limite_inferior = np.array([30, 40, 40], dtype=np.uint8)
-    limite_superior = np.array([85, 255, 255], dtype=np.uint8)
-
-    mascara = cv2.inRange(
-        hsv,
-        limite_inferior,
-        limite_superior
-    )
-
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_RECT,
-        (3, 3)
-    )
-
-    mascara = cv2.morphologyEx(
-        mascara,
-        cv2.MORPH_OPEN,
-        kernel,
-        iterations=1
-    )
-
-    mascara = cv2.morphologyEx(
-        mascara,
-        cv2.MORPH_CLOSE,
-        kernel,
-        iterations=1
-    )
-
-    return mascara
-
-
-def _tc_v33_calidad_frame(frame_bgr):
-    """Calcula una medida de nitidez del fotograma."""
-
-    gris = cv2.cvtColor(
-        frame_bgr,
-        cv2.COLOR_BGR2GRAY
-    )
-
-    return cv2.Laplacian(
-        gris,
-        cv2.CV_64F
-    ).var()
-
-
-def _tc_v33_contar_candidatos(mascara, area_minima=100):
-    """Cuenta las regiones detectadas en la mascara."""
-
-    contornos, _ = cv2.findContours(
-        mascara,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE
-    )
-
-    return sum(
-        1
-        for contorno in contornos
-        if cv2.contourArea(contorno) >= area_minima
-    )
-
-
-# ------------------------------------------------------------
-# 2. PROCESAMIENTO DEL VIDEO
-# ------------------------------------------------------------
-
-def _tc_v33_analizar_video(
-    ruta_video,
-    calidad_minima=50.0
-):
-    """
-    Analiza los fotogramas del video.
-
-    Los resultados son indicadores visuales aproximados.
-    No representan por si solos un conteo agronomico validado.
-    """
-
-    captura = cv2.VideoCapture(ruta_video)
-
-    if not captura.isOpened():
-        return [], "No se pudo abrir el video."
-
-    total_frames = int(
-        captura.get(cv2.CAP_PROP_FRAME_COUNT)
-    )
-
-    fps = captura.get(cv2.CAP_PROP_FPS)
-
-    resultados = []
-    numero_frame = 0
-
-    barra = st.progress(0.0)
-    estado = st.empty()
-
-    try:
-        while True:
-            correcto, frame = captura.read()
-
-            if not correcto:
-                break
-
-            numero_frame += 1
-
-            calidad = _tc_v33_calidad_frame(frame)
-
-            # Solo se analizan fotogramas que superan
-            # el umbral de nitidez seleccionado.
-            if calidad >= calidad_minima:
-
-                mascara = _tc_v33_mascara_verde(frame)
-
-                pixeles_verdes = int(
-                    np.count_nonzero(mascara)
-                )
-
-                total_pixeles = (
-                    mascara.shape[0] * mascara.shape[1]
-                )
-
-                cobertura = (
-                    pixeles_verdes / total_pixeles * 100
-                    if total_pixeles > 0
-                    else 0
-                )
-
-                candidatos = _tc_v33_contar_candidatos(
-                    mascara
-                )
-
-                timestamp = (
-                    (numero_frame - 1) / fps
-                    if fps and fps > 0
-                    else 0
-                )
-
-                resultados.append({
-                    "Frame": numero_frame,
-                    "Timestamp_seg": round(timestamp, 2),
-                    "Calidad_Focus": round(
-                        float(calidad), 2
-                    ),
-                    "Cobertura_Verde_Pct": round(
-                        float(cobertura), 2
-                    ),
-                    "Conteo_Candidatos_Surcos": int(
-                        candidatos
-                    )
-                })
-
-            if total_frames > 0:
-                porcentaje = min(
-                    numero_frame / total_frames,
-                    1.0
-                )
-
-                barra.progress(porcentaje)
-
-            estado.text(
-                f"Procesando fotograma "
-                f"{numero_frame}/{total_frames or '?'}..."
-            )
-
-    except Exception as error:
-        return resultados, (
-            f"Error durante el análisis: {error}"
-        )
-
-    finally:
-        captura.release()
-        barra.empty()
-        estado.empty()
-
-    if not resultados:
-        return [], (
-            "No se encontraron fotogramas que superaran "
-            "el umbral de calidad. Prueba con un umbral menor."
-        )
-
-    return resultados, "Análisis completado."
-
-
-# ------------------------------------------------------------
-# 3. CONFIGURACION DE GOOGLE DRIVE Y GOOGLE SHEETS
+# 1. LEER CONFIGURACION DE STREAMLIT
 # ------------------------------------------------------------
 
 def _tc_v33_secreto(nombre, predeterminado=None):
@@ -14250,18 +14062,11 @@ def _tc_v33_secreto(nombre, predeterminado=None):
         return predeterminado
 
 
+# ------------------------------------------------------------
+# 2. CONECTAR GOOGLE DRIVE Y GOOGLE SHEETS
+# ------------------------------------------------------------
+
 def _tc_v33_conectar_google():
-    """
-    Lee las credenciales desde Streamlit Secrets.
-
-    Secretos admitidos:
-      gcp_service_account
-      o GCP_SERVICE_ACCOUNT_JSON
-
-    Tambien requiere:
-      GSHEET_ID
-      GDRIVE_PARENT_FOLDER_ID
-    """
 
     credenciales_raw = _tc_v33_secreto(
         "gcp_service_account"
@@ -14273,22 +14078,25 @@ def _tc_v33_conectar_google():
         )
 
     if isinstance(credenciales_raw, str):
+
         try:
-            informacion = json.loads(
-                credenciales_raw
-            )
+            informacion = json.loads(credenciales_raw)
+
         except json.JSONDecodeError:
+
             if os.path.isfile(credenciales_raw):
+
                 with open(
                     credenciales_raw,
                     "r",
                     encoding="utf-8"
                 ) as archivo:
                     informacion = json.load(archivo)
+
             else:
                 raise ValueError(
-                    "GCP_SERVICE_ACCOUNT_JSON debe contener "
-                    "el JSON de la cuenta de servicio."
+                    "Las credenciales de Google no contienen "
+                    "un JSON valido ni una ruta de archivo."
                 )
 
     elif credenciales_raw:
@@ -14299,7 +14107,8 @@ def _tc_v33_conectar_google():
 
     if not informacion:
         raise ValueError(
-            "Faltan las credenciales de Google en Secrets."
+            "Faltan las credenciales de Google en "
+            "Streamlit Secrets."
         )
 
     id_hoja = (
@@ -14307,21 +14116,21 @@ def _tc_v33_conectar_google():
         or _tc_v33_secreto("VIDEO_GSHEET_ID")
     )
 
-    id_carpeta = (
+    carpeta_padre = (
         _tc_v33_secreto("GDRIVE_PARENT_FOLDER_ID")
         or _tc_v33_secreto("VIDEO_DRIVE_FOLDER_ID")
     )
 
     if not id_hoja:
         raise ValueError(
-            "Configura GSHEET_ID con el ID de tu Google Sheet."
+            "Configura GSHEET_ID con el ID de tu "
+            "Google Sheets."
         )
 
-    if not id_carpeta:
+    if not carpeta_padre:
         raise ValueError(
             "Configura GDRIVE_PARENT_FOLDER_ID con el ID "
-            "de una carpeta de Drive compartida con la "
-            "cuenta de servicio."
+            "de la carpeta de Drive."
         )
 
     scopes = [
@@ -14330,7 +14139,8 @@ def _tc_v33_conectar_google():
     ]
 
     credenciales = (
-        service_account.Credentials.from_service_account_info(
+        service_account.Credentials
+        .from_service_account_info(
             informacion,
             scopes=scopes
         )
@@ -14350,20 +14160,157 @@ def _tc_v33_conectar_google():
         cache_discovery=False
     )
 
-    return drive, sheets, id_hoja, id_carpeta
+    return drive, sheets, id_hoja, carpeta_padre
 
 
 # ------------------------------------------------------------
-# 4. CREAR CARPETAS Y SUBIR ARCHIVOS A DRIVE
+# 3. LOCALIZAR LA HOJA QUE TIENE LAS CINCO COLUMNAS
+# ------------------------------------------------------------
+
+def _tc_v33_normalizar_encabezado(valor):
+
+    texto = unicodedata.normalize(
+        "NFD",
+        str(valor or "").strip().casefold()
+    )
+
+    return "".join(
+        caracter
+        for caracter in texto
+        if unicodedata.category(caracter) != "Mn"
+    )
+
+
+def _tc_v33_rango(nombre_pestana, rango):
+
+    nombre_seguro = nombre_pestana.replace("'", "''")
+
+    return f"'{nombre_seguro}'!{rango}"
+
+
+def _tc_v33_obtener_tabla(sheets, id_hoja):
+
+    informacion = sheets.spreadsheets().get(
+        spreadsheetId=id_hoja,
+        fields="sheets.properties.title"
+    ).execute()
+
+    pestanas = [
+        hoja["properties"]["title"]
+        for hoja in informacion.get("sheets", [])
+    ]
+
+    pestana_configurada = _tc_v33_secreto("GSHEET_TAB")
+
+    if pestana_configurada:
+
+        if pestana_configurada not in pestanas:
+            raise ValueError(
+                f"No existe la pestaña configurada: "
+                f"{pestana_configurada}"
+            )
+
+        candidatas = [pestana_configurada]
+
+    else:
+        candidatas = pestanas
+
+    requeridas = {
+        "uniqueid",
+        "nombre",
+        "descripcion",
+        "video",
+        "video simulacion"
+    }
+
+    for nombre_pestana in candidatas:
+
+        respuesta = sheets.spreadsheets().values().get(
+            spreadsheetId=id_hoja,
+            range=_tc_v33_rango(
+                nombre_pestana,
+                "A:ZZ"
+            )
+        ).execute()
+
+        filas = respuesta.get("values", [])
+
+        if not filas:
+            continue
+
+        encabezados = filas[0]
+
+        indices = {
+            _tc_v33_normalizar_encabezado(encabezado): indice
+            for indice, encabezado in enumerate(encabezados)
+        }
+
+        if requeridas.issubset(set(indices.keys())):
+
+            return nombre_pestana, filas, indices
+
+    raise ValueError(
+        "No se encontro una pestaña con estas columnas: "
+        "UNIQUEID, NOMBRE, DESCRIPCION, Video y "
+        "Video simulación. Revisa los encabezados de la "
+        "fila 1 o configura GSHEET_TAB."
+    )
+
+
+# ------------------------------------------------------------
+# 4. CONVERTIR NUMERO DE COLUMNA A LETRA DE SHEETS
+# ------------------------------------------------------------
+
+def _tc_v33_letra_columna(indice):
+
+    numero = indice + 1
+    letras = ""
+
+    while numero:
+
+        numero, resto = divmod(numero - 1, 26)
+
+        letras = chr(65 + resto) + letras
+
+    return letras
+
+
+# ------------------------------------------------------------
+# 5. ENCONTRAR UN REGISTRO MEDIANTE UNIQUEID
+# ------------------------------------------------------------
+
+def _tc_v33_buscar_fila(filas, indice_uniqueid, uniqueid):
+
+    for numero_fila, fila in enumerate(
+        filas[1:],
+        start=2
+    ):
+
+        if indice_uniqueid < len(fila):
+
+            valor = str(
+                fila[indice_uniqueid]
+            ).strip()
+
+            if valor == uniqueid:
+                return numero_fila
+
+    return None
+
+
+# ------------------------------------------------------------
+# 6. CREAR O REUTILIZAR CARPETA DE VIDEOS
 # ------------------------------------------------------------
 
 def _tc_v33_crear_carpeta(
     drive,
-    carpeta_padre,
-    nombre_carpeta
+    carpeta_padre
 ):
+
+    nombre = "VideosTerraCore"
+
     consulta = (
-        f"name = '{nombre_carpeta}' "
+        f"name = '{nombre}' "
         "and mimeType = "
         "'application/vnd.google-apps.folder' "
         "and trashed = false"
@@ -14386,757 +14333,449 @@ def _tc_v33_crear_carpeta(
     if carpetas:
         return carpetas[0]["id"]
 
-    cuerpo = {
-        "name": nombre_carpeta,
-        "mimeType": "application/vnd.google-apps.folder"
-    }
-
-    if carpeta_padre:
-        cuerpo["parents"] = [carpeta_padre]
-
-    nueva = drive.files().create(
-        body=cuerpo,
+    nueva_carpeta = drive.files().create(
+        body={
+            "name": nombre,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [carpeta_padre]
+        },
         fields="id,name",
         supportsAllDrives=True
     ).execute()
 
-    return nueva["id"]
+    return nueva_carpeta["id"]
 
+
+# ------------------------------------------------------------
+# 7. SUBIR VIDEO A DRIVE POR BLOQUES
+# ------------------------------------------------------------
 
 def _tc_v33_subir_drive(
     drive,
     carpeta_id,
-    nombre_archivo,
-    contenido,
-    tipo_mime
-):
-    """Sube un archivo y devuelve su enlace de Drive."""
-
-    archivo_memoria = io.BytesIO(contenido)
-
-    media = MediaIoBaseUpload(
-        archivo_memoria,
-        mimetype=tipo_mime,
-        resumable=True,
-        chunksize=5 * 1024 * 1024
-    )
-
-    respuesta = drive.files().create(
-        body={
-            "name": nombre_archivo,
-            "parents": [carpeta_id]
-        },
-        media_body=media,
-        fields="id,name,webViewLink",
-        supportsAllDrives=True
-    ).execute()
-
-    return (
-        respuesta.get("webViewLink")
-        or (
-            "https://drive.google.com/file/d/"
-            f"{respuesta['id']}/view"
-        )
-    )
-
-
-# ------------------------------------------------------------
-# 5. CREAR PESTANAS Y GUARDAR DATOS EN GOOGLE SHEETS
-# ------------------------------------------------------------
-
-def _tc_v33_preparar_pestana(
-    sheets,
-    id_hoja,
-    nombre_pestana,
-    encabezados
+    archivo,
+    uniqueid,
+    tipo_video
 ):
     """
-    Crea una pestana nueva si no existe.
-    No modifica las pestanas originales de la aplicacion.
+    Sube el archivo original a Drive mediante carga
+    reanudable por bloques.
+
+    No analiza ni modifica el contenido del video.
+    No usa getvalue(), evitando crear otra copia completa.
     """
 
-    informacion = sheets.spreadsheets().get(
-        spreadsheetId=id_hoja,
-        fields="sheets.properties.title"
-    ).execute()
+    archivo.seek(0)
 
-    existentes = [
-        hoja["properties"]["title"]
-        for hoja in informacion.get("sheets", [])
-    ]
-
-    if nombre_pestana not in existentes:
-
-        sheets.spreadsheets().batchUpdate(
-            spreadsheetId=id_hoja,
-            body={
-                "requests": [{
-                    "addSheet": {
-                        "properties": {
-                            "title": nombre_pestana
-                        }
-                    }
-                }]
-            }
-        ).execute()
-
-    respuesta = sheets.spreadsheets().values().get(
-        spreadsheetId=id_hoja,
-        range=f"'{nombre_pestana}'!1:1"
-    ).execute()
-
-    encabezados_actuales = respuesta.get(
-        "values", []
+    tipo_mime = (
+        getattr(archivo, "type", None)
+        or mimetypes.guess_type(archivo.name)[0]
+        or "application/octet-stream"
     )
 
-    if not encabezados_actuales:
-
-        sheets.spreadsheets().values().update(
-            spreadsheetId=id_hoja,
-            range=f"'{nombre_pestana}'!A1",
-            valueInputOption="RAW",
-            body={
-                "values": [encabezados]
-            }
-        ).execute()
-
-    elif (
-        encabezados_actuales[0][:len(encabezados)]
-        != encabezados
-    ):
-        raise ValueError(
-            f"La pestaña '{nombre_pestana}' ya existe "
-            "con encabezados diferentes. No se modificó "
-            "su estructura."
-        )
-
-
-def _tc_v33_limpiar_valor(valor):
-    if valor is None:
-        return ""
-
-    if isinstance(valor, np.generic):
-        return valor.item()
-
-    try:
-        if pd.isna(valor):
-            return ""
-    except Exception:
-        pass
-
-    if isinstance(valor, (str, int, float, bool)):
-        return valor
-
-    return str(valor)
-
-
-def _tc_v33_agregar_filas(
-    sheets,
-    id_hoja,
-    nombre_pestana,
-    filas
-):
-    if not filas:
-        return
-
-    filas_limpias = [
-        [_tc_v33_limpiar_valor(valor) for valor in fila]
-        for fila in filas
-    ]
-
-    sheets.spreadsheets().values().append(
-        spreadsheetId=id_hoja,
-        range=f"'{nombre_pestana}'!A1",
-        valueInputOption="USER_ENTERED",
-        insertDataOption="INSERT_ROWS",
-        body={
-            "values": filas_limpias
-        }
-    ).execute()
-
-
-# ------------------------------------------------------------
-# 6. GUARDAR VIDEOS, REPORTE Y RESULTADOS
-# ------------------------------------------------------------
-
-def _tc_v33_guardar_en_google(
-    archivos_video,
-    videos_procesados,
-    parcela,
-    fecha_analisis
-):
-    drive, sheets, id_hoja, carpeta_padre = (
-        _tc_v33_conectar_google()
-    )
-
-    encabezados_videos = [
-        "FechaCarga",
-        "Parcela",
-        "NombreVideo",
-        "VideoURL",
-        "ReporteCSVURL",
-        "FotogramasAnalizados",
-        "CoberturaVerdePromedioPct",
-        "CandidatosPromedio",
-        "Estatus"
-    ]
-
-    encabezados_resultados = [
-        "FechaAnalisis",
-        "Parcela",
-        "NombreVideo",
-        "VideoURL",
-        "Frame",
-        "Timestamp_seg",
-        "Calidad_Focus",
-        "Cobertura_Verde_Pct",
-        "Conteo_Candidatos_Surcos"
-    ]
-
-    # Se utilizan pestañas nuevas para evitar alterar
-    # las hojas existentes de TerraCore.
-    _tc_v33_preparar_pestana(
-        sheets,
-        id_hoja,
-        "VideosDroneV33",
-        encabezados_videos
-    )
-
-    _tc_v33_preparar_pestana(
-        sheets,
-        id_hoja,
-        "ResultadosVideoV33",
-        encabezados_resultados
-    )
-
-    carpeta_videos = _tc_v33_crear_carpeta(
-        drive,
-        carpeta_padre,
-        "VideosDrone"
-    )
-
-    carpeta_reportes = _tc_v33_crear_carpeta(
-        drive,
-        carpeta_padre,
-        "ReportesVideo"
-    )
-
-    archivos_por_indice = {
-        indice: archivo
-        for indice, archivo in enumerate(
-            archivos_video,
-            start=1
-        )
-    }
-
-    nombre_seguro = re.sub(
+    id_seguro = re.sub(
         r"[^A-Za-z0-9_-]+",
         "_",
-        parcela
-    ).strip("_") or "Parcela"
+        uniqueid
+    ).strip("_") or "Registro"
 
-    filas_detalle = []
-    filas_videos_temporales = []
-    enlaces_videos = []
-
-    # Primero se suben los videos originales.
-    for item in videos_procesados:
-
-        indice = item["Indice"]
-        nombre_video = item["NombreVideo"]
-
-        archivo = archivos_por_indice.get(indice)
-
-        if archivo is None or archivo.name != nombre_video:
-            raise ValueError(
-                "Los videos seleccionados ya no coinciden "
-                "con los videos analizados. Vuelve a cargarlos "
-                "y ejecuta el guardado."
-            )
-
-        tipo_mime = (
-            getattr(archivo, "type", None)
-            or mimetypes.guess_type(archivo.name)[0]
-            or "application/octet-stream"
-        )
-
-        nombre_drive = (
-            f"Video_{nombre_seguro}_{indice}_"
-            f"{Path(nombre_video).name}"
-        )
-
-        url_video = _tc_v33_subir_drive(
-            drive,
-            carpeta_videos,
-            nombre_drive,
-            archivo.getvalue(),
-            tipo_mime
-        )
-
-        enlaces_videos.append({
-            "NombreVideo": nombre_video,
-            "VideoURL": url_video
-        })
-
-        resultados = item.get("Resultados", [])
-
-        for resultado in resultados:
-            filas_detalle.append([
-                fecha_analisis,
-                parcela,
-                nombre_video,
-                url_video,
-                resultado.get("Frame", ""),
-                resultado.get("Timestamp_seg", ""),
-                resultado.get("Calidad_Focus", ""),
-                resultado.get("Cobertura_Verde_Pct", ""),
-                resultado.get("Conteo_Candidatos_Surcos", "")
-            ])
-
-        coberturas = [
-            fila["Cobertura_Verde_Pct"]
-            for fila in resultados
-        ]
-
-        candidatos = [
-            fila["Conteo_Candidatos_Surcos"]
-            for fila in resultados
-        ]
-
-        promedio_cobertura = (
-            round(float(np.mean(coberturas)), 2)
-            if coberturas
-            else ""
-        )
-
-        promedio_candidatos = (
-            round(float(np.mean(candidatos)), 2)
-            if candidatos
-            else ""
-        )
-
-        filas_videos_temporales.append([
-            fecha_analisis,
-            parcela,
-            nombre_video,
-            url_video,
-            len(resultados),
-            promedio_cobertura,
-            promedio_candidatos,
-            "Procesado"
-        ])
-
-    # Reporte CSV combinado, con los enlaces de los videos.
-    df_nube = pd.DataFrame(
-        filas_detalle,
-        columns=encabezados_resultados
-    )
-
-    csv_bytes = df_nube.to_csv(
-        index=False
-    ).encode("utf-8-sig")
+    tipo_seguro = _tc_v33_normalizar_encabezado(
+        tipo_video
+    ).replace(" ", "_")
 
     fecha_archivo = datetime.now().strftime(
         "%Y%m%d_%H%M%S"
     )
 
-    nombre_reporte = (
-        f"Reporte_Video_{nombre_seguro}_"
-        f"{fecha_archivo}.csv"
+    nombre_drive = (
+        f"{id_seguro}_{tipo_seguro}_"
+        f"{fecha_archivo}_{Path(archivo.name).name}"
     )
 
-    url_reporte = _tc_v33_subir_drive(
-        drive,
-        carpeta_reportes,
-        nombre_reporte,
-        csv_bytes,
-        "text/csv"
+    media = MediaIoBaseUpload(
+        archivo,
+        mimetype=tipo_mime,
+        resumable=True,
+        chunksize=8 * 1024 * 1024
     )
 
-    # Se registra el video y el reporte en Sheets.
-    filas_videos = []
-
-    for fila in filas_videos_temporales:
-        filas_videos.append([
-            fila[0],
-            fila[1],
-            fila[2],
-            fila[3],
-            url_reporte,
-            fila[4],
-            fila[5],
-            fila[6],
-            fila[7]
-        ])
-
-    _tc_v33_agregar_filas(
-        sheets,
-        id_hoja,
-        "VideosDroneV33",
-        filas_videos
+    solicitud = drive.files().create(
+        body={
+            "name": nombre_drive,
+            "parents": [carpeta_id]
+        },
+        media_body=media,
+        fields="id,name,webViewLink,size",
+        supportsAllDrives=True
     )
 
-    _tc_v33_agregar_filas(
-        sheets,
-        id_hoja,
-        "ResultadosVideoV33",
-        filas_detalle
-    )
+    respuesta = None
+    barra = st.progress(0.0)
 
-    return df_nube, url_reporte, enlaces_videos
+    try:
+
+        while respuesta is None:
+
+            estado, respuesta = solicitud.next_chunk(
+                num_retries=3
+            )
+
+            if estado is not None:
+
+                barra.progress(
+                    float(estado.progress())
+                )
+
+        barra.progress(1.0)
+
+    finally:
+        barra.empty()
+
+    id_archivo = respuesta["id"]
+
+    url = respuesta.get("webViewLink")
+
+    if not url:
+        url = (
+            "https://drive.google.com/file/d/"
+            f"{id_archivo}/view"
+        )
+
+    return url
 
 
 # ------------------------------------------------------------
-# 7. INTERFAZ DE VIDEO PARA TERRACORE
+# 8. GUARDAR EN DRIVE Y ACTUALIZAR GOOGLE SHEETS
+# ------------------------------------------------------------
+
+def _tc_v33_guardar_videos(
+    uniqueid,
+    nombre,
+    descripcion,
+    video,
+    video_simulacion
+):
+
+    if not uniqueid.strip():
+        raise ValueError(
+            "Debes ingresar el UNIQUEID del registro."
+        )
+
+    if not video and not video_simulacion:
+        raise ValueError(
+            "Selecciona por lo menos un video."
+        )
+
+    drive, sheets, id_hoja, carpeta_padre = (
+        _tc_v33_conectar_google()
+    )
+
+    pestana, filas, indices = _tc_v33_obtener_tabla(
+        sheets,
+        id_hoja
+    )
+
+    indice_id = indices["uniqueid"]
+
+    fila_existente = _tc_v33_buscar_fila(
+        filas,
+        indice_id,
+        uniqueid.strip()
+    )
+
+    # Si es un registro nuevo, necesita nombre y descripción.
+    if fila_existente is None:
+
+        if not nombre.strip():
+            raise ValueError(
+                "El UNIQUEID no existe. Ingresa el NOMBRE."
+            )
+
+        if not descripcion.strip():
+            raise ValueError(
+                "El UNIQUEID no existe. Ingresa la DESCRIPCION."
+            )
+
+    carpeta_videos = _tc_v33_crear_carpeta(
+        drive,
+        carpeta_padre
+    )
+
+    enlaces = {}
+
+    # Subir video principal, si fue seleccionado.
+    if video:
+
+        enlaces["video"] = _tc_v33_subir_drive(
+            drive,
+            carpeta_videos,
+            video,
+            uniqueid.strip(),
+            "Video"
+        )
+
+    # Subir video de simulación, si fue seleccionado.
+    if video_simulacion:
+
+        enlaces["video simulacion"] = _tc_v33_subir_drive(
+            drive,
+            carpeta_videos,
+            video_simulacion,
+            uniqueid.strip(),
+            "Video_simulacion"
+        )
+
+    if fila_existente is not None:
+
+        # Actualizar únicamente las celdas necesarias.
+        # Los enlaces anteriores se conservan cuando no
+        # se selecciona un video para reemplazarlos.
+
+        actualizaciones = []
+
+        if nombre.strip():
+
+            columna = _tc_v33_letra_columna(
+                indices["nombre"]
+            )
+
+            actualizaciones.append({
+                "range": _tc_v33_rango(
+                    pestana,
+                    f"{columna}{fila_existente}"
+                ),
+                "values": [[nombre.strip()]]
+            })
+
+        if descripcion.strip():
+
+            columna = _tc_v33_letra_columna(
+                indices["descripcion"]
+            )
+
+            actualizaciones.append({
+                "range": _tc_v33_rango(
+                    pestana,
+                    f"{columna}{fila_existente}"
+                ),
+                "values": [[descripcion.strip()]]
+            })
+
+        for clave, url in enlaces.items():
+
+            columna = _tc_v33_letra_columna(
+                indices[clave]
+            )
+
+            actualizaciones.append({
+                "range": _tc_v33_rango(
+                    pestana,
+                    f"{columna}{fila_existente}"
+                ),
+                "values": [[url]]
+            })
+
+        if actualizaciones:
+
+            sheets.spreadsheets().values().batchUpdate(
+                spreadsheetId=id_hoja,
+                body={
+                    "valueInputOption": "USER_ENTERED",
+                    "data": actualizaciones
+                }
+            ).execute()
+
+        accion = "actualizado"
+
+    else:
+
+        # Crear una fila nueva respetando el orden
+        # real de las columnas de Google Sheets.
+
+        nueva_fila = [""] * len(filas[0])
+
+        nueva_fila[indices["uniqueid"]] = uniqueid.strip()
+        nueva_fila[indices["nombre"]] = nombre.strip()
+        nueva_fila[indices["descripcion"]] = descripcion.strip()
+
+        for clave, url in enlaces.items():
+            nueva_fila[indices[clave]] = url
+
+        sheets.spreadsheets().values().append(
+            spreadsheetId=id_hoja,
+            range=_tc_v33_rango(pestana, "A:ZZ"),
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body={
+                "values": [nueva_fila]
+            }
+        ).execute()
+
+        accion = "creado"
+
+    return accion, pestana, enlaces
+
+
+# ------------------------------------------------------------
+# 9. INTERFAZ DE CARGA DE VIDEOS TERRACORE
 # ------------------------------------------------------------
 
 def render_seccion_video_v33():
 
     st.divider()
 
-    st.header(
-        "📹 Análisis de video de dron por parcela"
-    )
+    st.header("📹 Carga de videos TerraCore")
 
     st.caption(
-        "Carga uno o dos videos, analiza sus fotogramas "
-        "y descarga o guarda los resultados."
+        "Carga los videos originales de la parcela. "
+        "No se analizan ni se procesan. Los enlaces "
+        "se guardan en Google Sheets."
     )
 
-    archivos_video = st.file_uploader(
-        "Selecciona los videos de la parcela",
-        type=["mp4", "avi", "mov", "mkv"],
-        accept_multiple_files=True,
-        key="tc_v33_cargador_video"
-    )
+    with st.form(
+        "tc_v33_form_video_drive",
+        clear_on_submit=False
+    ):
 
-    if archivos_video:
-
-        if len(archivos_video) > 2:
-            st.warning(
-                "Esta sección procesa hasta 2 videos "
-                "por parcela. Se utilizarán los dos primeros."
-            )
-            archivos_video = archivos_video[:2]
-
-        st.success(
-            f"Videos seleccionados: {len(archivos_video)}"
+        uniqueid = st.text_input(
+            "UNIQUEID",
+            placeholder="Ingresa el ID exacto del registro"
         )
 
-        for archivo_video in archivos_video:
-            with st.expander(
-                f"Vista previa: {archivo_video.name}",
-                expanded=False
-            ):
-                st.video(archivo_video)
+        nombre = st.text_input(
+            "NOMBRE",
+            placeholder="Obligatorio para registros nuevos"
+        )
+
+        descripcion = st.text_area(
+            "DESCRIPCION",
+            placeholder="Obligatoria para registros nuevos",
+            height=90
+        )
 
         columna1, columna2 = st.columns(2)
 
         with columna1:
-            parcela = st.text_input(
-                "Nombre o ID de la parcela",
-                value="Parcela_Demostracion",
-                key="tc_v33_nombre_parcela"
+
+            st.subheader("🎬 Video")
+
+            video = st.file_uploader(
+                "Selecciona el video principal",
+                type=[
+                    "mp4",
+                    "mov",
+                    "avi",
+                    "mkv",
+                    "webm"
+                ],
+                key="tc_v33_video_principal"
             )
+
+            if video:
+                st.caption(
+                    f"Archivo: {video.name} | "
+                    f"{video.size / (1024 ** 3):.2f} GB"
+                )
 
         with columna2:
-            calidad_minima = st.slider(
-                "Umbral minimo de nitidez",
-                min_value=0.0,
-                max_value=200.0,
-                value=50.0,
-                step=5.0,
-                key="tc_v33_calidad_minima"
+
+            st.subheader("🎥 Video simulación")
+
+            video_simulacion = st.file_uploader(
+                "Selecciona el video de simulación",
+                type=[
+                    "mp4",
+                    "mov",
+                    "avi",
+                    "mkv",
+                    "webm"
+                ],
+                key="tc_v33_video_simulacion"
             )
 
-        if st.button(
-            "▶️ Analizar videos",
-            key="tc_v33_boton_analizar",
-            type="primary"
-        ):
-
-            if not parcela.strip():
-                st.error(
-                    "Escribe el nombre o ID de la parcela."
+            if video_simulacion:
+                st.caption(
+                    f"Archivo: {video_simulacion.name} | "
+                    f"{video_simulacion.size / (1024 ** 3):.2f} GB"
                 )
 
-            else:
-                todos_los_resultados = []
-                videos_procesados = []
-
-                fecha_analisis = datetime.now().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
-
-                for indice, archivo_video in enumerate(
-                    archivos_video,
-                    start=1
-                ):
-
-                    st.subheader(
-                        f"Video {indice}: {archivo_video.name}"
-                    )
-
-                    ruta_temporal = None
-
-                    try:
-                        extension = (
-                            Path(archivo_video.name).suffix
-                            or ".mp4"
-                        )
-
-                        with tempfile.NamedTemporaryFile(
-                            delete=False,
-                            suffix=extension
-                        ) as temporal:
-
-                            temporal.write(
-                                archivo_video.getbuffer()
-                            )
-
-                            ruta_temporal = temporal.name
-
-                        resultados, mensaje = (
-                            _tc_v33_analizar_video(
-                                ruta_temporal,
-                                calidad_minima=calidad_minima
-                            )
-                        )
-
-                        if resultados:
-                            st.success(
-                                f"{mensaje} "
-                                f"Fotogramas analizados: "
-                                f"{len(resultados)}"
-                            )
-
-                            for resultado in resultados:
-                                resultado["FechaAnalisis"] = (
-                                    fecha_analisis
-                                )
-                                resultado["Parcela"] = (
-                                    parcela.strip()
-                                )
-                                resultado["NombreVideo"] = (
-                                    archivo_video.name
-                                )
-
-                            todos_los_resultados.extend(
-                                resultados
-                            )
-
-                        else:
-                            st.warning(mensaje)
-
-                        videos_procesados.append({
-                            "Indice": indice,
-                            "NombreVideo": archivo_video.name,
-                            "Resultados": resultados
-                        })
-
-                    except Exception as error:
-                        st.error(
-                            f"Error en {archivo_video.name}: "
-                            f"{error}"
-                        )
-
-                    finally:
-                        if (
-                            ruta_temporal
-                            and os.path.exists(ruta_temporal)
-                        ):
-                            try:
-                                os.remove(ruta_temporal)
-                            except OSError:
-                                pass
-
-                st.session_state[
-                    "tc_v33_video_resultados"
-                ] = todos_los_resultados
-
-                st.session_state[
-                    "tc_v33_video_procesados"
-                ] = videos_procesados
-
-                st.session_state[
-                    "tc_v33_video_parcela"
-                ] = parcela.strip()
-
-                st.session_state[
-                    "tc_v33_video_fecha"
-                ] = fecha_analisis
-
-                st.session_state[
-                    "tc_v33_video_guardado"
-                ] = False
-
-                if todos_los_resultados:
-                    st.success(
-                        "Terminó el análisis. "
-                        "Ya puedes descargar el CSV o "
-                        "guardar los resultados en Google."
-                    )
-                else:
-                    st.error(
-                        "No se generaron resultados. "
-                        "Prueba con un umbral de nitidez menor."
-                    )
-
-    # --------------------------------------------------------
-    # MOSTRAR Y DESCARGAR RESULTADOS
-    # --------------------------------------------------------
-
-    filas = st.session_state.get(
-        "tc_v33_video_resultados",
-        []
-    )
-
-    if filas:
-
-        st.subheader("📊 Resultados del análisis")
-
-        df_resultados = pd.DataFrame(filas)
-
-        st.dataframe(
-            df_resultados,
+        enviar = st.form_submit_button(
+            "☁️ Subir videos y guardar en Google",
+            type="primary",
             use_container_width=True
         )
 
-        nombre_parcela = st.session_state.get(
-            "tc_v33_video_parcela",
-            "Parcela"
-        )
+    if enviar:
 
-        nombre_csv = (
-            "Reporte_Video_"
-            + re.sub(
-                r"[^A-Za-z0-9_-]+",
-                "_",
-                nombre_parcela
-            )
-            + ".csv"
-        )
+        try:
 
-        csv_descarga = df_resultados.to_csv(
-            index=False
-        ).encode("utf-8-sig")
+            with st.spinner(
+                "Subiendo videos originales a Google Drive..."
+            ):
 
-        st.download_button(
-            label="📥 Descargar reporte CSV",
-            data=csv_descarga,
-            file_name=nombre_csv,
-            mime="text/csv",
-            key="tc_v33_descargar_csv"
-        )
-
-        st.divider()
-
-        st.subheader(
-            "☁️ Guardar originales y resultados en Google"
-        )
-
-        st.caption(
-            "Esta opción requiere credenciales de Google "
-            "configuradas en Streamlit Secrets."
-        )
-
-        if st.button(
-            "Guardar en Google Drive y Sheets",
-            key="tc_v33_boton_guardar_google",
-            disabled=st.session_state.get(
-                "tc_v33_video_guardado",
-                False
-            )
-        ):
-
-            try:
-                archivos_actuales = archivos_video or []
-
-                videos_procesados = (
-                    st.session_state.get(
-                        "tc_v33_video_procesados",
-                        []
+                accion, pestana, enlaces = (
+                    _tc_v33_guardar_videos(
+                        uniqueid,
+                        nombre,
+                        descripcion,
+                        video,
+                        video_simulacion
                     )
                 )
 
-                # Comprobar que los videos sigan seleccionados.
-                archivos_coinciden = all(
-                    item["Indice"] <= len(archivos_actuales)
-                    and archivos_actuales[
-                        item["Indice"] - 1
-                    ].name == item["NombreVideo"]
-                    for item in videos_procesados
+            if accion == "actualizado":
+
+                st.success(
+                    "Registro actualizado correctamente. "
+                    "Los enlaces de los videos se guardaron "
+                    "en la fila del UNIQUEID existente."
                 )
 
-                if not archivos_coinciden:
-                    st.error(
-                        "Vuelve a seleccionar los mismos videos "
-                        "que analizaste antes de guardarlos."
-                    )
+            else:
 
+                st.success(
+                    "Registro nuevo creado correctamente "
+                    "en Google Sheets."
+                )
+
+            st.caption(
+                f"Pestaña de Google Sheets: {pestana}"
+            )
+
+            for clave, url in enlaces.items():
+
+                if clave == "video":
+                    etiqueta = "Video principal"
                 else:
-                    with st.spinner(
-                        "Subiendo videos y guardando resultados..."
-                    ):
-                        df_nube, url_reporte, enlaces = (
-                            _tc_v33_guardar_en_google(
-                                archivos_actuales,
-                                videos_procesados,
-                                st.session_state[
-                                    "tc_v33_video_parcela"
-                                ],
-                                st.session_state[
-                                    "tc_v33_video_fecha"
-                                ]
-                            )
-                        )
+                    etiqueta = "Video simulación"
 
-                    st.session_state[
-                        "tc_v33_video_resultados"
-                    ] = df_nube.to_dict(
-                        orient="records"
-                    )
-
-                    st.session_state[
-                        "tc_v33_video_guardado"
-                    ] = True
-
-                    st.success(
-                        "Videos y resultados guardados "
-                        "en Google Drive y Google Sheets."
-                    )
-
-                    st.markdown(
-                        f"[📄 Abrir reporte CSV en Drive]({url_reporte})"
-                    )
-
-                    for enlace in enlaces:
-                        st.markdown(
-                            f"[🎬 Abrir {enlace['NombreVideo']}]"
-                            f"({enlace['VideoURL']})"
-                        )
-
-                    st.dataframe(
-                        df_nube,
-                        use_container_width=True
-                    )
-
-            except Exception as error:
-                st.error(
-                    "No se pudo completar el guardado en Google. "
-                    f"Detalle: {error}"
+                st.markdown(
+                    f"**{etiqueta}:** [Abrir en Google Drive]"
+                    f"({url})"
                 )
 
-                st.info(
-                    "Puedes descargar el CSV mientras revisas "
-                    "las credenciales, los permisos de Drive "
-                    "y el acceso de la cuenta de servicio "
-                    "a la hoja de cálculo."
-                )
+            st.info(
+                "Los videos se guardaron sin analizarlos. "
+                "Puedes abrir los enlaces para comprobar "
+                "que los archivos estén disponibles."
+            )
+
+        except Exception as error:
+
+            st.error(
+                "No se pudo completar la carga: "
+                f"{error}"
+            )
+
+            st.info(
+                "Comprueba las credenciales, los permisos "
+                "de Google Drive y Google Sheets, y los "
+                "límites de carga del servidor."
+            )
 
 
-# ============================================================
-# 8. MOSTRAR EL MODULO NUEVO AL FINAL DE LA APP
-# ============================================================
+# ------------------------------------------------------------
+# 10. MOSTRAR EL MODULO
+# ------------------------------------------------------------
 
 render_seccion_video_v33()
