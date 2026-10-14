@@ -14617,95 +14617,178 @@ def _tc_v33_guardar_videos(
 
 
 # ------------------------------------------------------------
-# 9. INTERFAZ DE CARGA DE VIDEOS TERRACORE
+# CARGAR REGISTROS EXISTENTES AUTOMATICAMENTE
+# ------------------------------------------------------------
+
+def _tc_v33_listar_registros():
+
+    _, sheets, id_hoja, _ = _tc_v33_conectar_google()
+
+    pestana, filas, indices = _tc_v33_obtener_tabla(
+        sheets,
+        id_hoja
+    )
+
+    registros = []
+
+    for fila in filas[1:]:
+
+        def obtener(campo):
+
+            posicion = indices[campo]
+
+            if posicion < len(fila):
+                return str(fila[posicion]).strip()
+
+            return ""
+
+        uniqueid = obtener("uniqueid")
+
+        if not uniqueid:
+            continue
+
+        registros.append({
+            "UNIQUEID": uniqueid,
+            "NOMBRE": obtener("nombre"),
+            "DESCRIPCION": obtener("descripcion"),
+            "VIDEO": obtener("video"),
+            "VIDEO_SIMULACION": obtener("video simulacion")
+        })
+
+    return registros, pestana
+
+
+
+# ------------------------------------------------------------
+# INTERFAZ AUTOMATICA DE VIDEOS TERRACORE
 # ------------------------------------------------------------
 
 def render_seccion_video_v33():
 
     st.divider()
-
-    st.header("📹 Carga de videos TerraCore")
+    st.header("📹 Videos de TerraCore")
 
     st.caption(
-        "Carga los videos originales de la parcela. "
-        "No se analizan ni se procesan. Los enlaces "
-        "se guardan en Google Sheets."
+        "Selecciona un registro existente. Los datos se "
+        "recuperan automáticamente de Google Sheets. "
+        "Los videos se guardan sin analizarlos."
+    )
+
+    # 1. LEER REGISTROS DE GOOGLE SHEETS
+
+    try:
+        registros, pestana = _tc_v33_listar_registros()
+
+    except Exception as error:
+        st.error(
+            "No se pudieron cargar los registros de Google Sheets."
+        )
+        st.code(str(error))
+        return
+
+    if not registros:
+        st.warning(
+            "No se encontraron registros con UNIQUEID. "
+            "Revisa que la hoja tenga datos y encabezados correctos."
+        )
+        return
+
+    # 2. CREAR LISTA DE SELECCION
+
+    opciones = {}
+
+    for registro in registros:
+
+        etiqueta = (
+            f"{registro['NOMBRE'] or '(Sin nombre)'}"
+            f" — {registro['UNIQUEID']}"
+        )
+
+        opciones[etiqueta] = registro
+
+    seleccion = st.selectbox(
+        "Selecciona la parcela o registro",
+        options=["-- Selecciona un registro --"]
+        + list(opciones.keys()),
+        key="tc_v33_seleccion_registro"
+    )
+
+    registro = opciones.get(seleccion)
+
+    if registro is None:
+        st.info(
+            "Selecciona un registro para recuperar sus datos "
+            "y habilitar la carga de videos."
+        )
+        return
+
+    # 3. MOSTRAR DATOS RECUPERADOS AUTOMATICAMENTE
+
+    st.subheader("📋 Datos recuperados")
+
+    st.write("**UNIQUEID:**", registro["UNIQUEID"])
+    st.write("**NOMBRE:**", registro["NOMBRE"])
+    st.write("**DESCRIPCION:**", registro["DESCRIPCION"])
+
+    st.caption(f"Hoja de Google Sheets: {pestana}")
+
+    # Mostrar enlaces existentes, si los hay.
+
+    if registro["VIDEO"]:
+        st.markdown(
+            f"[🎬 Ver video principal]({registro['VIDEO']})"
+        )
+
+    if registro["VIDEO_SIMULACION"]:
+        st.markdown(
+            "[🎥 Ver video simulación]"
+            f"({registro['VIDEO_SIMULACION']})"
+        )
+
+    # 4. CARGAR LOS VIDEOS
+
+    uid_seguro = re.sub(
+        r"[^A-Za-z0-9_-]+",
+        "_",
+        registro["UNIQUEID"]
     )
 
     with st.form(
-        "tc_v33_form_video_drive",
-        clear_on_submit=False
+        key=f"tc_v33_form_{uid_seguro}"
     ):
 
-        uniqueid = st.text_input(
-            "UNIQUEID",
-            placeholder="Ingresa el ID exacto del registro"
+        st.subheader("🎬 Video principal")
+
+        video = st.file_uploader(
+            "Selecciona el video principal",
+            type=["mp4", "mov", "avi", "mkv", "webm"],
+            key=f"tc_v33_principal_{uid_seguro}"
         )
 
-        nombre = st.text_input(
-            "NOMBRE",
-            placeholder="Obligatorio para registros nuevos"
+        st.subheader("🎥 Video simulación")
+
+        video_simulacion = st.file_uploader(
+            "Selecciona el video de simulación",
+            type=["mp4", "mov", "avi", "mkv", "webm"],
+            key=f"tc_v33_simulacion_{uid_seguro}"
         )
-
-        descripcion = st.text_area(
-            "DESCRIPCION",
-            placeholder="Obligatoria para registros nuevos",
-            height=90
-        )
-
-        columna1, columna2 = st.columns(2)
-
-        with columna1:
-
-            st.subheader("🎬 Video")
-
-            video = st.file_uploader(
-                "Selecciona el video principal",
-                type=[
-                    "mp4",
-                    "mov",
-                    "avi",
-                    "mkv",
-                    "webm"
-                ],
-                key="tc_v33_video_principal"
-            )
-
-            if video:
-                st.caption(
-                    f"Archivo: {video.name} | "
-                    f"{video.size / (1024 ** 3):.2f} GB"
-                )
-
-        with columna2:
-
-            st.subheader("🎥 Video simulación")
-
-            video_simulacion = st.file_uploader(
-                "Selecciona el video de simulación",
-                type=[
-                    "mp4",
-                    "mov",
-                    "avi",
-                    "mkv",
-                    "webm"
-                ],
-                key="tc_v33_video_simulacion"
-            )
-
-            if video_simulacion:
-                st.caption(
-                    f"Archivo: {video_simulacion.name} | "
-                    f"{video_simulacion.size / (1024 ** 3):.2f} GB"
-                )
 
         enviar = st.form_submit_button(
-            "☁️ Subir videos y guardar en Google",
+            "☁️ Subir videos y guardar",
             type="primary",
             use_container_width=True
         )
 
+    # 5. GUARDAR EN DRIVE Y ACTUALIZAR LA FILA
+
     if enviar:
+
+        if not video and not video_simulacion:
+
+            st.warning(
+                "Selecciona al menos un video antes de guardar."
+            )
+            return
 
         try:
 
@@ -14713,33 +14796,19 @@ def render_seccion_video_v33():
                 "Subiendo videos originales a Google Drive..."
             ):
 
-                accion, pestana, enlaces = (
+                accion, pestana_guardado, enlaces = (
                     _tc_v33_guardar_videos(
-                        uniqueid,
-                        nombre,
-                        descripcion,
+                        registro["UNIQUEID"],
+                        registro["NOMBRE"],
+                        registro["DESCRIPCION"],
                         video,
                         video_simulacion
                     )
                 )
 
-            if accion == "actualizado":
-
-                st.success(
-                    "Registro actualizado correctamente. "
-                    "Los enlaces de los videos se guardaron "
-                    "en la fila del UNIQUEID existente."
-                )
-
-            else:
-
-                st.success(
-                    "Registro nuevo creado correctamente "
-                    "en Google Sheets."
-                )
-
-            st.caption(
-                f"Pestaña de Google Sheets: {pestana}"
+            st.success(
+                "Videos guardados y registro actualizado "
+                "correctamente."
             )
 
             for clave, url in enlaces.items():
@@ -14750,29 +14819,17 @@ def render_seccion_video_v33():
                     etiqueta = "Video simulación"
 
                 st.markdown(
-                    f"**{etiqueta}:** [Abrir en Google Drive]"
-                    f"({url})"
+                    f"**{etiqueta}:** [Abrir en Drive]({url})"
                 )
 
-            st.info(
-                "Los videos se guardaron sin analizarlos. "
-                "Puedes abrir los enlaces para comprobar "
-                "que los archivos estén disponibles."
+            st.caption(
+                f"Registro actualizado en: {pestana_guardado}"
             )
 
         except Exception as error:
 
-            st.error(
-                "No se pudo completar la carga: "
-                f"{error}"
-            )
-
-            st.info(
-                "Comprueba las credenciales, los permisos "
-                "de Google Drive y Google Sheets, y los "
-                "límites de carga del servidor."
-            )
-
+            st.error("No se pudo guardar el video.")
+            st.code(str(error))
 
 # ------------------------------------------------------------
 # 10. MOSTRAR EL MODULO
