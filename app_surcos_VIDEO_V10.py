@@ -14779,173 +14779,149 @@ def _tc_v33_listar_registros():
 # INTERFAZ AUTOMATICA DE VIDEOS TERRACORE
 # ------------------------------------------------------------
 
+
 def render_seccion_video_v33():
+
+    import os
+    import secrets
+    import streamlit as st
 
     st.divider()
     st.header("📹 Videos de TerraCore")
 
-    st.caption(
-        "Selecciona un registro existente. Los datos se "
-        "recuperan automáticamente de Google Sheets. "
-        "Los videos se guardan sin analizarlos."
+    st.write(
+        "Carga tus dos videos. TerraCore generará un ID "
+        "de 8 dígitos y creará un registro nuevo en Google Sheets."
     )
 
-    # 1. LEER REGISTROS DE GOOGLE SHEETS
-
-    try:
-        registros, pestana = _tc_v33_listar_registros()
-
-    except Exception as error:
-        st.error(
-            "No se pudieron cargar los registros de Google Sheets."
-        )
-        st.code(str(error))
-        return
-
-    if not registros:
-        st.warning(
-            "No se encontraron registros con UNIQUEID. "
-            "Revisa que la hoja tenga datos y encabezados correctos."
-        )
-        return
-
-    # 2. CREAR LISTA DE SELECCION
-
-    opciones = {}
-
-    for registro in registros:
-
-        etiqueta = (
-            f"{registro['NOMBRE'] or '(Sin nombre)'}"
-            f" — {registro['UNIQUEID']}"
-        )
-
-        opciones[etiqueta] = registro
-
-    seleccion = st.selectbox(
-        "Selecciona la parcela o registro",
-        options=["-- Selecciona un registro --"]
-        + list(opciones.keys()),
-        key="tc_v33_seleccion_registro"
-    )
-
-    registro = opciones.get(seleccion)
-
-    if registro is None:
-        st.info(
-            "Selecciona un registro para recuperar sus datos "
-            "y habilitar la carga de videos."
-        )
-        return
-
-    # 3. MOSTRAR DATOS RECUPERADOS AUTOMATICAMENTE
-
-    st.subheader("📋 Datos recuperados")
-
-    st.write("**UNIQUEID:**", registro["UNIQUEID"])
-    st.write("**NOMBRE:**", registro["NOMBRE"])
-    st.write("**DESCRIPCION:**", registro["DESCRIPCION"])
-
-    st.caption(f"Hoja de Google Sheets: {pestana}")
-
-    # Mostrar enlaces existentes, si los hay.
-
-    if registro["VIDEO"]:
-        st.markdown(
-            f"[🎬 Ver video principal]({registro['VIDEO']})"
-        )
-
-    if registro["VIDEO_SIMULACION"]:
-        st.markdown(
-            "[🎥 Ver video simulación]"
-            f"({registro['VIDEO_SIMULACION']})"
-        )
-
-    # 4. CARGAR LOS VIDEOS
-
-    uid_seguro = re.sub(
-        r"[^A-Za-z0-9_-]+",
-        "_",
-        registro["UNIQUEID"]
-    )
-
-    with st.form(
-        key=f"tc_v33_form_{uid_seguro}"
-    ):
-
-        st.subheader("🎬 Video principal")
+    with st.form("tc_videos_nuevo_registro"):
 
         video = st.file_uploader(
-            "Selecciona el video principal",
+            "🎬 Selecciona el video principal",
             type=["mp4", "mov", "avi", "mkv", "webm"],
-            key=f"tc_v33_principal_{uid_seguro}"
+            key="tc_video_principal_nuevo"
         )
 
-        st.subheader("🎥 Video simulación")
-
         video_simulacion = st.file_uploader(
-            "Selecciona el video de simulación",
+            "🎥 Selecciona el video de simulación",
             type=["mp4", "mov", "avi", "mkv", "webm"],
-            key=f"tc_v33_simulacion_{uid_seguro}"
+            key="tc_video_simulacion_nuevo"
         )
 
         enviar = st.form_submit_button(
-            "☁️ Subir videos y guardar",
+            "☁️ Subir los dos videos y registrar",
             type="primary",
             use_container_width=True
         )
 
-    # 5. GUARDAR EN DRIVE Y ACTUALIZAR LA FILA
+    if not enviar:
+        return
 
-    if enviar:
+    if video is None or video_simulacion is None:
+        st.error(
+            "Debes seleccionar los dos videos antes de guardar."
+        )
+        return
 
-        if not video and not video_simulacion:
+    try:
+        # Comprobar los IDs existentes para evitar duplicados.
+        with st.spinner("Preparando un ID único..."):
 
-            st.warning(
-                "Selecciona al menos un video antes de guardar."
+            _, sheets, spreadsheet_id, _ = (
+                _tc_v33_conectar_google()
             )
-            return
 
-        try:
+            pestana, filas, indices = (
+                _tc_v33_obtener_tabla(
+                    sheets,
+                    spreadsheet_id
+                )
+            )
 
-            with st.spinner(
-                "Subiendo videos originales a Google Drive..."
-            ):
+            if "uniqueid" not in indices:
+                st.error(
+                    "No se encontró la columna UNIQUEID "
+                    "en los encabezados de Google Sheets."
+                )
+                return
 
-                accion, pestana_guardado, enlaces = (
-                    _tc_v33_guardar_videos(
-                        registro["UNIQUEID"],
-                        registro["NOMBRE"],
-                        registro["DESCRIPCION"],
-                        video,
-                        video_simulacion
-                    )
+            posicion_id = indices["uniqueid"]
+            ids_existentes = set()
+
+            for fila in filas[1:]:
+                if posicion_id < len(fila):
+                    valor = str(
+                        fila[posicion_id]
+                    ).strip()
+
+                    if valor:
+                        ids_existentes.add(valor)
+
+            # Generar un ID nuevo de exactamente 8 dígitos.
+            while True:
+                uniqueid = str(
+                    secrets.randbelow(90_000_000)
+                    + 10_000_000
                 )
 
-            st.success(
-                "Videos guardados y registro actualizado "
-                "correctamente."
+                if uniqueid not in ids_existentes:
+                    break
+
+        # Crear automáticamente nombre y descripción.
+        nombre = os.path.splitext(
+            os.path.basename(video.name)
+        )[0]
+
+        descripcion = (
+            f"Video principal: {video.name} | "
+            f"Video simulación: {video_simulacion.name}"
+        )
+
+        # Subir ambos archivos y registrar una fila nueva.
+        with st.spinner(
+            "Subiendo videos a Google Drive y guardando el registro..."
+        ):
+
+            resultado = _tc_v33_guardar_videos(
+                uniqueid,
+                nombre,
+                descripcion,
+                video,
+                video_simulacion
             )
 
-            for clave, url in enlaces.items():
+        accion, pestana_guardado, enlaces = resultado
 
-                if clave == "video":
-                    etiqueta = "Video principal"
-                else:
-                    etiqueta = "Video simulación"
+        st.success(
+            "¡Los dos videos se procesaron y el registro fue guardado!"
+        )
 
-                st.markdown(
-                    f"**{etiqueta}:** [Abrir en Drive]({url})"
-                )
+        st.subheader("Registro creado")
+        st.write("**UNIQUEID:**", uniqueid)
+        st.write("**NOMBRE:**", nombre)
+        st.write("**DESCRIPCION:**", descripcion)
 
-            st.caption(
-                f"Registro actualizado en: {pestana_guardado}"
+        if enlaces.get("video"):
+            st.markdown(
+                f"[🎬 Abrir video principal]({enlaces['video']})"
             )
 
-        except Exception as error:
+        if enlaces.get("video_simulacion"):
+            st.markdown(
+                "[🎥 Abrir video de simulación]"
+                f"({enlaces['video_simulacion']})"
+            )
 
-            st.error("No se pudo guardar el video.")
-            st.code(str(error))
+        st.caption(
+            f"Hoja de Google Sheets: {pestana_guardado}"
+        )
+
+    except Exception as error:
+        st.error(
+            "No se pudo completar la carga y el registro."
+        )
+        st.code(str(error))
+
 
 # ------------------------------------------------------------
 # 10. MOSTRAR EL MODULO
