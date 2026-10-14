@@ -14621,39 +14621,155 @@ def _tc_v33_guardar_videos(
 # ------------------------------------------------------------
 
 def _tc_v33_listar_registros():
+    """
+    Lee los registros de Google Sheets.
+    Genera un UNIQUEID de 8 dígitos para cada registro
+    que tenga datos y no tenga identificador.
+    Guarda automáticamente los IDs en la hoja.
+    """
 
-    _, sheets, id_hoja, _ = _tc_v33_conectar_google()
+    import secrets
 
-    pestana, filas, indices = _tc_v33_obtener_tabla(
-        sheets,
-        id_hoja
+    _, sheets, spreadsheet_id, _ = (
+        _tc_v33_conectar_google()
     )
 
-    registros = []
+    pestana, filas, indices = (
+        _tc_v33_obtener_tabla(
+            sheets,
+            spreadsheet_id
+        )
+    )
 
-    for fila in filas[1:]:
+    if not filas:
+        return [], pestana
 
-        def obtener(campo):
+    # Verificar que exista la columna UNIQUEID.
+    if "uniqueid" not in indices:
+        raise ValueError(
+            "No se encontró el encabezado UNIQUEID. "
+            "Verifica que esté escrito en la primera fila "
+            "de Google Sheets."
+        )
 
-            posicion = indices[campo]
+    posicion_id = indices["uniqueid"]
 
-            if posicion < len(fila):
-                return str(fila[posicion]).strip()
+    def obtener_valor(fila, campo):
+        posicion = indices.get(campo)
 
+        if posicion is None or posicion >= len(fila):
             return ""
 
-        uniqueid = obtener("uniqueid")
+        return str(fila[posicion]).strip()
 
-        if not uniqueid:
+    # Registrar los IDs que ya existen para evitar duplicados.
+    ids_existentes = set()
+
+    for fila in filas[1:]:
+        identificador = obtener_valor(
+            fila,
+            "uniqueid"
+        )
+
+        if identificador:
+            ids_existentes.add(identificador)
+
+    actualizaciones = []
+    registros = []
+
+    # Convertir la posición de la columna a letras de Sheets.
+    def columna_a1(numero):
+        numero += 1
+        resultado = ""
+
+        while numero:
+            numero, resto = divmod(numero - 1, 26)
+            resultado = chr(65 + resto) + resultado
+
+        return resultado
+
+    columna_id = columna_a1(posicion_id)
+    pestana_a1 = str(pestana).replace("'", "''")
+
+    # Las filas de datos empiezan en la fila 2 de Sheets.
+    for numero_fila, fila_original in enumerate(
+        filas[1:],
+        start=2
+    ):
+
+        fila = list(fila_original)
+
+        # Comprobar si esta fila tiene datos del registro.
+        campos = [
+            "nombre",
+            "descripcion",
+            "video",
+            "video simulacion"
+        ]
+
+        tiene_datos = any(
+            obtener_valor(fila, campo)
+            for campo in campos
+            if campo in indices
+        )
+
+        # Ignorar filas completamente vacías.
+        if not tiene_datos:
             continue
 
+        identificador = obtener_valor(
+            fila,
+            "uniqueid"
+        )
+
+        # Generar ID si está vacío.
+        if not identificador:
+
+            while True:
+                nuevo_id = str(
+                    secrets.randbelow(90_000_000)
+                    + 10_000_000
+                )
+
+                if nuevo_id not in ids_existentes:
+                    break
+
+            identificador = nuevo_id
+            ids_existentes.add(identificador)
+
+            # Preparar la actualización de la celda UNIQUEID.
+            actualizaciones.append({
+                "range": (
+                    f"'{pestana_a1}'!"
+                    f"{columna_id}{numero_fila}"
+                ),
+                "values": [[identificador]]
+            })
+
+        # Crear el registro para mostrarlo en TerraCore.
         registros.append({
-            "UNIQUEID": uniqueid,
-            "NOMBRE": obtener("nombre"),
-            "DESCRIPCION": obtener("descripcion"),
-            "VIDEO": obtener("video"),
-            "VIDEO_SIMULACION": obtener("video simulacion")
+            "UNIQUEID": identificador,
+            "NOMBRE": obtener_valor(fila, "nombre"),
+            "DESCRIPCION": obtener_valor(
+                fila,
+                "descripcion"
+            ),
+            "VIDEO": obtener_valor(fila, "video"),
+            "VIDEO_SIMULACION": obtener_valor(
+                fila,
+                "video simulacion"
+            )
         })
+
+    # Guardar todos los IDs nuevos en Google Sheets.
+    if actualizaciones:
+        sheets.spreadsheets().values().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "valueInputOption": "RAW",
+                "data": actualizaciones
+            }
+        ).execute()
 
     return registros, pestana
 
