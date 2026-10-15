@@ -14681,6 +14681,7 @@ def _tc_v33_guardar_videos(
             "Video_simulacion",
         )
 
+    # Guardar la evidencia vinculada al ID del análisis seleccionado.
     accion, pestana_evidencias = _tc_v35_guardar_evidencias(
         sheets,
         id_hoja,
@@ -14689,15 +14690,19 @@ def _tc_v33_guardar_videos(
         descripcion,
         enlaces,
         idioma,
+        historial_id,
     )
 
-    pestana_historial, accion_historial = _tc_v35_guardar_historial_videos(
-        sheets,
-        id_hoja,
-        uniqueid,
-        nombre,
-        enlaces,
-        idioma,
+    # Actualizar únicamente los enlaces de video en la fila existente
+    # de HistorialTerroCore. No se usa uniqueid como ID del historial.
+    pestana_historial, accion_historial, fila_historial_actualizada = (
+        _tc_v35_guardar_historial_videos(
+            sheets,
+            id_hoja,
+            historial_id,
+            enlaces,
+            idioma,
+        )
     )
 
     return {
@@ -14705,6 +14710,8 @@ def _tc_v33_guardar_videos(
         "pestana_evidencias": pestana_evidencias,
         "pestana_historial": pestana_historial,
         "accion_historial": accion_historial,
+        "historial_id": str(historial_id),
+        "fila_historial_actualizada": fila_historial_actualizada,
         "enlaces": enlaces,
         "idioma": idioma,
     }
