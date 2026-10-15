@@ -13983,7 +13983,7 @@ else:
                             img_procesada_hist = _tc_historial_pil(procesada_id)
 
                         if img_procesada_hist is not None:
-                            st.image( 
+                            st.image(
                                 img_procesada_hist,
                                 caption=tr("Resultado del análisis", "Résultat de l’analyse"),
                                 use_container_width=True
@@ -14024,119 +14024,109 @@ else:
             )
         )
 
-        enviar = st.form_submit_button(
-            t(
-                "☁️ Subir videos y actualizar la fila seleccionada",
-                "☁️ Importer les vidéos et mettre à jour la ligne sélectionnée",
-            ),
-            type="primary",
-            use_container_width=True,
-        )
+# ============================================================
+# TERRACORE - MODULO DE CARGA DE VIDEOS V3.5
+# SUBE VIDEOS A GOOGLE DRIVE Y GUARDA EN DOS HOJAS:
+#   1) Evidencias1: UNIQUEID, NOMBRE, DESCRIPCION,
+#      Video, Video simulación, Idioma
+#   2) HistorialTerroCore: guarda también los enlaces,
+#      el idioma, ID, fecha y nombre.
+# NO ANALIZA VIDEOS
+# NO PROCESA FOTOGRAMAS
+# NO GENERA REPORTES CSV
+# ============================================================
 
-    if not enviar:
-        return
+import json
+import mimetypes
+import os
+import re
+import unicodedata
+import secrets
+from pathlib import Path
+from datetime import datetime
 
-    if video is None or video_simulacion is None:
-        st.error(
-            t(
-                "Debes seleccionar el video principal y el video de simulación.",
-                "Vous devez sélectionner la vidéo principale et la vidéo de simulation.",
-            )
-        )
-        return
+import streamlit as st
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 
+
+# ------------------------------------------------------------
+# 1. CONFIGURACION
+# ------------------------------------------------------------
+
+VIDEO_SHEET_NAME = "Evidencias1"
+HISTORIAL_SHEET_NAME = "HistorialTerroCore"
+
+VIDEO_HEADERS = [
+    "UNIQUEID",
+    "NOMBRE",
+    "DESCRIPCION",
+    "Video",
+    "Video simulación",
+    "Idioma",
+]
+
+# Se agregan únicamente las columnas que falten.
+# No se reemplazan ni se reordenan los encabezados actuales
+# de HistorialTerroCore.
+HISTORIAL_VIDEO_HEADERS = [
+    "ID",
+    "Fecha",
+    "Nombre",
+    "Idioma",
+    "Video",
+    "Video simulación",
+]
+
+
+def _tc_v33_secreto(nombre, predeterminado=None):
     try:
-        with st.spinner(
-            t("Preparando el registro de videos...", "Préparation de l'enregistrement des vidéos...")
-        ):
-            _, sheets, spreadsheet_id, _ = _tc_v33_conectar_google()
-            _, filas_evidencias, indices_evidencias = _tc_v33_obtener_tabla(
-                sheets,
-                spreadsheet_id,
-            )
+        return st.secrets.get(nombre, predeterminado)
+    except Exception:
+        return predeterminado
 
-            ids_existentes = set()
-            for fila in filas_evidencias[1:]:
-                valor = _tc_v33_valor_fila(fila, indices_evidencias, "UNIQUEID")
-                if valor:
-                    ids_existentes.add(valor)
 
-            # ID nuevo para Evidencias1; no se utiliza como ID del historial.
-            while True:
-                uniqueid = str(secrets.randbelow(90_000_000) + 10_000_000)
-                if uniqueid not in ids_existentes:
-                    break
+def _tc_v33_idioma_actual():
+    idioma = str(
+        st.session_state.get("idioma_terrocore", "ES")
+    ).strip().upper()
+    return "FR" if idioma == "FR" else "ES"
 
-        nombre = os.path.splitext(os.path.basename(video.name))[0]
-        descripcion = t(
-            f"HistorialID: {historial_id_seleccionado} | Video principal: {video.name} | "
-            f"Video simulación: {video_simulacion.name}",
-            f"HistorialID : {historial_id_seleccionado} | Vidéo principale : {video.name} | "
-            f"Vidéo de simulation : {video_simulacion.name}",
-        )
 
-        with st.spinner(
-            t(
-                "Subiendo videos a Google Drive y actualizando la fila existente...",
-                "Importation des vidéos dans Google Drive et mise à jour de la ligne existante...",
-            )
-        ):
-            resultado = _tc_v33_guardar_videos(
-                uniqueid,
-                nombre,
-                descripcion,
-                video,
-                video_simulacion,
-                idioma=idioma_actual,
-                historial_id=historial_id_seleccionado,
-            )
-
-        enlaces = resultado["enlaces"]
-        st.success(
-            t(
-                "¡Listo! Los dos enlaces se guardaron en la misma fila del análisis seleccionado.",
-                "Terminé ! Les deux liens ont été enregistrés dans la même ligne de l'analyse sélectionnée.",
-            )
-        )
-
-        st.markdown(f"**{t('ID del análisis actualizado', 'ID de l’analyse mise à jour')}:** `{resultado['historial_id']}`")
-        st.markdown(f"**{t('Fila actualizada en HistorialTerroCore', 'Ligne mise à jour dans HistorialTerroCore')}:** {resultado['fila_historial_actualizada']}")
-        st.markdown(f"**{t('ID de evidencia en Evidencias1', 'ID de preuve dans Evidencias1')}:** `{uniqueid}`")
-        st.markdown(f"**{t('Idioma de la evidencia', 'Langue de la preuve')}:** `{idioma_actual}`")
-
-        if enlaces.get("video"):
-            st.markdown(
-                f"[🎬 {t('Abrir video principal', 'Ouvrir la vidéo principale')}]"
-                f"({enlaces['video']})"
-            )
-        if enlaces.get("video simulacion"):
-            st.markdown(
-                f"[🎥 {t('Abrir video de simulación', 'Ouvrir la vidéo de simulation')}]"
-                f"({enlaces['video simulacion']})"
-            )
-
-        st.caption(
-            t(
-                "Se actualizaron únicamente las columnas Video y Video simulación del historial. "
-                "El diagnóstico, las imágenes, las métricas, la fecha y el nombre de la parcela se conservaron.",
-                "Seules les colonnes Video et Video simulación de l'historique ont été mises à jour. "
-                "Le diagnostic, les images, les mesures, la date et le nom de la parcelle ont été conservés.",
-            )
-        )
-
-    except Exception as error:
-        st.error(
-            t(
-                "No se pudo completar la carga o actualizar el historial.",
-                "Impossible de terminer l'importation ou de mettre à jour l'historique.",
-            )
-        )
-        st.code(str(error))
+def _tc_v33_texto(espanol, frances):
+    return frances if _tc_v33_idioma_actual() == "FR" else espanol
 
 
 # ------------------------------------------------------------
-# 11. MOSTRAR EL MODULO
+# 2. CONECTAR GOOGLE DRIVE Y GOOGLE SHEETS
 # ------------------------------------------------------------
 
-render_seccion_video_v33()
+def _tc_v33_conectar_google():
+    credenciales_raw = _tc_v33_secreto("gcp_service_account")
 
+    if not credenciales_raw:
+        credenciales_raw = _tc_v33_secreto(
+            "GCP_SERVICE_ACCOUNT_JSON"
+        )
+
+    if isinstance(credenciales_raw, str):
+        try:
+            informacion = json.loads(credenciales_raw)
+        except json.JSONDecodeError:
+            if os.path.isfile(credenciales_raw):
+                with open(
+                    credenciales_raw,
+                    "r",
+                    encoding="utf-8"
+                ) as archivo:
+                def _tc_v33_idioma_actual():
+    idioma = str(
+        st.session_state.get("idioma_terrocore", "ES")
+    ).strip().upper()
+
+    return "FR" if idioma == "FR" else "ES"
+
+
+def _tc_v33_texto(espanol, frances):
+    return frances if _tc_v33_idioma_actual() == "FR" else espanol
