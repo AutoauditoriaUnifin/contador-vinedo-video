@@ -13167,6 +13167,23 @@ with main_col:
                                 else f"{idx_img}_{uploaded_image.name}"
                             )
 
+                            # Confirmar visualmente el guardado de cada foto antes de
+                            # continuar con la siguiente, sin esperar al final del lote.
+                            if historial_google_ok:
+                                texto_progreso_guardado = tr(
+                                    f"Análisis {idx_img}/{total_imgs} terminado; fila guardada en HistorialTerroCore: {uploaded_image.name}",
+                                    f"Analyse {idx_img}/{total_imgs} terminé ; ligne enregistrée dans HistorialTerroCore : {uploaded_image.name}",
+                                )
+                            else:
+                                texto_progreso_guardado = tr(
+                                    f"Análisis {idx_img}/{total_imgs} terminado, pero no se confirmó el guardado de la fila: {str(historial_google_info or '')}",
+                                    f"Analyse {idx_img}/{total_imgs} terminé, mais l'enregistrement de la ligne n'a pas été confirmé : {str(historial_google_info or '')}",
+                                )
+                            progress_salud.progress(
+                                max(5, min(95, int((idx_img / total_imgs) * 90))),
+                                text=texto_progreso_guardado,
+                            )
+
                             if historial_google_ok and isinstance(historial_google_info, dict):
                                 try:
                                     mapa_ids = st.session_state.get("tc_registro_id_por_imagen", {}) or {}
@@ -14242,13 +14259,54 @@ def _tc_v33_asegurar_pestana(sheets, id_hoja, nombre_pestana):
         ).execute()
 
 
+def _tc_v33_asegurar_columnas_cuadricula(
+    sheets,
+    id_hoja,
+    nombre_pestana,
+    columnas_requeridas,
+):
+    """Amplía la cuadrícula de la pestaña antes de escribir encabezados nuevos."""
+    columnas_requeridas = max(1, int(columnas_requeridas or 1))
+
+    meta = sheets.spreadsheets().get(
+        spreadsheetId=id_hoja,
+        fields="sheets.properties(sheetId,title,gridProperties.columnCount)",
+    ).execute()
+
+    for hoja in meta.get("sheets", []):
+        props = hoja.get("properties", {}) or {}
+        if str(props.get("title", "")) != str(nombre_pestana):
+            continue
+
+        grid = props.get("gridProperties", {}) or {}
+        columnas_actuales = int(grid.get("columnCount", 0) or 0)
+        if columnas_actuales < columnas_requeridas:
+            sheets.spreadsheets().batchUpdate(
+                spreadsheetId=id_hoja,
+                body={
+                    "requests": [{
+                        "appendDimension": {
+                            "sheetId": int(props.get("sheetId")),
+                            "dimension": "COLUMNS",
+                            "length": columnas_requeridas - columnas_actuales,
+                        }
+                    }]
+                },
+            ).execute()
+        return
+
+    raise ValueError(
+        f"No se encontró la pestaña '{nombre_pestana}' para ampliar sus columnas."
+    )
+
+
 def _tc_v33_asegurar_columnas(
     sheets,
     id_hoja,
     nombre_pestana,
     encabezados_requeridos,
 ):
-    """Crea la pestaña si falta y agrega encabezados faltantes sin borrar datos."""
+    """Crea la pestaña y agrega encabezados faltantes sin borrar datos ni exceder la cuadrícula."""
     _tc_v33_asegurar_pestana(sheets, id_hoja, nombre_pestana)
 
     respuesta = sheets.spreadsheets().values().get(
@@ -14258,6 +14316,12 @@ def _tc_v33_asegurar_columnas(
     filas = respuesta.get("values", [])
 
     if not filas or not filas[0]:
+        _tc_v33_asegurar_columnas_cuadricula(
+            sheets,
+            id_hoja,
+            nombre_pestana,
+            len(encabezados_requeridos),
+        )
         sheets.spreadsheets().values().update(
             spreadsheetId=id_hoja,
             range=_tc_v33_rango(nombre_pestana, "A1"),
@@ -14278,6 +14342,17 @@ def _tc_v33_asegurar_columnas(
 
         if faltantes:
             primera_columna_nueva = len(encabezados)
+            columnas_necesarias = primera_columna_nueva + len(faltantes)
+
+            # Evita errores como HistorialTerroCore!AP1 cuando la hoja
+            # todavía tiene menos columnas físicas que las que necesita.
+            _tc_v33_asegurar_columnas_cuadricula(
+                sheets,
+                id_hoja,
+                nombre_pestana,
+                columnas_necesarias,
+            )
+
             letra = _tc_v33_letra_columna(primera_columna_nueva)
             sheets.spreadsheets().values().update(
                 spreadsheetId=id_hoja,
