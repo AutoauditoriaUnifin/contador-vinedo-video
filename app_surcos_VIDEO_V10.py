@@ -14024,12 +14024,13 @@ else:
             )
         )
 # ============================================================
-# TERRACORE - MODULO DE CARGA DE VIDEOS V3.6
+# TERRACORE - MODULO DE CARGA DE VIDEOS V3.6.3
 # SUBE DOS VIDEOS A GOOGLE DRIVE.
-#   1) Evidencias1: guarda un registro propio y el HistorialID.
-#   2) HistorialTerroCore: actualiza LOS ENLACES EN LA MISMA
-#      FILA DEL ANALISIS/PARCELA SELECCIONADO.
-# NO CREA UNA FILA EXTRA EN HistorialTerroCore.
+#   1) Evidencias1: guarda un registro de evidencia vinculado al análisis.
+#   2) HistorialTerroCore: guarda los enlaces en la MISMA FILA del análisis
+#      cuyo idioma coincide con el idioma actual (ES o FR).
+#   3) Nunca modifica los enlaces de una fila cuyo idioma sea distinto.
+#   4) Solo actualiza las columnas Video y Video simulación del análisis.
 # NO ANALIZA VIDEOS NI PROCESA FOTOGRAMAS.
 # ============================================================
 
@@ -14075,6 +14076,7 @@ HISTORIAL_VIDEO_HEADERS = [
     "Idioma",
     "Video",
     "Video simulación",
+    "HistorialID",
 ]
 
 
@@ -14553,52 +14555,114 @@ def _tc_v35_guardar_evidencias(
 def _tc_v35_guardar_historial_videos(
     sheets,
     id_hoja,
+    registro_video_id,
     historial_id,
+    nombre,
     enlaces,
     idioma,
 ):
-    """Actualiza solo las celdas de video de una fila de historial ya existente."""
+    """Actualiza solo los enlaces de video en la fila del análisis del mismo idioma."""
     pestana, filas, indices = _tc_v33_obtener_tabla_historial(
         sheets,
         id_hoja,
     )
 
-    fila_existente = _tc_v33_buscar_fila(
+    fila_analisis = _tc_v33_buscar_fila(
         filas,
         indices["id"],
         historial_id,
     )
-    if fila_existente is None:
+    if fila_analisis is None:
         raise ValueError(
-            f"No se encontró en HistorialTerroCore la fila seleccionada: {historial_id}. "
-            "No se creó una fila nueva para evitar separar los enlaces del análisis."
+            f"No se encontró el análisis {historial_id} en HistorialTerroCore. "
+            "No se modificó ninguna fila."
         )
 
-    fila_datos = filas[fila_existente - 1]
+    idioma_esperado = "FR" if str(idioma or "").strip().upper() == "FR" else "ES"
+    fila_datos = filas[fila_analisis - 1] if fila_analisis - 1 < len(filas) else []
+    idioma_fila = _tc_v33_valor_fila(fila_datos, indices, "Idioma").strip().upper()
+
+    if idioma_fila not in ("ES", "FR"):
+        raise ValueError(
+            f"El análisis {historial_id} no tiene ES o FR en la columna Idioma "
+            f"(valor actual: {idioma_fila or 'vacío'}). No se guardaron los enlaces "
+            "para evitar reemplazar videos de otro idioma. Verifica la columna Idioma "
+            "en HistorialTerroCore."
+        )
+
+    if idioma_fila != idioma_esperado:
+        raise ValueError(
+            f"El análisis seleccionado {historial_id} pertenece al idioma {idioma_fila}, "
+            f"pero la interfaz está en {idioma_esperado}. No se modificó la fila. "
+            f"Selecciona un análisis cuyo Idioma sea {idioma_esperado}."
+        )
+
+    # Escribir únicamente las columnas de enlaces. No tocar ID, Fecha, Nombre,
+    # Idioma, diagnóstico, imágenes, métricas ni los enlaces de otra fila.
     actualizaciones = []
+    for campo, enlace in (
+        ("video", str(enlaces.get("video", "") or "").strip()),
+        ("video simulacion", str(enlaces.get("video simulacion", "") or "").strip()),
+    ):
+        if not enlace:
+            # Si no se proporciona un enlace, conservar el que ya existe.
+            continue
+        indice_columna = indices.get(campo)
+        if indice_columna is None:
+            raise ValueError(
+                f"No existe la columna requerida '{campo}' en HistorialTerroCore."
+            )
+        letra = _tc_v33_letra_columna(indice_columna)
+        actualizaciones.append({
+            "range": _tc_v33_rango(pestana, f"{letra}{fila_analisis}"),
+            "values": [[enlace]],
+        })
 
-    # Solo se actualizan las columnas de videos; el resto del análisis queda intacto.
-    for campo in ("video", "video simulacion"):
-        valor = str(enlaces.get(campo, "") or "").strip()
-        if valor and campo in indices:
-            columna = _tc_v33_letra_columna(indices[campo])
-            actualizaciones.append({
-                "range": _tc_v33_rango(pestana, f"{columna}{fila_existente}"),
-                "values": [[valor]],
-            })
-
-    # Si la fila existente no tiene idioma, completar ES/FR sin sobrescribirlo.
-    if "idioma" in indices:
-        idioma_actual = _tc_v33_valor_fila(fila_datos, indices, "Idioma")
-        if not idioma_actual:
-            columna = _tc_v33_letra_columna(indices["idioma"])
-            actualizaciones.append({
-                "range": _tc_v33_rango(pestana, f"{columna}{fila_existente}"),
-                "values": [[idioma]],
-            })
+    if not actualizaciones:
+        raise ValueError("No hay enlaces de video para guardar en HistorialTerroCore.")
 
     _tc_v33_guardar_celdas(sheets, id_hoja, actualizaciones)
-    return pestana, "actualizado", fila_existente
+
+    # Verificar el resultado releyendo la misma fila y confirmando idioma e ID.
+    _, filas_verificacion, indices_verificacion = _tc_v33_obtener_tabla_historial(
+        sheets,
+        id_hoja,
+    )
+    if fila_analisis - 1 >= len(filas_verificacion):
+        raise RuntimeError(
+            f"No se pudo verificar la fila {fila_analisis} de HistorialTerroCore."
+        )
+
+    fila_verificacion = filas_verificacion[fila_analisis - 1]
+    id_guardado = _tc_v33_valor_fila(fila_verificacion, indices_verificacion, "ID")
+    idioma_guardado = _tc_v33_valor_fila(fila_verificacion, indices_verificacion, "Idioma").upper()
+    video_guardado = _tc_v33_valor_fila(fila_verificacion, indices_verificacion, "Video")
+    simulacion_guardada = _tc_v33_valor_fila(
+        fila_verificacion,
+        indices_verificacion,
+        "Video simulación",
+    )
+
+    if id_guardado != str(historial_id).strip():
+        raise RuntimeError(
+            f"La fila {fila_analisis} ya no corresponde al análisis {historial_id}."
+        )
+    if idioma_guardado != idioma_esperado:
+        raise RuntimeError(
+            f"La fila {fila_analisis} no conserva el idioma esperado {idioma_esperado}."
+        )
+    if enlaces.get("video") and video_guardado != str(enlaces["video"]).strip():
+        raise RuntimeError(
+            f"El enlace del video principal no se verificó en la fila {fila_analisis}."
+        )
+    if enlaces.get("video simulacion") and simulacion_guardada != str(
+        enlaces["video simulacion"]
+    ).strip():
+        raise RuntimeError(
+            f"El enlace del video de simulación no se verificó en la fila {fila_analisis}."
+        )
+
+    return pestana, "actualizado", fila_analisis
 
 
 # ------------------------------------------------------------
@@ -14643,6 +14707,28 @@ def _tc_v33_guardar_videos(
         raise ValueError(
             f"No se encontró el análisis seleccionado ({historial_id}) en "
             "HistorialTerroCore. Actualiza la aplicación y vuelve a seleccionar la parcela."
+        )
+
+    fila_analisis_previa = (
+        filas_historial[fila_historial - 1]
+        if fila_historial - 1 < len(filas_historial)
+        else []
+    )
+    idioma_fila_previa = _tc_v33_valor_fila(
+        fila_analisis_previa,
+        indices_historial,
+        "Idioma",
+    ).strip().upper()
+    if idioma_fila_previa not in ("ES", "FR"):
+        raise ValueError(
+            f"El análisis {historial_id} no tiene un idioma ES/FR válido en la columna Idioma. "
+            "No se subirán los videos para evitar sobrescribir enlaces incorrectos. "
+            "Revisa HistorialTerroCore."
+        )
+    if idioma_fila_previa != idioma:
+        raise ValueError(
+            f"El análisis seleccionado es {idioma_fila_previa}, pero la interfaz está en {idioma}. "
+            f"Selecciona un análisis en {idioma}; no se modificarán los enlaces del otro idioma."
         )
 
     pestana, filas, indices = _tc_v33_obtener_tabla(sheets, id_hoja)
@@ -14693,13 +14779,15 @@ def _tc_v33_guardar_videos(
         historial_id,
     )
 
-    # Actualizar únicamente los enlaces de video en la fila existente
-    # de HistorialTerroCore. No se usa uniqueid como ID del historial.
+    # Actualizar los enlaces en la MISMA FILA del análisis del mismo idioma.
+    # Solo se escriben Video y Video simulación; la fila del otro idioma no se toca.
     pestana_historial, accion_historial, fila_historial_actualizada = (
         _tc_v35_guardar_historial_videos(
             sheets,
             id_hoja,
+            uniqueid,
             historial_id,
+            nombre,
             enlaces,
             idioma,
         )
@@ -14711,6 +14799,7 @@ def _tc_v33_guardar_videos(
         "pestana_historial": pestana_historial,
         "accion_historial": accion_historial,
         "historial_id": str(historial_id),
+        "registro_video_id": str(uniqueid),
         "fila_historial_actualizada": fila_historial_actualizada,
         "enlaces": enlaces,
         "idioma": idioma,
@@ -14791,12 +14880,12 @@ def render_seccion_video_v33():
     st.header(t("📹 Videos de TerraCore", "📹 Vidéos TerraCore"))
     st.write(
         t(
-            "Selecciona un análisis existente y carga sus videos. Los enlaces se guardarán "
-            "en la misma fila de HistorialTerroCore, sin crear una fila extra. También "
-            "se registrará una evidencia relacionada en Evidencias1.",
-            "Sélectionnez une analyse existante et importez ses vidéos. Les liens seront "
-            "enregistrés dans la même ligne de HistorialTerroCore, sans créer de ligne "
-            "supplémentaire. Une preuve liée sera également enregistrée dans Evidencias1.",
+            "Selecciona un análisis del mismo idioma que estás usando. Los enlaces se guardarán "
+            "en la MISMA FILA de ese análisis, únicamente en las columnas Video y Video simulación. "
+            "Los enlaces de los análisis del otro idioma no se modificarán.",
+            "Sélectionnez une analyse dans la même langue que l'interface. Les liens seront "
+            "enregistrés dans la MÊME LIGNE de cette analyse, uniquement dans les colonnes Vidéo "
+            "et Vidéo simulation. Les liens de l'autre langue ne seront pas modifiés.",
         )
     )
 
@@ -14837,6 +14926,18 @@ def render_seccion_video_v33():
 
         nombre_historial = _tc_v33_valor_fila(fila, indices_historial, "Nombre")
         fecha_historial = _tc_v33_valor_fila(fila, indices_historial, "Fecha")
+        idioma_historial = _tc_v33_valor_fila(
+            fila,
+            indices_historial,
+            "Idioma",
+        ).strip().upper()
+        # Mostrar solo análisis del idioma actual. Esto evita que el registro ES
+        # reemplace los enlaces de un análisis FR (y viceversa).
+        if idioma_historial != idioma_actual:
+            continue
+        # Ignorar filas de evidencia antiguas que ya tenían HistorialID.
+        if _tc_v33_valor_fila(fila, indices_historial, "HistorialID"):
+            continue
         tiene_datos_analisis = any(
             _tc_v33_valor_fila(fila, indices_historial, campo)
             for campo in campos_analisis
@@ -14853,6 +14954,7 @@ def render_seccion_video_v33():
             parte for parte in (
                 str(fecha_historial)[:19],
                 nombre_historial,
+                f"Idioma: {idioma_historial}",
                 f"ID: {historial_id}",
             ) if parte
         )
@@ -14863,15 +14965,15 @@ def render_seccion_video_v33():
     if not opciones_historial:
         st.warning(
             t(
-                "No encontré análisis de parcelas disponibles en HistorialTerroCore. "
-                "Primero guarda un análisis de parcela y vuelve a abrir esta sección.",
-                "Aucune analyse de parcelle disponible dans HistorialTerroCore. "
-                "Enregistrez d'abord une analyse puis rouvrez cette section.",
+                f"No encontré análisis con Idioma={idioma_actual} en HistorialTerroCore. "
+                "Verifica que la columna Idioma de tu análisis tenga ES para español o FR para francés.",
+                f"Aucune analyse avec Idioma={idioma_actual} dans HistorialTerroCore. "
+                "Vérifiez que la colonne Idioma contient ES pour l'espagnol ou FR pour le français.",
             )
         )
         return
 
-    with st.form("tc_videos_nuevo_registro_v36"):
+    with st.form("tc_videos_mismo_idioma_v363"):
         historial_id_seleccionado = st.selectbox(
             t(
                 "📂 Selecciona la parcela/análisis donde se guardarán los videos",
@@ -14879,25 +14981,25 @@ def render_seccion_video_v33():
             ),
             options=opciones_historial,
             format_func=lambda valor: etiquetas_historial.get(valor, valor),
-            key="tc_video_historial_id_v36",
+            key="tc_video_historial_id_v363",
         )
 
         video = st.file_uploader(
             t("🎬 Selecciona el video principal", "🎬 Sélectionnez la vidéo principale"),
             type=["mp4", "mov", "avi", "mkv", "webm"],
-            key="tc_video_principal_v36",
+            key="tc_video_principal_v363",
         )
 
         video_simulacion = st.file_uploader(
             t("🎥 Selecciona el video de simulación", "🎥 Sélectionnez la vidéo de simulation"),
             type=["mp4", "mov", "avi", "mkv", "webm"],
-            key="tc_video_simulacion_v36",
+            key="tc_video_simulacion_v363",
         )
 
         enviar = st.form_submit_button(
             t(
-                "☁️ Subir videos y actualizar la fila seleccionada",
-                "☁️ Importer les vidéos et mettre à jour la ligne sélectionnée",
+                "☁️ Subir videos y guardar en la fila del análisis",
+                "☁️ Importer les vidéos et enregistrer dans la ligne de l'analyse",
             ),
             type="primary",
             use_container_width=True,
@@ -14931,7 +15033,17 @@ def render_seccion_video_v33():
                 if valor:
                     ids_existentes.add(valor)
 
-            # ID nuevo para Evidencias1; no se utiliza como ID del historial.
+            # También evitar colisiones con IDs ya existentes en HistorialTerroCore,
+            # porque este ID identificará la nueva fila de videos.
+            _, filas_historial_ids, indices_historial_ids = _tc_v33_obtener_tabla_historial(
+                sheets,
+                spreadsheet_id,
+            )
+            for fila in filas_historial_ids[1:]:
+                valor = _tc_v33_valor_fila(fila, indices_historial_ids, "ID")
+                if valor:
+                    ids_existentes.add(valor)
+
             while True:
                 uniqueid = str(secrets.randbelow(90_000_000) + 10_000_000)
                 if uniqueid not in ids_existentes:
@@ -14947,8 +15059,8 @@ def render_seccion_video_v33():
 
         with st.spinner(
             t(
-                "Subiendo videos a Google Drive y actualizando la fila existente...",
-                "Importation des vidéos dans Google Drive et mise à jour de la ligne existante...",
+                "Subiendo videos y actualizando la fila del análisis...",
+                "Importation des vidéos et mise à jour de la ligne de l'analyse...",
             )
         ):
             resultado = _tc_v33_guardar_videos(
@@ -14964,13 +15076,14 @@ def render_seccion_video_v33():
         enlaces = resultado["enlaces"]
         st.success(
             t(
-                "¡Listo! Los dos enlaces se guardaron en la misma fila del análisis seleccionado.",
-                "Terminé ! Les deux liens ont été enregistrés dans la même ligne de l'analyse sélectionnée.",
+                f"¡Listo! Los enlaces se guardaron en la fila del análisis {idioma_actual}.",
+                f"Terminé ! Les liens ont été enregistrés dans la ligne de l'analyse {idioma_actual}.",
             )
         )
 
-        st.markdown(f"**{t('ID del análisis actualizado', 'ID de l’analyse mise à jour')}:** `{resultado['historial_id']}`")
-        st.markdown(f"**{t('Fila actualizada en HistorialTerroCore', 'Ligne mise à jour dans HistorialTerroCore')}:** {resultado['fila_historial_actualizada']}")
+        st.markdown(f"**{t('ID del análisis relacionado', 'ID de l’analyse associée')}:** `{resultado['historial_id']}`")
+        st.markdown(f"**{t('Fila del análisis actualizada en HistorialTerroCore', 'Ligne de l’analyse mise à jour dans HistorialTerroCore')}:** {resultado['fila_historial_actualizada']}")
+        st.markdown(f"**{t('ID del registro de videos', 'ID de l’enregistrement vidéo')}:** `{resultado['registro_video_id']}`")
         st.markdown(f"**{t('ID de evidencia en Evidencias1', 'ID de preuve dans Evidencias1')}:** `{uniqueid}`")
         st.markdown(f"**{t('Idioma de la evidencia', 'Langue de la preuve')}:** `{idioma_actual}`")
 
@@ -14987,10 +15100,10 @@ def render_seccion_video_v33():
 
         st.caption(
             t(
-                "Se actualizaron únicamente las columnas Video y Video simulación del historial. "
-                "El diagnóstico, las imágenes, las métricas, la fecha y el nombre de la parcela se conservaron.",
-                "Seules les colonnes Video et Video simulación de l'historique ont été mises à jour. "
-                "Le diagnostic, les images, les mesures, la date et le nom de la parcelle ont été conservés.",
+                f"Se actualizaron solo las columnas de video de la fila {resultado['fila_historial_actualizada']} "
+                f"del análisis {idioma_actual}. Las demás columnas y los enlaces del otro idioma se conservaron.",
+                f"Seules les colonnes vidéo de la ligne {resultado['fila_historial_actualizada']} "
+                f"de l'analyse {idioma_actual} ont été mises à jour. Les autres colonnes et les liens de l'autre langue sont conservés.",
             )
         )
 
