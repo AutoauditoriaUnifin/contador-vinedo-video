@@ -14088,3 +14088,12 @@ def _tc_v33_secreto(nombre, predeterminado=None):
 
 
 def _tc_v33_idioma_actual():
+    idioma = str(
+        st.session_state.get("idioma_terrocore", "ES")
+    ).strip().upper()
+
+    return "FR" if idioma == "FR" else "ES"
+
+
+def _tc_v33_texto(espanol, frances):
+    return frances if _tc_v33_idioma_actual() == "FR" else espanol
