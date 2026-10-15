@@ -1466,6 +1466,22 @@ def guardar_analisis_en_google(
         registro
     )
 
+    # --------------------------------------------------------
+    # VINCULAR LOS VIDEOS AL ANALISIS RECIEN GUARDADO
+    # --------------------------------------------------------
+
+    st.session_state["tc_analisis_actual_id_videos"] = str(
+        registro.get("id", "")
+    ).strip()
+
+    st.session_state["tc_analisis_actual_nombre_videos"] = str(
+        registro.get("nombre", "")
+    ).strip()
+
+    st.session_state["tc_analisis_actual_fecha_videos"] = str(
+        registro.get("fecha", "")
+    ).strip()
+
     return True, registro
 
 
@@ -14040,15 +14056,20 @@ else:
                 f"Impossible de charger l’historique : {exc}"
             )
         )
+
 # ============================================================
-# TERRACORE - MODULO DE CARGA DE VIDEOS V3.6.3
-# SUBE DOS VIDEOS A GOOGLE DRIVE.
-#   1) Evidencias1: guarda un registro de evidencia vinculado al análisis.
-#   2) HistorialTerroCore: guarda los enlaces en la MISMA FILA del análisis
-#      cuyo idioma coincide con el idioma actual (ES o FR).
-#   3) Nunca modifica los enlaces de una fila cuyo idioma sea distinto.
-#   4) Solo actualiza las columnas Video y Video simulación del análisis.
-# NO ANALIZA VIDEOS NI PROCESA FOTOGRAMAS.
+# TERRACORE - MODULO DE CARGA DE VIDEOS V3.6.4
+#
+# CAMBIOS:
+# 1. Utiliza automáticamente el ID del análisis actual.
+# 2. No muestra un selector manual de análisis.
+# 3. No crea ni actualiza registros en Evidencias1.
+# 4. Sube los videos a Google Drive.
+# 5. Guarda los enlaces en la MISMA FILA de HistorialTerroCore.
+# 6. Solo actualiza Video y Video simulación.
+# 7. Valida ID e idioma antes y después de guardar.
+# 8. No agrega filas nuevas al historial.
+# 9. No analiza videos ni procesa fotogramas.
 # ============================================================
 
 import json
@@ -14056,7 +14077,6 @@ import mimetypes
 import os
 import re
 import unicodedata
-import secrets
 from pathlib import Path
 from datetime import datetime
 
@@ -14070,81 +14090,90 @@ from googleapiclient.http import MediaIoBaseUpload
 # 1. CONFIGURACION
 # ------------------------------------------------------------
 
-VIDEO_SHEET_NAME = "Evidencias1"
-HISTORIAL_SHEET_NAME = "HistorialTerroCore"
+HISTORIAL_SHEET_NAME_V364 = "HistorialTerroCore"
 
-VIDEO_HEADERS = [
-    "UNIQUEID",
-    "NOMBRE",
-    "DESCRIPCION",
+COLUMNAS_VIDEO_V364 = [
     "Video",
     "Video simulación",
-    "Idioma",
-    "HistorialID",
 ]
 
-# Se agregan únicamente las columnas que falten.
-# No se reemplazan ni se reordenan los encabezados actuales
-# de HistorialTerroCore.
-HISTORIAL_VIDEO_HEADERS = [
-    "ID",
-    "Fecha",
-    "Nombre",
-    "Idioma",
-    "Video",
-    "Video simulación",
-    "HistorialID",
+TIPOS_VIDEO_V364 = [
+    "mp4",
+    "mov",
+    "avi",
+    "mkv",
+    "webm",
 ]
 
 
-def _tc_v33_secreto(nombre, predeterminado=None):
+# ------------------------------------------------------------
+# 2. IDIOMA Y SECRETOS
+# ------------------------------------------------------------
+
+def _tc_v364_secreto(nombre, predeterminado=None):
     try:
         return st.secrets.get(nombre, predeterminado)
     except Exception:
         return predeterminado
 
 
-def _tc_v33_idioma_actual():
+def _tc_v364_idioma_actual():
     idioma = str(
         st.session_state.get("idioma_terrocore", "ES")
     ).strip().upper()
+
     return "FR" if idioma == "FR" else "ES"
 
 
-def _tc_v33_texto(espanol, frances):
-    return frances if _tc_v33_idioma_actual() == "FR" else espanol
+def _tc_v364_texto(espanol, frances):
+    return (
+        frances
+        if _tc_v364_idioma_actual() == "FR"
+        else espanol
+    )
 
 
 # ------------------------------------------------------------
-# 2. CONECTAR GOOGLE DRIVE Y GOOGLE SHEETS
+# 3. CONECTAR GOOGLE DRIVE Y GOOGLE SHEETS
 # ------------------------------------------------------------
 
-def _tc_v33_conectar_google():
-    credenciales_raw = _tc_v33_secreto("gcp_service_account")
+def _tc_v364_conectar_google():
+
+    credenciales_raw = _tc_v364_secreto(
+        "gcp_service_account"
+    )
 
     if not credenciales_raw:
-        credenciales_raw = _tc_v33_secreto(
+        credenciales_raw = _tc_v364_secreto(
             "GCP_SERVICE_ACCOUNT_JSON"
         )
 
     if isinstance(credenciales_raw, str):
+
         try:
             informacion = json.loads(credenciales_raw)
+
         except json.JSONDecodeError:
+
             if os.path.isfile(credenciales_raw):
+
                 with open(
                     credenciales_raw,
                     "r",
-                    encoding="utf-8"
+                    encoding="utf-8",
                 ) as archivo:
                     informacion = json.load(archivo)
+
             else:
                 raise ValueError(
-                    "Las credenciales de Google no contienen un JSON "
-                    "válido ni una ruta de archivo."
+                    "Las credenciales de Google no contienen "
+                    "un JSON válido ni una ruta de archivo."
                 )
+
     elif credenciales_raw:
+
         informacion = dict(credenciales_raw)
+
     else:
         informacion = None
 
@@ -14154,13 +14183,13 @@ def _tc_v33_conectar_google():
         )
 
     id_hoja = (
-        _tc_v33_secreto("GSHEET_ID")
-        or _tc_v33_secreto("VIDEO_GSHEET_ID")
+        _tc_v364_secreto("GSHEET_ID")
+        or _tc_v364_secreto("VIDEO_GSHEET_ID")
     )
 
     carpeta_padre = (
-        _tc_v33_secreto("GDRIVE_PARENT_FOLDER_ID")
-        or _tc_v33_secreto("VIDEO_DRIVE_FOLDER_ID")
+        _tc_v364_secreto("GDRIVE_PARENT_FOLDER_ID")
+        or _tc_v364_secreto("VIDEO_DRIVE_FOLDER_ID")
     )
 
     if not id_hoja:
@@ -14170,8 +14199,8 @@ def _tc_v33_conectar_google():
 
     if not carpeta_padre:
         raise ValueError(
-            "Configura GDRIVE_PARENT_FOLDER_ID con el ID de la "
-            "carpeta de Drive."
+            "Configura GDRIVE_PARENT_FOLDER_ID con el ID "
+            "de la carpeta de Google Drive."
         )
 
     scopes = [
@@ -14179,9 +14208,11 @@ def _tc_v33_conectar_google():
         "https://www.googleapis.com/auth/spreadsheets",
     ]
 
-    credenciales = service_account.Credentials.from_service_account_info(
-        informacion,
-        scopes=scopes,
+    credenciales = (
+        service_account.Credentials.from_service_account_info(
+            informacion,
+            scopes=scopes,
+        )
     )
 
     drive = build(
@@ -14202,262 +14233,378 @@ def _tc_v33_conectar_google():
 
 
 # ------------------------------------------------------------
-# 3. FUNCIONES GENERALES DE GOOGLE SHEETS
+# 4. FUNCIONES DE GOOGLE SHEETS
 # ------------------------------------------------------------
 
-def _tc_v33_normalizar_encabezado(valor):
+def _tc_v364_normalizar_encabezado(valor):
+
     texto = unicodedata.normalize(
         "NFD",
         str(valor or "").strip().casefold(),
     )
+
     texto = "".join(
         caracter
         for caracter in texto
         if unicodedata.category(caracter) != "Mn"
     )
+
     return re.sub(r"\s+", " ", texto)
 
 
-def _tc_v33_rango(nombre_pestana, rango):
-    nombre_seguro = str(nombre_pestana).replace("'", "''")
+def _tc_v364_rango(nombre_pestana, rango):
+
+    nombre_seguro = str(nombre_pestana).replace(
+        "'",
+        "''",
+    )
+
     return f"'{nombre_seguro}'!{rango}"
 
 
-def _tc_v33_letra_columna(indice):
-    """Convierte índice base cero a letra de Sheets: 0=A, 26=AA."""
+def _tc_v364_letra_columna(indice):
+    """
+    Convierte índice base cero en letra de Google Sheets.
+    0 = A, 25 = Z, 26 = AA.
+    """
+
     numero = int(indice) + 1
     letras = ""
+
     while numero:
         numero, resto = divmod(numero - 1, 26)
         letras = chr(65 + resto) + letras
+
     return letras
 
 
-def _tc_v33_asegurar_pestana(sheets, id_hoja, nombre_pestana):
-    meta = sheets.spreadsheets().get(
-        spreadsheetId=id_hoja,
-        fields="sheets.properties.title",
-    ).execute()
-
-    pestanas = [
-        hoja.get("properties", {}).get("title", "")
-        for hoja in meta.get("sheets", [])
-    ]
-
-    if nombre_pestana not in pestanas:
-        sheets.spreadsheets().batchUpdate(
-            spreadsheetId=id_hoja,
-            body={
-                "requests": [
-                    {
-                        "addSheet": {
-                            "properties": {"title": nombre_pestana}
-                        }
-                    }
-                ]
-            },
-        ).execute()
-
-
-def _tc_v33_asegurar_columnas_cuadricula(
+def _tc_v364_guardar_celdas(
     sheets,
     id_hoja,
-    nombre_pestana,
-    columnas_requeridas,
+    actualizaciones,
 ):
-    """Amplía la cuadrícula de la pestaña antes de escribir encabezados nuevos."""
-    columnas_requeridas = max(1, int(columnas_requeridas or 1))
 
-    meta = sheets.spreadsheets().get(
-        spreadsheetId=id_hoja,
-        fields="sheets.properties(sheetId,title,gridProperties.columnCount)",
-    ).execute()
-
-    for hoja in meta.get("sheets", []):
-        props = hoja.get("properties", {}) or {}
-        if str(props.get("title", "")) != str(nombre_pestana):
-            continue
-
-        grid = props.get("gridProperties", {}) or {}
-        columnas_actuales = int(grid.get("columnCount", 0) or 0)
-        if columnas_actuales < columnas_requeridas:
-            sheets.spreadsheets().batchUpdate(
-                spreadsheetId=id_hoja,
-                body={
-                    "requests": [{
-                        "appendDimension": {
-                            "sheetId": int(props.get("sheetId")),
-                            "dimension": "COLUMNS",
-                            "length": columnas_requeridas - columnas_actuales,
-                        }
-                    }]
-                },
-            ).execute()
+    if not actualizaciones:
         return
 
-    raise ValueError(
-        f"No se encontró la pestaña '{nombre_pestana}' para ampliar sus columnas."
-    )
+    sheets.spreadsheets().values().batchUpdate(
+        spreadsheetId=id_hoja,
+        body={
+            "valueInputOption": "RAW",
+            "data": actualizaciones,
+        },
+    ).execute()
 
 
-def _tc_v33_asegurar_columnas(
+# ------------------------------------------------------------
+# 5. LEER HISTORIAL Y PREPARAR SOLO LAS COLUMNAS DE VIDEO
+# ------------------------------------------------------------
+
+def _tc_v364_obtener_historial(
     sheets,
     id_hoja,
-    nombre_pestana,
-    encabezados_requeridos,
 ):
-    """Crea la pestaña y agrega encabezados faltantes sin borrar datos ni exceder la cuadrícula."""
-    _tc_v33_asegurar_pestana(sheets, id_hoja, nombre_pestana)
+    """
+    Lee HistorialTerroCore.
+
+    Si faltan las columnas Video o Video simulación,
+    las agrega al final sin reordenar las columnas existentes.
+
+    No crea filas de análisis ni agrega registros de evidencia.
+    """
+
+    rango = _tc_v364_rango(
+        HISTORIAL_SHEET_NAME_V364,
+        "A:ZZ",
+    )
 
     respuesta = sheets.spreadsheets().values().get(
         spreadsheetId=id_hoja,
-        range=_tc_v33_rango(nombre_pestana, "A:ZZ"),
+        range=rango,
     ).execute()
+
     filas = respuesta.get("values", [])
 
     if not filas or not filas[0]:
-        _tc_v33_asegurar_columnas_cuadricula(
-            sheets,
-            id_hoja,
-            nombre_pestana,
-            len(encabezados_requeridos),
+        raise ValueError(
+            "No se encontraron encabezados en HistorialTerroCore. "
+            "Verifica que la pestaña exista y tenga sus encabezados."
         )
-        sheets.spreadsheets().values().update(
-            spreadsheetId=id_hoja,
-            range=_tc_v33_rango(nombre_pestana, "A1"),
-            valueInputOption="RAW",
-            body={"values": [encabezados_requeridos]},
-        ).execute()
-    else:
-        encabezados = list(filas[0])
-        existentes = {
-            _tc_v33_normalizar_encabezado(encabezado)
-            for encabezado in encabezados
-        }
-        faltantes = [
-            encabezado
-            for encabezado in encabezados_requeridos
-            if _tc_v33_normalizar_encabezado(encabezado) not in existentes
-        ]
 
-        if faltantes:
-            primera_columna_nueva = len(encabezados)
-            columnas_necesarias = primera_columna_nueva + len(faltantes)
+    encabezados = list(filas[0])
 
-            # Evita errores como HistorialTerroCore!AP1 cuando la hoja
-            # todavía tiene menos columnas físicas que las que necesita.
-            _tc_v33_asegurar_columnas_cuadricula(
-                sheets,
-                id_hoja,
-                nombre_pestana,
-                columnas_necesarias,
+    indices = {
+        _tc_v364_normalizar_encabezado(encabezado): indice
+        for indice, encabezado in enumerate(encabezados)
+    }
+
+    # El historial debe tener estas columnas existentes.
+    # No las creamos automáticamente porque se necesitan
+    # para validar que el destino sea el análisis correcto.
+    for obligatorio in ("ID", "Idioma"):
+
+        clave = _tc_v364_normalizar_encabezado(
+            obligatorio
+        )
+
+        if clave not in indices:
+            raise ValueError(
+                f"Falta la columna '{obligatorio}' "
+                "en HistorialTerroCore. No se modificó ninguna fila."
             )
 
-            letra = _tc_v33_letra_columna(primera_columna_nueva)
-            sheets.spreadsheets().values().update(
-                spreadsheetId=id_hoja,
-                range=_tc_v33_rango(
-                    nombre_pestana,
-                    f"{letra}1",
-                ),
-                valueInputOption="RAW",
-                body={"values": [faltantes]},
-            ).execute()
+    # Solo se agregan los encabezados de video que falten.
+    faltantes = [
+        nombre
+        for nombre in COLUMNAS_VIDEO_V364
+        if _tc_v364_normalizar_encabezado(nombre) not in indices
+    ]
 
-    respuesta_final = sheets.spreadsheets().values().get(
-        spreadsheetId=id_hoja,
-        range=_tc_v33_rango(nombre_pestana, "A:ZZ"),
-    ).execute()
-    filas_finales = respuesta_final.get("values", [])
+    if faltantes:
 
-    if not filas_finales:
-        raise ValueError(
-            f"No se pudieron leer los encabezados de {nombre_pestana}."
+        primera_columna = len(encabezados)
+
+        letra = _tc_v364_letra_columna(
+            primera_columna
         )
 
-    encabezados_finales = filas_finales[0]
-    indices = {
-        _tc_v33_normalizar_encabezado(encabezado): indice
-        for indice, encabezado in enumerate(encabezados_finales)
-    }
-
-    return nombre_pestana, filas_finales, indices
-
-
-def _tc_v33_obtener_tabla(sheets, id_hoja):
-    """La tabla principal del módulo de videos siempre es Evidencias1."""
-    pestana, filas, indices = _tc_v33_asegurar_columnas(
-        sheets,
-        id_hoja,
-        VIDEO_SHEET_NAME,
-        VIDEO_HEADERS,
-    )
-    requeridas = {
-        _tc_v33_normalizar_encabezado(campo)
-        for campo in VIDEO_HEADERS
-    }
-    if not requeridas.issubset(set(indices.keys())):
-        raise ValueError(
-            "No se pudieron preparar las columnas de Evidencias1. "
-            "Se requieren UNIQUEID, NOMBRE, DESCRIPCION, Video, "
-            "Video simulación e Idioma."
-        )
-    return pestana, filas, indices
-
-
-def _tc_v33_obtener_tabla_historial(sheets, id_hoja):
-    """Prepara HistorialTerroCore conservando sus columnas existentes."""
-    return _tc_v33_asegurar_columnas(
-        sheets,
-        id_hoja,
-        HISTORIAL_SHEET_NAME,
-        HISTORIAL_VIDEO_HEADERS,
-    )
-
-
-def _tc_v33_buscar_fila(filas, indice_id, identificador):
-    """Devuelve número de fila de Sheets (empieza en 2) o None."""
-    objetivo = str(identificador or "").strip()
-    for numero_fila, fila in enumerate(filas[1:], start=2):
-        if indice_id < len(fila):
-            valor = str(fila[indice_id] or "").strip()
-            if valor == objetivo:
-                return numero_fila
-    return None
-
-
-def _tc_v33_valor_fila(fila, indices, nombre_columna):
-    indice = indices.get(_tc_v33_normalizar_encabezado(nombre_columna))
-    if indice is None or indice >= len(fila):
-        return ""
-    return str(fila[indice] or "").strip()
-
-
-def _tc_v33_guardar_celdas(sheets, id_hoja, actualizaciones):
-    if actualizaciones:
-        sheets.spreadsheets().values().batchUpdate(
+        sheets.spreadsheets().values().update(
             spreadsheetId=id_hoja,
+            range=_tc_v364_rango(
+                HISTORIAL_SHEET_NAME_V364,
+                f"{letra}1",
+            ),
+            valueInputOption="RAW",
             body={
-                "valueInputOption": "USER_ENTERED",
-                "data": actualizaciones,
+                "values": [faltantes]
             },
         ).execute()
 
+        # Volver a leer para obtener los índices definitivos.
+        respuesta = sheets.spreadsheets().values().get(
+            spreadsheetId=id_hoja,
+            range=rango,
+        ).execute()
+
+        filas = respuesta.get("values", [])
+
+        if not filas or not filas[0]:
+            raise ValueError(
+                "No fue posible volver a leer los encabezados "
+                "de HistorialTerroCore."
+            )
+
+        encabezados = list(filas[0])
+
+        indices = {
+            _tc_v364_normalizar_encabezado(encabezado): indice
+            for indice, encabezado in enumerate(encabezados)
+        }
+
+    for obligatorio in COLUMNAS_VIDEO_V364:
+
+        clave = _tc_v364_normalizar_encabezado(
+            obligatorio
+        )
+
+        if clave not in indices:
+            raise ValueError(
+                f"No se pudo preparar la columna '{obligatorio}'."
+            )
+
+    return filas, indices
+
 
 # ------------------------------------------------------------
-# 4. CREAR O REUTILIZAR CARPETA DE VIDEOS
+# 6. BUSCAR UN ANALISIS POR SU ID EXACTO
 # ------------------------------------------------------------
 
-def _tc_v33_crear_carpeta(drive, carpeta_padre):
+def _tc_v364_buscar_fila(
+    filas,
+    indices,
+    historial_id,
+):
+    """
+    Devuelve el número físico de fila de Google Sheets.
+    La fila 1 contiene encabezados; los datos empiezan en fila 2.
+    """
+
+    objetivo = str(
+        historial_id or ""
+    ).strip()
+
+    indice_id = indices.get(
+        _tc_v364_normalizar_encabezado("ID")
+    )
+
+    if indice_id is None:
+        raise ValueError(
+            "No se encontró la columna ID."
+        )
+
+    for numero_fila, fila in enumerate(
+        filas[1:],
+        start=2,
+    ):
+
+        if indice_id >= len(fila):
+            continue
+
+        valor = str(
+            fila[indice_id] or ""
+        ).strip()
+
+        if valor == objetivo:
+            return numero_fila
+
+    return None
+
+
+def _tc_v364_valor_fila(
+    fila,
+    indices,
+    nombre_columna,
+):
+
+    clave = _tc_v364_normalizar_encabezado(
+        nombre_columna
+    )
+
+    indice = indices.get(clave)
+
+    if indice is None or indice >= len(fila):
+        return ""
+
+    return str(
+        fila[indice] or ""
+    ).strip()
+
+
+# ------------------------------------------------------------
+# 7. VALIDAR EL ANALISIS ACTUAL
+# ------------------------------------------------------------
+
+def _tc_v364_validar_analisis(
+    sheets,
+    id_hoja,
+    historial_id,
+    idioma_esperado,
+):
+    """
+    Busca el ID exacto y comprueba el idioma.
+    No permite actualizar otra fila por coincidencia de idioma,
+    posición o selección anterior.
+    """
+
+    historial_id = str(
+        historial_id or ""
+    ).strip()
+
+    if not historial_id:
+        raise ValueError(
+            "No se detectó el ID del análisis actual."
+        )
+
+    idioma_esperado = (
+        "FR"
+        if str(idioma_esperado or "").strip().upper() == "FR"
+        else "ES"
+    )
+
+    filas, indices = _tc_v364_obtener_historial(
+        sheets,
+        id_hoja,
+    )
+
+    fila_analisis = _tc_v364_buscar_fila(
+        filas,
+        indices,
+        historial_id,
+    )
+
+    if fila_analisis is None:
+        raise ValueError(
+            f"No se encontró el ID {historial_id} en "
+            "HistorialTerroCore. No se modificó ninguna fila."
+        )
+
+    fila_datos = filas[fila_analisis - 1]
+
+    id_en_fila = _tc_v364_valor_fila(
+        fila_datos,
+        indices,
+        "ID",
+    )
+
+    idioma_fila = _tc_v364_valor_fila(
+        fila_datos,
+        indices,
+        "Idioma",
+    ).strip().upper()
+
+    if id_en_fila != historial_id:
+        raise ValueError(
+            "El ID de la fila encontrada no coincide con "
+            "el análisis actual. No se guardaron los enlaces."
+        )
+
+    if idioma_fila not in ("ES", "FR"):
+        raise ValueError(
+            f"El análisis {historial_id} no tiene un idioma "
+            f"válido en la columna Idioma. Valor actual: "
+            f"{idioma_fila or 'vacío'}. No se modificó la fila."
+        )
+
+    if idioma_fila != idioma_esperado:
+        raise ValueError(
+            f"El análisis actual es {idioma_fila}, pero la "
+            f"interfaz está en {idioma_esperado}. "
+            "No se modificó ninguna fila. Verifica el idioma "
+            "o realiza el análisis correspondiente."
+        )
+
+    return {
+        "filas": filas,
+        "indices": indices,
+        "fila": fila_analisis,
+        "fila_datos": fila_datos,
+        "historial_id": historial_id,
+        "idioma": idioma_fila,
+        "nombre": _tc_v364_valor_fila(
+            fila_datos,
+            indices,
+            "Nombre",
+        ),
+        "fecha": _tc_v364_valor_fila(
+            fila_datos,
+            indices,
+            "Fecha",
+        ),
+    }
+
+
+# ------------------------------------------------------------
+# 8. CREAR O REUTILIZAR LA CARPETA DE DRIVE
+# ------------------------------------------------------------
+
+def _tc_v364_crear_carpeta(
+    drive,
+    carpeta_padre,
+):
+
     nombre = "VideosTerraCore"
     nombre_query = nombre.replace("'", "\\'")
+
     consulta = (
         f"name = '{nombre_query}' "
         "and mimeType = 'application/vnd.google-apps.folder' "
         "and trashed = false"
     )
+
     if carpeta_padre:
-        consulta += f" and '{carpeta_padre}' in parents"
+        consulta += (
+            f" and '{carpeta_padre}' in parents"
+        )
 
     respuesta = drive.files().list(
         q=consulta,
@@ -14469,6 +14616,7 @@ def _tc_v33_crear_carpeta(drive, carpeta_padre):
     ).execute()
 
     carpetas = respuesta.get("files", [])
+
     if carpetas:
         return carpetas[0]["id"]
 
@@ -14481,40 +14629,64 @@ def _tc_v33_crear_carpeta(drive, carpeta_padre):
         fields="id,name",
         supportsAllDrives=True,
     ).execute()
+
     return nueva_carpeta["id"]
 
 
 # ------------------------------------------------------------
-# 5. SUBIR VIDEO A DRIVE POR BLOQUES
+# 9. SUBIR UN VIDEO A GOOGLE DRIVE
 # ------------------------------------------------------------
 
-def _tc_v33_subir_drive(
+def _tc_v364_subir_drive(
     drive,
     carpeta_id,
     archivo,
-    uniqueid,
+    historial_id,
     tipo_video,
 ):
-    """Sube el video original a Drive sin analizarlo ni modificarlo."""
+    """
+    Sube el archivo original.
+    No analiza el video ni procesa fotogramas.
+    """
+
+    if archivo is None:
+        raise ValueError(
+            f"No se seleccionó el archivo para {tipo_video}."
+        )
+
     archivo.seek(0)
 
     tipo_mime = (
         getattr(archivo, "type", None)
-        or mimetypes.guess_type(archivo.name)[0]
+        or mimetypes.guess_type(
+            archivo.name
+        )[0]
         or "application/octet-stream"
     )
 
     id_seguro = re.sub(
         r"[^A-Za-z0-9_-]+",
         "_",
-        str(uniqueid),
-    ).strip("_") or "Registro"
+        str(historial_id),
+    ).strip("_") or "Analisis"
 
-    tipo_seguro = _tc_v33_normalizar_encabezado(tipo_video).replace(" ", "_")
-    fecha_archivo = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tipo_seguro = re.sub(
+        r"[^A-Za-z0-9_-]+",
+        "_",
+        str(tipo_video),
+    ).strip("_")
+
+    fecha_archivo = datetime.now().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+
+    nombre_original = Path(
+        os.path.basename(archivo.name)
+    ).name
+
     nombre_drive = (
-        f"{id_seguro}_{tipo_seguro}_{fecha_archivo}_"
-        f"{Path(archivo.name).name}"
+        f"{id_seguro}_{tipo_seguro}_"
+        f"{fecha_archivo}_{nombre_original}"
     )
 
     media = MediaIoBaseUpload(
@@ -14525,7 +14697,10 @@ def _tc_v33_subir_drive(
     )
 
     solicitud = drive.files().create(
-        body={"name": nombre_drive, "parents": [carpeta_id]},
+        body={
+            "name": nombre_drive,
+            "parents": [carpeta_id],
+        },
         media_body=media,
         fields="id,name,webViewLink,size",
         supportsAllDrives=True,
@@ -14533,548 +14708,460 @@ def _tc_v33_subir_drive(
 
     respuesta = None
     barra = st.progress(0.0)
+
     try:
+
         while respuesta is None:
-            estado, respuesta = solicitud.next_chunk(num_retries=3)
+
+            estado, respuesta = solicitud.next_chunk(
+                num_retries=3
+            )
+
             if estado is not None:
-                barra.progress(float(estado.progress()))
+                barra.progress(
+                    float(estado.progress())
+                )
+
         barra.progress(1.0)
+
     finally:
         barra.empty()
 
     id_archivo = respuesta["id"]
+
     url = respuesta.get("webViewLink")
+
     if not url:
-        url = f"https://drive.google.com/file/d/{id_archivo}/view"
+        url = (
+            f"https://drive.google.com/file/d/"
+            f"{id_archivo}/view"
+        )
+
     return url
 
 
 # ------------------------------------------------------------
-# 6. GUARDAR EN Evidencias1
+# 10. GUARDAR LOS ENLACES EN LA MISMA FILA DEL ANALISIS
 # ------------------------------------------------------------
 
-def _tc_v35_guardar_evidencias(
+def _tc_v364_guardar_en_misma_fila(
     sheets,
     id_hoja,
-    uniqueid,
-    nombre,
-    descripcion,
-    enlaces,
-    idioma,
     historial_id,
-):
-    pestana, filas, indices = _tc_v33_obtener_tabla(sheets, id_hoja)
-    indice_id = indices["uniqueid"]
-    fila_existente = _tc_v33_buscar_fila(
-        filas,
-        indice_id,
-        uniqueid,
-    )
-
-    valores = {
-        "nombre": nombre.strip(),
-        "descripcion": descripcion.strip(),
-        "idioma": idioma,
-        "historialid": str(historial_id or "").strip(),
-    }
-    valores.update(enlaces)
-
-    if fila_existente is not None:
-        actualizaciones = []
-        for campo, valor in valores.items():
-            if campo not in indices:
-                continue
-            # Si no se subió un video en una llamada futura, conservar su enlace.
-            if campo in ("video", "video simulacion") and not valor:
-                continue
-            columna = _tc_v33_letra_columna(indices[campo])
-            actualizaciones.append({
-                "range": _tc_v33_rango(
-                    pestana,
-                    f"{columna}{fila_existente}",
-                ),
-                "values": [[valor]],
-            })
-        _tc_v33_guardar_celdas(sheets, id_hoja, actualizaciones)
-        return "actualizado", pestana
-
-    encabezados = filas[0]
-    nueva_fila = [""] * len(encabezados)
-    nueva_fila[indices["uniqueid"]] = uniqueid
-    nueva_fila[indices["nombre"]] = nombre.strip()
-    nueva_fila[indices["descripcion"]] = descripcion.strip()
-    nueva_fila[indices["idioma"]] = idioma
-    if "historialid" in indices:
-        nueva_fila[indices["historialid"]] = str(historial_id or "").strip()
-
-    if enlaces.get("video"):
-        nueva_fila[indices["video"]] = enlaces["video"]
-    if enlaces.get("video simulacion"):
-        nueva_fila[indices["video simulacion"]] = enlaces["video simulacion"]
-
-    sheets.spreadsheets().values().append(
-        spreadsheetId=id_hoja,
-        range=_tc_v33_rango(pestana, "A:ZZ"),
-        valueInputOption="USER_ENTERED",
-        insertDataOption="INSERT_ROWS",
-        body={"values": [nueva_fila]},
-    ).execute()
-
-    return "creado", pestana
-
-
-# ------------------------------------------------------------
-# 7. GUARDAR TAMBIEN LOS ENLACES EN HistorialTerroCore
-# ------------------------------------------------------------
-
-def _tc_v35_guardar_historial_videos(
-    sheets,
-    id_hoja,
-    registro_video_id,
-    historial_id,
-    nombre,
-    enlaces,
     idioma,
+    enlaces,
 ):
-    """Actualiza solo los enlaces de video en la fila del análisis del mismo idioma."""
-    pestana, filas, indices = _tc_v33_obtener_tabla_historial(
+    """
+    Solo modifica las columnas Video y Video simulación
+    del análisis identificado por historial_id.
+
+    No usa append().
+    No agrega filas.
+    No modifica Evidencias1.
+    """
+
+    contexto = _tc_v364_validar_analisis(
         sheets,
         id_hoja,
-    )
-
-    fila_analisis = _tc_v33_buscar_fila(
-        filas,
-        indices["id"],
         historial_id,
+        idioma,
     )
-    if fila_analisis is None:
-        raise ValueError(
-            f"No se encontró el análisis {historial_id} en HistorialTerroCore. "
-            "No se modificó ninguna fila."
-        )
 
-    idioma_esperado = "FR" if str(idioma or "").strip().upper() == "FR" else "ES"
-    fila_datos = filas[fila_analisis - 1] if fila_analisis - 1 < len(filas) else []
-    idioma_fila = _tc_v33_valor_fila(fila_datos, indices, "Idioma").strip().upper()
+    indices = contexto["indices"]
+    fila_analisis = contexto["fila"]
 
-    if idioma_fila not in ("ES", "FR"):
-        raise ValueError(
-            f"El análisis {historial_id} no tiene ES o FR en la columna Idioma "
-            f"(valor actual: {idioma_fila or 'vacío'}). No se guardaron los enlaces "
-            "para evitar reemplazar videos de otro idioma. Verifica la columna Idioma "
-            "en HistorialTerroCore."
-        )
-
-    if idioma_fila != idioma_esperado:
-        raise ValueError(
-            f"El análisis seleccionado {historial_id} pertenece al idioma {idioma_fila}, "
-            f"pero la interfaz está en {idioma_esperado}. No se modificó la fila. "
-            f"Selecciona un análisis cuyo Idioma sea {idioma_esperado}."
-        )
-
-    # Escribir únicamente las columnas de enlaces. No tocar ID, Fecha, Nombre,
-    # Idioma, diagnóstico, imágenes, métricas ni los enlaces de otra fila.
     actualizaciones = []
-    for campo, enlace in (
-        ("video", str(enlaces.get("video", "") or "").strip()),
-        ("video simulacion", str(enlaces.get("video simulacion", "") or "").strip()),
-    ):
+
+    campos_video = [
+        ("video", "Video"),
+        ("video simulacion", "Video simulación"),
+    ]
+
+    for clave_enlace, nombre_columna in campos_video:
+
+        enlace = str(
+            enlaces.get(clave_enlace, "") or ""
+        ).strip()
+
+        # Si no hay enlace, conservar la celda existente.
         if not enlace:
-            # Si no se proporciona un enlace, conservar el que ya existe.
             continue
-        indice_columna = indices.get(campo)
+
+        indice_columna = indices.get(
+            _tc_v364_normalizar_encabezado(
+                nombre_columna
+            )
+        )
+
         if indice_columna is None:
             raise ValueError(
-                f"No existe la columna requerida '{campo}' en HistorialTerroCore."
+                f"No existe la columna '{nombre_columna}' "
+                "en HistorialTerroCore."
             )
-        letra = _tc_v33_letra_columna(indice_columna)
+
+        letra = _tc_v364_letra_columna(
+            indice_columna
+        )
+
         actualizaciones.append({
-            "range": _tc_v33_rango(pestana, f"{letra}{fila_analisis}"),
+            "range": _tc_v364_rango(
+                HISTORIAL_SHEET_NAME_V364,
+                f"{letra}{fila_analisis}",
+            ),
             "values": [[enlace]],
         })
 
     if not actualizaciones:
-        raise ValueError("No hay enlaces de video para guardar en HistorialTerroCore.")
+        raise ValueError(
+            "No hay enlaces de video para guardar."
+        )
 
-    _tc_v33_guardar_celdas(sheets, id_hoja, actualizaciones)
-
-    # Verificar el resultado releyendo la misma fila y confirmando idioma e ID.
-    _, filas_verificacion, indices_verificacion = _tc_v33_obtener_tabla_historial(
+    # Solo se actualizan las celdas de los dos videos.
+    _tc_v364_guardar_celdas(
         sheets,
         id_hoja,
-    )
-    if fila_analisis - 1 >= len(filas_verificacion):
-        raise RuntimeError(
-            f"No se pudo verificar la fila {fila_analisis} de HistorialTerroCore."
-        )
-
-    fila_verificacion = filas_verificacion[fila_analisis - 1]
-    id_guardado = _tc_v33_valor_fila(fila_verificacion, indices_verificacion, "ID")
-    idioma_guardado = _tc_v33_valor_fila(fila_verificacion, indices_verificacion, "Idioma").upper()
-    video_guardado = _tc_v33_valor_fila(fila_verificacion, indices_verificacion, "Video")
-    simulacion_guardada = _tc_v33_valor_fila(
-        fila_verificacion,
-        indices_verificacion,
-        "Video simulación",
+        actualizaciones,
     )
 
-    if id_guardado != str(historial_id).strip():
-        raise RuntimeError(
-            f"La fila {fila_analisis} ya no corresponde al análisis {historial_id}."
-        )
-    if idioma_guardado != idioma_esperado:
-        raise RuntimeError(
-            f"La fila {fila_analisis} no conserva el idioma esperado {idioma_esperado}."
-        )
-    if enlaces.get("video") and video_guardado != str(enlaces["video"]).strip():
-        raise RuntimeError(
-            f"El enlace del video principal no se verificó en la fila {fila_analisis}."
-        )
-    if enlaces.get("video simulacion") and simulacion_guardada != str(
-        enlaces["video simulacion"]
-    ).strip():
-        raise RuntimeError(
-            f"El enlace del video de simulación no se verificó en la fila {fila_analisis}."
-        )
-
-    return pestana, "actualizado", fila_analisis
-
-
-# ------------------------------------------------------------
-# 8. GUARDAR EN LAS DOS HOJAS
-# ------------------------------------------------------------
-
-def _tc_v33_guardar_videos(
-    uniqueid,
-    nombre,
-    descripcion,
-    video,
-    video_simulacion,
-    idioma=None,
-    historial_id=None,
-):
-    uniqueid = str(uniqueid or "").strip()
-    nombre = str(nombre or "").strip()
-    descripcion = str(descripcion or "").strip()
-    idioma = str(idioma or _tc_v33_idioma_actual()).strip().upper()
-    idioma = "FR" if idioma == "FR" else "ES"
-
-    if not uniqueid:
-        raise ValueError("No se pudo generar el UNIQUEID del registro de videos.")
-    if not historial_id:
-        raise ValueError("Selecciona una parcela/análisis de HistorialTerroCore.")
-    if not video and not video_simulacion:
-        raise ValueError("Selecciona por lo menos un video.")
-
-    drive, sheets, id_hoja, carpeta_padre = _tc_v33_conectar_google()
-
-    # Validar el destino ANTES de subir archivos para no crear videos huérfanos.
-    _, filas_historial, indices_historial = _tc_v33_obtener_tabla_historial(
+    # Volver a leer y validar el ID, el idioma y los enlaces.
+    verificacion = _tc_v364_validar_analisis(
         sheets,
         id_hoja,
-    )
-    fila_historial = _tc_v33_buscar_fila(
-        filas_historial,
-        indices_historial["id"],
         historial_id,
-    )
-    if fila_historial is None:
-        raise ValueError(
-            f"No se encontró el análisis seleccionado ({historial_id}) en "
-            "HistorialTerroCore. Actualiza la aplicación y vuelve a seleccionar la parcela."
-        )
-
-    fila_analisis_previa = (
-        filas_historial[fila_historial - 1]
-        if fila_historial - 1 < len(filas_historial)
-        else []
-    )
-    idioma_fila_previa = _tc_v33_valor_fila(
-        fila_analisis_previa,
-        indices_historial,
-        "Idioma",
-    ).strip().upper()
-    if idioma_fila_previa not in ("ES", "FR"):
-        raise ValueError(
-            f"El análisis {historial_id} no tiene un idioma ES/FR válido en la columna Idioma. "
-            "No se subirán los videos para evitar sobrescribir enlaces incorrectos. "
-            "Revisa HistorialTerroCore."
-        )
-    if idioma_fila_previa != idioma:
-        raise ValueError(
-            f"El análisis seleccionado es {idioma_fila_previa}, pero la interfaz está en {idioma}. "
-            f"Selecciona un análisis en {idioma}; no se modificarán los enlaces del otro idioma."
-        )
-
-    pestana, filas, indices = _tc_v33_obtener_tabla(sheets, id_hoja)
-    fila_existente = _tc_v33_buscar_fila(
-        filas,
-        indices["uniqueid"],
-        uniqueid,
+        idioma,
     )
 
-    if fila_existente is None:
-        if not nombre:
-            raise ValueError("El UNIQUEID no existe. Ingresa el NOMBRE.")
-        if not descripcion:
-            raise ValueError(
-                "El UNIQUEID no existe. Ingresa la DESCRIPCION."
+    fila_verificacion = verificacion["fila_datos"]
+    indices_verificacion = verificacion["indices"]
+
+    for clave_enlace, nombre_columna in campos_video:
+
+        enlace_esperado = str(
+            enlaces.get(clave_enlace, "") or ""
+        ).strip()
+
+        if not enlace_esperado:
+            continue
+
+        enlace_guardado = _tc_v364_valor_fila(
+            fila_verificacion,
+            indices_verificacion,
+            nombre_columna,
+        )
+
+        if enlace_guardado != enlace_esperado:
+            raise RuntimeError(
+                f"No se pudo verificar el enlace de "
+                f"'{nombre_columna}' en la fila "
+                f"{verificacion['fila']}."
             )
 
-    carpeta_videos = _tc_v33_crear_carpeta(drive, carpeta_padre)
-    enlaces = {}
-
-    if video:
-        enlaces["video"] = _tc_v33_subir_drive(
-            drive,
-            carpeta_videos,
-            video,
-            uniqueid,
-            "Video",
-        )
-
-    if video_simulacion:
-        enlaces["video simulacion"] = _tc_v33_subir_drive(
-            drive,
-            carpeta_videos,
-            video_simulacion,
-            uniqueid,
-            "Video_simulacion",
-        )
-
-    # Guardar la evidencia vinculada al ID del análisis seleccionado.
-    accion, pestana_evidencias = _tc_v35_guardar_evidencias(
-        sheets,
-        id_hoja,
-        uniqueid,
-        nombre,
-        descripcion,
-        enlaces,
-        idioma,
-        historial_id,
-    )
-
-    # Actualizar los enlaces en la MISMA FILA del análisis del mismo idioma.
-    # Solo se escriben Video y Video simulación; la fila del otro idioma no se toca.
-    pestana_historial, accion_historial, fila_historial_actualizada = (
-        _tc_v35_guardar_historial_videos(
-            sheets,
-            id_hoja,
-            uniqueid,
-            historial_id,
-            nombre,
-            enlaces,
-            idioma,
-        )
-    )
-
     return {
-        "accion": accion,
-        "pestana_evidencias": pestana_evidencias,
-        "pestana_historial": pestana_historial,
-        "accion_historial": accion_historial,
-        "historial_id": str(historial_id),
-        "registro_video_id": str(uniqueid),
-        "fila_historial_actualizada": fila_historial_actualizada,
+        "historial_id": historial_id,
+        "idioma": verificacion["idioma"],
+        "fila": verificacion["fila"],
         "enlaces": enlaces,
-        "idioma": idioma,
     }
 
 
 # ------------------------------------------------------------
-# 9. CARGAR REGISTROS EXISTENTES DE Evidencias1
+# 11. PROCESO COMPLETO DE CARGA DE LOS DOS VIDEOS
 # ------------------------------------------------------------
 
-def _tc_v33_listar_registros():
-    """Lee Evidencias1 y asigna UNIQUEID a las filas que lo necesiten."""
-    _, sheets, spreadsheet_id, _ = _tc_v33_conectar_google()
-    pestana, filas, indices = _tc_v33_obtener_tabla(sheets, spreadsheet_id)
+def _tc_v364_guardar_videos(
+    historial_id,
+    idioma,
+    video,
+    video_simulacion,
+):
+    """
+    1. Valida el análisis.
+    2. Sube los dos videos a Drive.
+    3. Actualiza únicamente las dos columnas del mismo análisis.
+    """
 
-    ids_existentes = set()
-    for fila in filas[1:]:
-        identificador = _tc_v33_valor_fila(fila, indices, "UNIQUEID")
-        if identificador:
-            ids_existentes.add(identificador)
+    historial_id = str(
+        historial_id or ""
+    ).strip()
 
-    actualizaciones = []
-    registros = []
-    indice_id = indices["uniqueid"]
-    columna_id = _tc_v33_letra_columna(indice_id)
+    idioma = (
+        "FR"
+        if str(idioma or "").strip().upper() == "FR"
+        else "ES"
+    )
 
-    for numero_fila, fila in enumerate(filas[1:], start=2):
-        nombre = _tc_v33_valor_fila(fila, indices, "NOMBRE")
-        descripcion = _tc_v33_valor_fila(fila, indices, "DESCRIPCION")
-        video = _tc_v33_valor_fila(fila, indices, "Video")
-        video_simulacion = _tc_v33_valor_fila(
-            fila,
-            indices,
-            "Video simulación",
+    if not historial_id:
+        raise ValueError(
+            "No se recibió el ID del análisis actual."
         )
 
-        if not any([nombre, descripcion, video, video_simulacion]):
-            continue
+    if video is None or video_simulacion is None:
+        raise ValueError(
+            "Debes seleccionar el video principal "
+            "y el video de simulación."
+        )
 
-        identificador = _tc_v33_valor_fila(fila, indices, "UNIQUEID")
-        if not identificador:
-            while True:
-                nuevo_id = str(secrets.randbelow(90_000_000) + 10_000_000)
-                if nuevo_id not in ids_existentes:
-                    break
-            identificador = nuevo_id
-            ids_existentes.add(identificador)
-            actualizaciones.append({
-                "range": _tc_v33_rango(
-                    pestana,
-                    f"{columna_id}{numero_fila}",
-                ),
-                "values": [[identificador]],
-            })
+    drive, sheets, id_hoja, carpeta_padre = (
+        _tc_v364_conectar_google()
+    )
 
-        registros.append({
-            "UNIQUEID": identificador,
-            "NOMBRE": nombre,
-            "DESCRIPCION": descripcion,
-            "VIDEO": video,
-            "VIDEO_SIMULACION": video_simulacion,
-            "IDIOMA": _tc_v33_valor_fila(fila, indices, "Idioma"),
-        })
+    # VALIDAR ANTES DE SUBIR LOS ARCHIVOS.
+    _tc_v364_validar_analisis(
+        sheets,
+        id_hoja,
+        historial_id,
+        idioma,
+    )
 
-    _tc_v33_guardar_celdas(sheets, spreadsheet_id, actualizaciones)
-    return registros, pestana
+    carpeta_videos = _tc_v364_crear_carpeta(
+        drive,
+        carpeta_padre,
+    )
+
+    enlaces = {}
+
+    # Subir video principal.
+    enlaces["video"] = _tc_v364_subir_drive(
+        drive,
+        carpeta_videos,
+        video,
+        historial_id,
+        "Video",
+    )
+
+    # Subir video de simulación.
+    enlaces["video simulacion"] = _tc_v364_subir_drive(
+        drive,
+        carpeta_videos,
+        video_simulacion,
+        historial_id,
+        "Video_simulacion",
+    )
+
+    # Volver a buscar el ID exacto y actualizar solo los enlaces.
+    resultado = _tc_v364_guardar_en_misma_fila(
+        sheets,
+        id_hoja,
+        historial_id,
+        idioma,
+        enlaces,
+    )
+
+    return resultado
 
 
 # ------------------------------------------------------------
-# 10. INTERFAZ DE VIDEOS TERRACORE - ESPAÑOL / FRANCES
+# 12. INTERFAZ DE VIDEOS VINCULADA AL ANALISIS ACTUAL
 # ------------------------------------------------------------
 
-def render_seccion_video_v33():
-    t = _tc_v33_texto
-    idioma_actual = _tc_v33_idioma_actual()
+def render_seccion_video_v364():
+
+    t = _tc_v364_texto
+    idioma_actual = _tc_v364_idioma_actual()
 
     st.divider()
-    st.header(t("📹 Videos de TerraCore", "📹 Vidéos TerraCore"))
-    st.write(
+
+    st.header(
         t(
-            "Selecciona un análisis del mismo idioma que estás usando. Los enlaces se guardarán "
-            "en la MISMA FILA de ese análisis, únicamente en las columnas Video y Video simulación. "
-            "Los enlaces de los análisis del otro idioma no se modificarán.",
-            "Sélectionnez une analyse dans la même langue que l'interface. Les liens seront "
-            "enregistrés dans la MÊME LIGNE de cette analyse, uniquement dans les colonnes Vidéo "
-            "et Vidéo simulation. Les liens de l'autre langue ne seront pas modifiés.",
+            "📹 Videos de TerraCore",
+            "📹 Vidéos TerraCore",
         )
     )
 
-    # Leer historial para que el usuario elija la fila exacta de la parcela/análisis.
-    try:
-        _, sheets, spreadsheet_id, _ = _tc_v33_conectar_google()
-        _, filas_historial, indices_historial = _tc_v33_obtener_tabla_historial(
-            sheets,
-            spreadsheet_id,
+    st.write(
+        t(
+            "Los videos se vincularán automáticamente al análisis "
+            "que acabas de realizar. No necesitas seleccionar una "
+            "parcela manualmente. Los enlaces se guardarán en la "
+            "misma fila del análisis, únicamente en las columnas "
+            "'Video' y 'Video simulación'.",
+            "Les vidéos seront automatiquement associées à "
+            "l'analyse que vous venez d'effectuer. Vous n'avez "
+            "pas besoin de sélectionner une parcelle manuellement. "
+            "Les liens seront enregistrés dans la même ligne, "
+            "uniquement dans les colonnes 'Video' et "
+            "'Video simulación'.",
         )
-    except Exception as error:
-        st.error(
+    )
+
+    # --------------------------------------------------------
+    # OBTENER EL ID DEL ANALISIS ACTUAL
+    # Este ID lo guarda guardar_analisis_en_google().
+    # --------------------------------------------------------
+
+    historial_id = str(
+        st.session_state.get(
+            "tc_analisis_actual_id_videos",
+            "",
+        ) or ""
+    ).strip()
+
+    nombre_sesion = str(
+        st.session_state.get(
+            "tc_analisis_actual_nombre_videos",
+            "",
+        ) or ""
+    ).strip()
+
+    fecha_sesion = str(
+        st.session_state.get(
+            "tc_analisis_actual_fecha_videos",
+            "",
+        ) or ""
+    ).strip()
+
+    if not historial_id:
+
+        st.warning(
             t(
-                "No se pudo leer HistorialTerroCore para seleccionar el análisis.",
-                "Impossible de lire HistorialTerroCore pour sélectionner l'analyse.",
+                "No se detectó el ID del análisis actual. "
+                "Para evitar guardar los videos en una fila "
+                "incorrecta, no se permite seleccionar otro "
+                "análisis manualmente.",
+                "L'ID de l'analyse actuelle n'a pas été détecté. "
+                "Pour éviter d'enregistrer les vidéos dans la "
+                "mauvaise ligne, la sélection manuelle est désactivée.",
             )
         )
+
+        st.info(
+            t(
+                "Realiza un análisis nuevo y verifica que hayas "
+                "agregado las líneas de session_state indicadas "
+                "en las instrucciones debajo del código.",
+                "Effectuez une nouvelle analyse et vérifiez que "
+                "vous avez ajouté les lignes session_state "
+                "indiquées sous le code.",
+            )
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # CONFIRMAR QUE EL ID EXISTE Y QUE EL IDIOMA COINCIDE
+    # --------------------------------------------------------
+
+    try:
+
+        _, sheets, id_hoja, _ = (
+            _tc_v364_conectar_google()
+        )
+
+        contexto = _tc_v364_validar_analisis(
+            sheets,
+            id_hoja,
+            historial_id,
+            idioma_actual,
+        )
+
+    except Exception as error:
+
+        st.error(
+            t(
+                "No se pudo validar el análisis actual. "
+                "No se habilitó la carga de videos.",
+                "Impossible de valider l'analyse actuelle. "
+                "Le chargement des vidéos a été désactivé.",
+            )
+        )
+
         st.code(str(error))
         return
 
-    opciones_historial = []
-    etiquetas_historial = {}
-    campos_analisis = (
-        "Surcos",
-        "Verde %",
-        "Rojo %",
-        "diagnostico_visual",
-        "imagen_original_file_id",
-        "imagen_procesada_file_id",
-        "captura_base_id",
-        "vuelo_base_id",
+    nombre_historial = (
+        contexto.get("nombre")
+        or nombre_sesion
+        or "Sin nombre"
     )
 
-    for fila in filas_historial[1:]:
-        historial_id = _tc_v33_valor_fila(fila, indices_historial, "ID")
-        if not historial_id:
-            continue
+    fecha_historial = (
+        contexto.get("fecha")
+        or fecha_sesion
+        or "Sin fecha"
+    )
 
-        nombre_historial = _tc_v33_valor_fila(fila, indices_historial, "Nombre")
-        fecha_historial = _tc_v33_valor_fila(fila, indices_historial, "Fecha")
-        idioma_historial = _tc_v33_valor_fila(
-            fila,
-            indices_historial,
-            "Idioma",
-        ).strip().upper()
-        # Mostrar solo análisis del idioma actual. Esto evita que el registro ES
-        # reemplace los enlaces de un análisis FR (y viceversa).
-        if idioma_historial != idioma_actual:
-            continue
-        # Ignorar filas de evidencia antiguas que ya tenían HistorialID.
-        if _tc_v33_valor_fila(fila, indices_historial, "HistorialID"):
-            continue
-        tiene_datos_analisis = any(
-            _tc_v33_valor_fila(fila, indices_historial, campo)
-            for campo in campos_analisis
+    fila_historial = contexto["fila"]
+
+    # --------------------------------------------------------
+    # MOSTRAR EL DESTINO EXACTO
+    # --------------------------------------------------------
+
+    st.success(
+        t(
+            "Análisis actual identificado correctamente.",
+            "L'analyse actuelle a été identifiée correctement.",
         )
+    )
 
-        # Evita mostrar filas huérfanas creadas por versiones anteriores:
-        # ID numérico de 8 dígitos sin datos del análisis.
-        if re.fullmatch(r"\d{8}", historial_id) and not tiene_datos_analisis:
-            continue
-        if not nombre_historial and not tiene_datos_analisis:
-            continue
+    st.markdown(
+        f"**{t('ID del análisis', \"ID de l'analyse\")}:** "
+        f"`{historial_id}`"
+    )
 
-        etiqueta = " | ".join(
-            parte for parte in (
-                str(fecha_historial)[:19],
-                nombre_historial,
-                f"Idioma: {idioma_historial}",
-                f"ID: {historial_id}",
-            ) if parte
+    st.markdown(
+        f"**{t('Nombre', 'Nom')}:** {nombre_historial}"
+    )
+
+    st.markdown(
+        f"**{t('Fecha', 'Date')}:** {fecha_historial}"
+    )
+
+    st.markdown(
+        f"**{t('Idioma', 'Langue')}:** `{idioma_actual}`"
+    )
+
+    st.markdown(
+        f"**{t('Fila física de destino', 'Ligne de destination')}:** "
+        f"`{fila_historial}`"
+    )
+
+    st.caption(
+        t(
+            "El destino está vinculado al ID exacto del análisis. "
+            "No se utilizará una selección anterior de la interfaz.",
+            "La destination est liée à l'ID exact de l'analyse. "
+            "Une ancienne sélection de l'interface ne sera pas utilisée.",
         )
-        if historial_id not in etiquetas_historial:
-            opciones_historial.append(historial_id)
-        etiquetas_historial[historial_id] = etiqueta
+    )
 
-    if not opciones_historial:
-        st.warning(
-            t(
-                f"No encontré análisis con Idioma={idioma_actual} en HistorialTerroCore. "
-                "Verifica que la columna Idioma de tu análisis tenga ES para español o FR para francés.",
-                f"Aucune analyse avec Idioma={idioma_actual} dans HistorialTerroCore. "
-                "Vérifiez que la colonne Idioma contient ES pour l'espagnol ou FR pour le français.",
-            )
-        )
-        return
+    # La clave cambia con el ID del análisis.
+    # Así, un análisis nuevo tiene sus propios cargadores.
+    id_widget = re.sub(
+        r"[^A-Za-z0-9_-]+",
+        "_",
+        historial_id,
+    )
 
-    with st.form("tc_videos_mismo_idioma_v363"):
-        historial_id_seleccionado = st.selectbox(
-            t(
-                "📂 Selecciona la parcela/análisis donde se guardarán los videos",
-                "📂 Sélectionnez la parcelle/l'analyse où enregistrer les vidéos",
-            ),
-            options=opciones_historial,
-            format_func=lambda valor: etiquetas_historial.get(valor, valor),
-            key="tc_video_historial_id_v363",
-        )
+    # --------------------------------------------------------
+    # FORMULARIO DE CARGA
+    # --------------------------------------------------------
+
+    with st.form(
+        f"tc_videos_form_v364_{id_widget}"
+    ):
 
         video = st.file_uploader(
-            t("🎬 Selecciona el video principal", "🎬 Sélectionnez la vidéo principale"),
-            type=["mp4", "mov", "avi", "mkv", "webm"],
-            key="tc_video_principal_v363",
+            t(
+                "🎬 Selecciona el video principal",
+                "🎬 Sélectionnez la vidéo principale",
+            ),
+            type=TIPOS_VIDEO_V364,
+            key=f"tc_video_principal_v364_{id_widget}",
         )
 
         video_simulacion = st.file_uploader(
-            t("🎥 Selecciona el video de simulación", "🎥 Sélectionnez la vidéo de simulation"),
-            type=["mp4", "mov", "avi", "mkv", "webm"],
-            key="tc_video_simulacion_v363",
+            t(
+                "🎥 Selecciona el video de simulación",
+                "🎥 Sélectionnez la vidéo de simulation",
+            ),
+            type=TIPOS_VIDEO_V364,
+            key=f"tc_video_simulacion_v364_{id_widget}",
         )
 
         enviar = st.form_submit_button(
             t(
-                "☁️ Subir videos y guardar en la fila del análisis",
-                "☁️ Importer les vidéos et enregistrer dans la ligne de l'analyse",
+                "☁️ Subir videos y guardar en este análisis",
+                "☁️ Importer les vidéos et enregistrer dans cette analyse",
             ),
             type="primary",
             use_container_width=True,
@@ -15084,90 +15171,73 @@ def render_seccion_video_v33():
         return
 
     if video is None or video_simulacion is None:
+
         st.error(
             t(
-                "Debes seleccionar el video principal y el video de simulación.",
-                "Vous devez sélectionner la vidéo principale et la vidéo de simulation.",
+                "Debes seleccionar ambos archivos: el video "
+                "principal y el video de simulación.",
+                "Vous devez sélectionner les deux fichiers : "
+                "la vidéo principale et la vidéo de simulation.",
             )
         )
+
         return
 
+    # --------------------------------------------------------
+    # SUBIR Y GUARDAR
+    # --------------------------------------------------------
+
     try:
-        with st.spinner(
-            t("Preparando el registro de videos...", "Préparation de l'enregistrement des vidéos...")
-        ):
-            _, sheets, spreadsheet_id, _ = _tc_v33_conectar_google()
-            _, filas_evidencias, indices_evidencias = _tc_v33_obtener_tabla(
-                sheets,
-                spreadsheet_id,
-            )
-
-            ids_existentes = set()
-            for fila in filas_evidencias[1:]:
-                valor = _tc_v33_valor_fila(fila, indices_evidencias, "UNIQUEID")
-                if valor:
-                    ids_existentes.add(valor)
-
-            # También evitar colisiones con IDs ya existentes en HistorialTerroCore,
-            # porque este ID identificará la nueva fila de videos.
-            _, filas_historial_ids, indices_historial_ids = _tc_v33_obtener_tabla_historial(
-                sheets,
-                spreadsheet_id,
-            )
-            for fila in filas_historial_ids[1:]:
-                valor = _tc_v33_valor_fila(fila, indices_historial_ids, "ID")
-                if valor:
-                    ids_existentes.add(valor)
-
-            while True:
-                uniqueid = str(secrets.randbelow(90_000_000) + 10_000_000)
-                if uniqueid not in ids_existentes:
-                    break
-
-        nombre = os.path.splitext(os.path.basename(video.name))[0]
-        descripcion = t(
-            f"HistorialID: {historial_id_seleccionado} | Video principal: {video.name} | "
-            f"Video simulación: {video_simulacion.name}",
-            f"HistorialID : {historial_id_seleccionado} | Vidéo principale : {video.name} | "
-            f"Vidéo de simulation : {video_simulacion.name}",
-        )
 
         with st.spinner(
             t(
-                "Subiendo videos y actualizando la fila del análisis...",
-                "Importation des vidéos et mise à jour de la ligne de l'analyse...",
+                "Subiendo videos a Google Drive y guardando "
+                "los enlaces en el análisis correcto...",
+                "Importation des vidéos dans Google Drive et "
+                "enregistrement des liens dans la bonne analyse...",
             )
         ):
-            resultado = _tc_v33_guardar_videos(
-                uniqueid,
-                nombre,
-                descripcion,
-                video,
-                video_simulacion,
+
+            resultado = _tc_v364_guardar_videos(
+                historial_id=historial_id,
                 idioma=idioma_actual,
-                historial_id=historial_id_seleccionado,
+                video=video,
+                video_simulacion=video_simulacion,
             )
 
-        enlaces = resultado["enlaces"]
         st.success(
             t(
-                f"¡Listo! Los enlaces se guardaron en la fila del análisis {idioma_actual}.",
-                f"Terminé ! Les liens ont été enregistrés dans la ligne de l'analyse {idioma_actual}.",
+                "¡Videos guardados correctamente!",
+                "Vidéos enregistrées avec succès !",
             )
         )
 
-        st.markdown(f"**{t('ID del análisis relacionado', 'ID de l’analyse associée')}:** `{resultado['historial_id']}`")
-        st.markdown(f"**{t('Fila del análisis actualizada en HistorialTerroCore', 'Ligne de l’analyse mise à jour dans HistorialTerroCore')}:** {resultado['fila_historial_actualizada']}")
-        st.markdown(f"**{t('ID del registro de videos', 'ID de l’enregistrement vidéo')}:** `{resultado['registro_video_id']}`")
-        st.markdown(f"**{t('ID de evidencia en Evidencias1', 'ID de preuve dans Evidencias1')}:** `{uniqueid}`")
-        st.markdown(f"**{t('Idioma de la evidencia', 'Langue de la preuve')}:** `{idioma_actual}`")
+        st.markdown(
+            f"**{t('ID del análisis actualizado', \"ID de l'analyse mise à jour\")}:** "
+            f"`{resultado['historial_id']}`"
+        )
+
+        st.markdown(
+            f"**{t('Fila actualizada en HistorialTerroCore', \"Ligne mise à jour dans HistorialTerroCore\")}:** "
+            f"`{resultado['fila']}`"
+        )
+
+        st.markdown(
+            f"**{t('Idioma verificado', 'Langue vérifiée')}:** "
+            f"`{resultado['idioma']}`"
+        )
+
+        enlaces = resultado["enlaces"]
 
         if enlaces.get("video"):
+
             st.markdown(
                 f"[🎬 {t('Abrir video principal', 'Ouvrir la vidéo principale')}]"
                 f"({enlaces['video']})"
             )
+
         if enlaces.get("video simulacion"):
+
             st.markdown(
                 f"[🎥 {t('Abrir video de simulación', 'Ouvrir la vidéo de simulation')}]"
                 f"({enlaces['video simulacion']})"
@@ -15175,25 +15245,32 @@ def render_seccion_video_v33():
 
         st.caption(
             t(
-                f"Se actualizaron solo las columnas de video de la fila {resultado['fila_historial_actualizada']} "
-                f"del análisis {idioma_actual}. Las demás columnas y los enlaces del otro idioma se conservaron.",
-                f"Seules les colonnes vidéo de la ligne {resultado['fila_historial_actualizada']} "
-                f"de l'analyse {idioma_actual} ont été mises à jour. Les autres colonnes et les liens de l'autre langue sont conservés.",
+                f"Se actualizaron únicamente las columnas "
+                f"'Video' y 'Video simulación' de la fila "
+                f"{resultado['fila']}. No se creó una fila nueva "
+                f"ni se escribió en Evidencias1.",
+                f"Seules les colonnes 'Video' et 'Video simulación' "
+                f"de la ligne {resultado['fila']} ont été mises "
+                f"à jour. Aucune nouvelle ligne n'a été créée et "
+                f"aucune donnée n'a été écrite dans Evidencias1.",
             )
         )
 
     except Exception as error:
+
         st.error(
             t(
-                "No se pudo completar la carga o actualizar el historial.",
-                "Impossible de terminer l'importation ou de mettre à jour l'historique.",
+                "No se pudo completar la carga o guardar los enlaces.",
+                "Impossible de terminer le chargement ou "
+                "d'enregistrer les liens.",
             )
         )
+
         st.code(str(error))
 
 
 # ------------------------------------------------------------
-# 11. MOSTRAR EL MODULO
+# 13. MOSTRAR EL MODULO
 # ------------------------------------------------------------
 
-render_seccion_video_v33()
+render_seccion_video_v364()
