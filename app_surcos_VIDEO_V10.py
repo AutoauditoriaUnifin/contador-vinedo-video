@@ -1466,22 +1466,6 @@ def guardar_analisis_en_google(
         registro
     )
 
-    # --------------------------------------------------------
-    # VINCULAR LOS VIDEOS AL ANALISIS RECIEN GUARDADO
-    # --------------------------------------------------------
-
-    st.session_state["tc_analisis_actual_id_videos"] = str(
-        registro.get("id", "")
-    ).strip()
-
-    st.session_state["tc_analisis_actual_nombre_videos"] = str(
-        registro.get("nombre", "")
-    ).strip()
-
-    st.session_state["tc_analisis_actual_fecha_videos"] = str(
-        registro.get("fecha", "")
-    ).strip()
-
     return True, registro
 
 
