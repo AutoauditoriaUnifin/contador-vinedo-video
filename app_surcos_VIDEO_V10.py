@@ -13983,7 +13983,7 @@ else:
                             img_procesada_hist = _tc_historial_pil(procesada_id)
 
                         if img_procesada_hist is not None:
-                            st.image(
+                            st.image( 
                                 img_procesada_hist,
                                 caption=tr("Resultado del análisis", "Résultat de l’analyse"),
                                 use_container_width=True
