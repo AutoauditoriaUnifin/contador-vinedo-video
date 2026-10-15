@@ -14091,9 +14091,32 @@ def _tc_v33_idioma_actual():
     idioma = str(
         st.session_state.get("idioma_terrocore", "ES")
     ).strip().upper()
-
     return "FR" if idioma == "FR" else "ES"
 
 
 def _tc_v33_texto(espanol, frances):
     return frances if _tc_v33_idioma_actual() == "FR" else espanol
+
+
+# ------------------------------------------------------------
+# 2. CONECTAR GOOGLE DRIVE Y GOOGLE SHEETS
+# ------------------------------------------------------------
+
+def _tc_v33_conectar_google():
+    credenciales_raw = _tc_v33_secreto("gcp_service_account")
+
+    if not credenciales_raw:
+        credenciales_raw = _tc_v33_secreto(
+            "GCP_SERVICE_ACCOUNT_JSON"
+        )
+
+    if isinstance(credenciales_raw, str):
+        try:
+            informacion = json.loads(credenciales_raw)
+        except json.JSONDecodeError:
+            if os.path.isfile(credenciales_raw):
+                with open(
+                    credenciales_raw,
+                    "r",
+                    encoding="utf-8"
+                ) as archivo:
