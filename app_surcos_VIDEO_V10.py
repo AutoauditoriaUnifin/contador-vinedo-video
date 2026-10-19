@@ -12484,9 +12484,9 @@ def _tc_editor_manual_imagen(
         st.success(
             tr(
                 "🧽 Pasa la brocha magenta SOLO sobre las líneas que se salen de la parcela. "
-                "Al guardar, el magenta NO queda en la imagen: esa zona se restaura con la fotografía original.",
+                ".",
                 "🧽 Passez le pinceau magenta UNIQUEMENT sur les lignes qui sortent de la parcelle. "
-                "À l’enregistrement, le magenta disparaît : cette zone est restaurée avec la photo originale.",
+                ".",
             )
         )
     elif modo_mover_lineas:
@@ -12710,8 +12710,8 @@ def _tc_editor_manual_imagen(
     else:
         st.success(
             tr(
-                "✅ Corrección aplicada. Se guardará en Drive cuando ejecutes el análisis.",
-                "✅ Correction appliquée. Elle sera enregistrée dans Drive lors de l’analyse.",
+                "✅ Corrección aplicada.",
+                "✅ Correction appliquée.",
             )
         )
 
@@ -13042,8 +13042,8 @@ with main_col:
     )
     st.caption(
         tr(
-            "Detecta los surcos con la lógica actual, mantiene líneas rectas, puntos/slots y la numeración del Inventario.",
-            "Détecte les rangs avec la logique actuelle, en conservant les lignes droites, les points/emplacements et la numérotation."
+            "Detecta los surcos.",
+            "Détecte les rangs."
         )
     )
 
@@ -13325,8 +13325,8 @@ with main_col:
         st.markdown(tr("### Tabla automática por surco", "### Tableau automatique par rang"))
         st.caption(
             tr(
-                "OpenCV estima Slots, Ocupados y Vacíos. Puedes corregir un valor antes de confirmar.",
-                "OpenCV estime Emplacements, Occupés et Vides. Vous pouvez corriger une valeur avant de confirmer."
+                ".",
+                "."
             )
         )
 
@@ -13975,7 +13975,7 @@ with main_col:
                             if item.get("historial_google_guardado"):
                                 st.success(
                                     tr(
-                                        "✅ El análisis fue guardado en Google Sheets y Google Drive.",
+                                        "✅ El análisis fue guardado en la APP TerroCore.",
                                         "✅ L’analyse a été enregistrée dans Google Sheets et Google Drive."
                                     )
                                 )
@@ -14002,7 +14002,7 @@ with main_col:
 
                 if st.button(
                     tr(
-                        "💾 Guardar conteos corregidos en Google Sheets",
+                        "💾 Guardar conteos corregidos en la App de TerroCore",
                         "💾 Enregistrer les comptages corrigés dans Google Sheets"
                     ),
                     type="primary",
@@ -14089,7 +14089,7 @@ with main_col:
                     elif guardados_conteos:
                         st.success(
                             tr(
-                                f"✅ {guardados_conteos} registro(s) actualizado(s) en Google Sheets.",
+                                f"✅ {guardados_conteos} registro(s) actualizado(s) en TerroCore.",
                                 f"✅ {guardados_conteos} enregistrement(s) mis à jour dans Google Sheets.",
                             )
                         )
