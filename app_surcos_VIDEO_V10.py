@@ -261,11 +261,102 @@ def tr(es, fr):
     return es if st.session_state.idioma_terrocore == "ES" else fr
 
 
+def _tc_texto_parece_espanol(texto):
+    """Detecta textos de diagnóstico probablemente escritos en español."""
+    t = str(texto or "").casefold()
+    marcadores = (
+        "se evaluaron", "se detectaron", "los polígonos", "polígonos rojos",
+        "el análisis", "diagnóstico", "diagnostico", "revisar en campo",
+        "comparar la misma", "la fotografía", "fotografía por sí sola",
+        "nutrientes", "enfermedades", "surcos rectos", "posiciones secas",
+        "afectación", "afectada", "afectados", "de ser posible",
+        "no identifica", "confirmar en campo", "siguiente inspección",
+        "zona más afectada", "zonas rojas", "los tramos", "se recomienda",
+        "podría indicar", "puede indicar", "no se puede", "la parcela",
+        "del suelo", "del riego", "en campo", "sin embargo",
+        "debe revisarse", "presencia de", "posible problema", "se observa",
+        "se observan", "se aprecia", "muestra una", "muestra un",
+        "indica una", "indica un", "tomar muestras", "considerar análisis",
+        "causas probables", "débil", "vacías", "vacía", "polígono",
+        "vegetación", "riego", "surco", "parcela", "recomendaciones",
+    )
+    return any(marcador in t for marcador in marcadores)
+
+
+def _tc_texto_parece_frances(texto):
+    """Evita volver a traducir texto que ya está redactado en francés."""
+    t = f" {str(texto or '').casefold()} "
+    marcadores = (
+        " le ", " la ", " les ", " des ", " du ", " dans ", " afin de ",
+        " peut ", " peuvent ", " est ", " sont ", " ont été ", " vérifier ",
+        " vérifiez ", " comparer ", " parcelle ", " rangs ", " positions ",
+        " affectés ", " rouges ", " hydrique ", " irrigation ", " carence ",
+        " maladie ", " diagnostic ", " préliminaire ", " à confirmer ",
+        " terrain ", " polygones ", " recommandations ", " en rouge ",
+        " faible ", " moyen ", " élevé ", " centre ", " moyenne ",
+        " supérieure ", " inférieure ", " photographique ", " photographie ",
+    )
+    return any(marcador in t for marcador in marcadores)
+
+
+def _tc_traducir_frances_con_gemini(texto):
+    """Traduce textos antiguos o libres al francés y memoriza el resultado."""
+    original = str(texto or "").strip()
+    if not original:
+        return ""
+
+    try:
+        cache = dict(st.session_state.get("tc_cache_traducciones_fr", {}) or {})
+    except Exception:
+        cache = {}
+
+    if original in cache:
+        return cache[original]
+
+    traductor = globals().get("_tg_gemini_json")
+    if not callable(traductor):
+        return original
+
+    prompt = (
+        "Eres traductor profesional de español a francés. Traduce al francés el texto siguiente. "
+        "Conserva cifras, porcentajes, unidades y el significado agronómico. No inventes datos, "
+        "no resumas y no agregues explicaciones. Devuelve únicamente JSON válido con esta forma: "
+        '{"traduction":"texto traducido al francés"}.\n'
+        "Texto que debes traducir:\n" + json.dumps(original, ensure_ascii=False)
+    )
+
+    try:
+        respuesta = traductor([], prompt, temperature=0.0, max_tokens=1024)
+        if isinstance(respuesta, dict):
+            traducido = str(
+                respuesta.get("traduction")
+                or respuesta.get("traducción")
+                or respuesta.get("translation")
+                or respuesta.get("texte")
+                or ""
+            ).strip()
+        else:
+            traducido = ""
+
+        if not traducido:
+            return original
+
+        cache[original] = traducido
+        # Limita el tamaño del estado de Streamlit.
+        if len(cache) > 200:
+            cache = dict(list(cache.items())[-200:])
+        try:
+            st.session_state.tc_cache_traducciones_fr = cache
+        except Exception:
+            pass
+        return traducido
+    except Exception:
+        # La aplicación sigue funcionando aunque la API de traducción falle.
+        return original
+
+
 def tr_diag_texto(texto):
-    """
-    Traduce textos automáticos de diagnóstico cuando el idioma activo es FR.
-    También se usa antes de guardar en Google Sheets/AppSheet.
-    """
+    """Traduce diagnósticos, campos agronómicos y recomendaciones al francés."""
     if st.session_state.get("idioma_terrocore", "ES") != "FR":
         return str(texto or "")
 
@@ -297,30 +388,47 @@ def tr_diag_texto(texto):
         "tomar muestras de suelo separadas en zona afectada y zona sana": "prélever séparément des échantillons de sol dans la zone affectée et la zone saine",
         "considerar análisis foliar para confirmar estado nutricional": "envisager une analyse foliaire pour confirmer l’état nutritionnel",
         "revisar raíces y presencia de plagas o enfermedades": "vérifier les racines ainsi que la présence de ravageurs ou de maladies",
-        "El análisis OpenCV es visual y no identifica nutrientes ni enfermedades por sí solo.": "El análisis visual no identifica nutrientes ni enfermedades por sí solo.",
+        "El análisis OpenCV es visual y no identifica nutrientes ni enfermedades por sí solo.": "L’analyse visuelle ne permet pas, à elle seule, d’identifier des carences nutritionnelles ni des maladies.",
+        "El análisis es visual y no identifica nutrientes ni enfermedades por sí solo.": "L’analyse visuelle ne permet pas, à elle seule, d’identifier des carences nutritionnelles ni des maladies.",
+        "El análisis visual no identifica nutrientes ni enfermedades por sí solo.": "L’analyse visuelle ne permet pas, à elle seule, d’identifier des carences nutritionnelles ni des maladies.",
         "Revisar en campo los polígonos rojos para distinguir planta seca de faltante real.": "Vérifier sur le terrain les polygones rouges afin de distinguer un plant sec d’un plant réellement manquant.",
         "Comparar la misma parcela en capturas posteriores para confirmar si la afectación persiste.": "Comparer la même parcelle lors de captures ultérieures afin de confirmer si l’affectation persiste.",
         "Diagnóstico visual automático por OpenCV; confirmar en campo.": "Diagnostic visuel automatique ; à confirmer sur le terrain.",
+        "Diagnóstico visual automático; confirmar en campo.": "Diagnostic visuel automatique ; à confirmer sur le terrain.",
         "Diagnóstico visual preliminar; confirmar en campo.": "Diagnostic visuel préliminaire ; à confirmer sur le terrain.",
-        "La fotografía por sí sola no confirma una deficiencia nutricional específica; confirma con revisión de campo, análisis de suelo y, de ser posible, análisis foliar.": "La photographie seule ne confirme pas une carence nutritionnelle spécifique ; confirmez-la par une inspection sur le terrain, une analyse du sol et, si possible, une analyse foliaire.",
+        "La fotografía por sí sola no confirma una deficiencia nutricional específica; confirma con revisión de campo, análisis de suelo y, de ser posible, análisis foliar.": "La photographie seule ne permet pas de confirmer une carence nutritionnelle spécifique ; vérifiez sur le terrain, analysez le sol et, si possible, réalisez une analyse foliaire.",
+        "La fotografía por sí sola no confirma una deficiencia nutricional específica; confirmar con revisión de campo, suelo y/o análisis foliar.": "La photographie seule ne permet pas de confirmer une carence nutritionnelle spécifique ; vérifiez sur le terrain, analysez le sol et, si possible, réalisez une analyse foliaire.",
     }
+    exactos_normalizados = {clave.casefold(): valor for clave, valor in exactos.items()}
+    if t.casefold() in exactos_normalizados:
+        return exactos_normalizados[t.casefold()]
 
-    if t in exactos:
-        return exactos[t]
-    if t.lower() in exactos:
-        return exactos[t.lower()]
-
-    m_zona = re.fullmatch(r"(izquierda|centro|derecha),\s*zona\s+(superior|media|inferior)", t, flags=re.I)
+    m_zona = re.fullmatch(
+        r"(izquierda|centro|derecha),\s*zona\s+(superior|media|inferior)",
+        t,
+        flags=re.I,
+    )
     if m_zona:
-        horiz = {"izquierda":"gauche","centro":"centre","derecha":"droite"}[m_zona.group(1).lower()]
-        vert = {"superior":"supérieure","media":"moyenne","inferior":"inférieure"}[m_zona.group(2).lower()]
+        horiz = {
+            "izquierda": "gauche",
+            "centro": "centre",
+            "derecha": "droite",
+        }[m_zona.group(1).lower()]
+        vert = {
+            "superior": "supérieure",
+            "media": "moyenne",
+            "inferior": "inférieure",
+        }[m_zona.group(2).lower()]
         return f"{horiz}, zone {vert}"
 
+    # Resumen generado por el análisis visual por slots. Acepta las dos
+    # variantes que usa el código: "OpenCV evaluó" y "Se evaluaron".
     m_cv = re.fullmatch(
-        r"OpenCV evaluó\s+(\d+)\s+posiciones sobre\s+(\d+)\s+surcos rectos\.\s*"
-        r"Detectó\s+(\d+)\s+posiciones secas, débiles o vacías\s+\(([\d\.,]+)% rojo\)\.\s*"
-        r"Los polígonos rojos se limitan a los tramos afectados detectados sobre el mismo surco\.",
-        t, flags=re.I,
+        r"(?:(?:Se\s+evaluaron)|(?:OpenCV\s+evaluó))\s+([\d.,]+)\s+posiciones\s+sobre\s+(\d+)\s+surcos\s+rectos\.\s*"
+        r"(?:(?:Se\s+detectaron)|(?:Detectó))\s+(\d+)\s+posiciones\s+secas,\s*débiles\s+o\s+vacías\s+\(([\d.,]+)\s*%\s*rojo\)\.\s*"
+        r"Los polígonos rojos se limitan a los tramos afectados detectados sobre el mismo surco\.?",
+        t,
+        flags=re.I,
     )
     if m_cv:
         total, surcos, rojos, pct = m_cv.groups()
@@ -328,11 +436,15 @@ def tr_diag_texto(texto):
         return (
             f"{total} positions ont été évaluées sur {surcos} rangs rectilignes. "
             f"{rojos} positions sèches, faibles ou vides ont été détectées ({pct} % en rouge). "
-            "Les polygones rouges se limitent aux sections affectées détectées sur le même rang."
+            "Les polygones rouges sont limités aux segments affectés repérés sur le même rang."
         )
 
-    return t
+    # Para texto libre de diagnósticos antiguos que quedó en español, intenta
+    # traducirlo con Gemini. El resultado queda en caché para evitar llamadas repetidas.
+    if _tc_texto_parece_espanol(t) or (len(t) >= 18 and not _tc_texto_parece_frances(t)):
+        return _tc_traducir_frances_con_gemini(t)
 
+    return t
 
 def _tc_quitar_nombre_motor_del_analisis(texto):
     """
@@ -1228,19 +1340,19 @@ def guardar_registro_google_sheets(registro):
         float(registro.get("verde_pct", 0.0) or 0.0),
         float(registro.get("rojo_pct", 0.0) or 0.0),
         float(registro.get("amarillo_pct", 0.0) or 0.0),
-        registro.get("nivel_visual", ""),
-        registro.get("zona_mas_afectada", ""),
-        registro.get("diagnostico_visual", ""),
+        _tc_guardar_valor_appsheet(registro.get("nivel_visual", "")),
+        tr_diag_texto(registro.get("zona_mas_afectada", "")),
+        tr_diag_texto(registro.get("diagnostico_visual", "")),
         json.dumps(
-            registro.get("causas_probables", []),
+            _tc_guardar_lista_idioma(registro.get("causas_probables", [])),
             ensure_ascii=False
         ),
-        registro.get("explicacion_nutrientes", ""),
+        tr_diag_texto(registro.get("explicacion_nutrientes", "")),
         json.dumps(
-            registro.get("recomendaciones", []),
+            _tc_guardar_lista_idioma(registro.get("recomendaciones", [])),
             ensure_ascii=False
         ),
-        registro.get("nota_diagnostico", ""),
+        tr_diag_texto(registro.get("nota_diagnostico", "")),
     ]]
 
     sheets_service.spreadsheets().values().append(
@@ -7711,21 +7823,40 @@ def _tc_draw_health_ai_v4(pil, rows, ranges_map):
 
 
 def _tc_health_diagnosis_openai(pil, visual, row_count):
-    w,h=pil.size
-    distribution={"left":0,"center":0,"right":0,"top":0,"middle":0,"bottom":0}
-    for x,y in visual.get("red_points",[]):
-        distribution["left" if x<w/3 else "center" if x<2*w/3 else "right"] += 1
-        distribution["top" if y<h/3 else "middle" if y<2*h/3 else "bottom"] += 1
-    prompt=f"""
-TerraCore. Haz un diagnóstico VISUAL PRELIMINAR de esta fotografía.
-Resultado por tramos: surcos={row_count}, verde={visual.get('green_pct',0):.1f}%, rojo={visual.get('red_pct',0):.1f}%, distribución roja={json.dumps(distribution)}.
-No afirmes enfermedad ni nutriente específico solo por la foto.
-Devuelve SOLO JSON válido:
-{{"zona_mas_afectada":"texto corto","nivel_afectacion_visual":"bajo|medio|alto","diagnostico_visual":"1 a 3 frases","causas_probables":["..."],"explicacion_nutrientes":"texto breve","recomendaciones_iniciales":["..."],"nota_diagnostico":"Diagnóstico visual preliminar..."}}
+    w, h = pil.size
+    distribution = {"left": 0, "center": 0, "right": 0, "top": 0, "middle": 0, "bottom": 0}
+    for x, y in visual.get("red_points", []):
+        distribution["left" if x < w / 3 else "center" if x < 2 * w / 3 else "right"] += 1
+        distribution["top" if y < h / 3 else "middle" if y < 2 * h / 3 else "bottom"] += 1
+
+    en_frances = _tc_idioma_actual() == "FR"
+    idioma_salida = "FRANÇAIS" if en_frances else "ESPAÑOL"
+    niveles = "faible|moyen|élevé" if en_frances else "bajo|medio|alto"
+    ejemplo_explicacion = (
+        "La photographie seule ne permet pas de confirmer une carence nutritionnelle spécifique ; "
+        "vérifiez sur le terrain et analysez le sol et, si possible, les feuilles."
+        if en_frances else
+        "La fotografía por sí sola no confirma una deficiencia nutricional específica; "
+        "confirmar con revisión de campo, análisis de suelo y, si es posible, foliar."
+    )
+    ejemplo_nota = (
+        "Diagnostic visuel préliminaire ; à confirmer sur le terrain."
+        if en_frances else
+        "Diagnóstico visual preliminar; confirmar en campo."
+    )
+
+    prompt = f"""
+TerraCore. Realiza un diagnóstico VISUAL PRELIMINAR de esta fotografía.
+IDIOMA OBLIGATORIO DE SALIDA: {idioma_salida}.
+Todos los valores de texto del JSON deben estar íntegramente en ese idioma; no mezcles español y francés.
+Resultado por tramos: surcos={row_count}, verde={visual.get('green_pct', 0):.1f}%, rojo={visual.get('red_pct', 0):.1f}%, distribución roja={json.dumps(distribution, ensure_ascii=False)}.
+No afirmes enfermedades ni nutrientes específicos basándote únicamente en la fotografía.
+Devuelve SOLO JSON válido con esta estructura:
+{{"zona_mas_afectada":"texte court","nivel_afectacion_visual":"{niveles}","diagnostico_visual":"1 à 3 phrases","causas_probables":["..."],"explicacion_nutrientes":{json.dumps(ejemplo_explicacion, ensure_ascii=False)},"recomendaciones_iniciales":["..."],"nota_diagnostico":{json.dumps(ejemplo_nota, ensure_ascii=False)}}}
 """
     try:
-        data=_tc_openai_json([pil],prompt,detail="high",model=_tc_openai_precision_model(),effort="medium")
-        return data if isinstance(data,dict) else {}
+        data = _tc_openai_json([pil], prompt, detail="high", model=_tc_openai_precision_model(), effort="medium")
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
@@ -8669,32 +8800,46 @@ def _tg_zone_fallback(pil, red_xy):
 
 
 def _tg_health_diagnosis(pil, visual, row_count):
+    en_frances = _tc_idioma_actual() == "FR"
+    idioma_salida = "FRANÇAIS" if en_frances else "ESPAÑOL"
+    niveles = "faible|moyen|élevé" if en_frances else "bajo|medio|alto"
+    ejemplo_explicacion = (
+        "La photographie seule ne permet pas de confirmer une carence nutritionnelle spécifique ; "
+        "vérifiez sur le terrain, analysez le sol et, si possible, réalisez une analyse foliaire."
+        if en_frances else
+        "La fotografía por sí sola no confirma una deficiencia nutricional específica; "
+        "confirmar con revisión de campo, suelo y/o análisis foliar."
+    )
+    ejemplo_nota = (
+        "Diagnostic visuel préliminaire ; à confirmer sur le terrain."
+        if en_frances else
+        "Diagnóstico visual preliminar; confirmar en campo."
+    )
     prompt = f"""
 TERRACORE — DIAGNÓSTICO VISUAL PRELIMINAR, SOLO GEMINI.
+IDIOMA OBLIGATORIO DE SALIDA: {idioma_salida}.
+Todos los campos de texto del JSON (zona, nivel, diagnóstico, causas, explicación, recomendaciones y nota) deben estar íntegramente en ese idioma. No mezcles español y francés.
 Analiza esta fotografía aérea junto con el resumen calculado por slots:
 - surcos: {row_count}
 - slots totales: {visual['total_slots']}
 - slots verdes: {visual['green_slots']} ({visual['green_pct']:.1f}%)
 - slots rojos: {visual['red_slots']} ({visual['red_pct']:.1f}%)
-
 No afirmes una enfermedad ni un nutriente específico solo por fotografía.
-Describe la zona más afectada de forma espacial.
 Devuelve SOLO JSON válido:
 {{
- "zona_mas_afectada":"texto corto",
- "nivel_afectacion_visual":"bajo|medio|alto",
- "diagnostico_visual":"1 a 3 frases",
+ "zona_mas_afectada":"texte court",
+ "nivel_afectacion_visual":"{niveles}",
+ "diagnostico_visual":"1 à 3 phrases",
  "causas_probables":["..."],
- "explicacion_nutrientes":"La fotografía por sí sola no confirma una deficiencia nutricional específica; confirmar con revisión de campo, suelo y/o análisis foliar.",
+ "explicacion_nutrientes":{json.dumps(ejemplo_explicacion, ensure_ascii=False)},
  "recomendaciones_iniciales":["..."],
- "nota_diagnostico":"Diagnóstico visual preliminar; confirmar en campo."
+ "nota_diagnostico":{json.dumps(ejemplo_nota, ensure_ascii=False)}
 }}
 """
     try:
         return _tg_gemini_json([pil], prompt, temperature=0.02)
     except Exception:
         return {}
-
 
 def _tc_analyze_health_openai(uploaded_image, rows):
     """Nombre conservado por compatibilidad; internamente usa SOLO Gemini."""
@@ -9274,13 +9419,19 @@ def _tc_diagnostico_con_surcos_reales(texto, surcos_reales):
         return t
 
     t = re.sub(
-        r"(Se evaluaron\s+\d+\s+posiciones\s+sobre\s+)\d+(\s+surcos\s+rectos)",
+        r"(Se evaluaron\s+[\d.,]+\s+posiciones\s+sobre\s+)\d+(\s+surcos\s+rectos)",
         rf"\g<1>{n}\g<2>",
         t,
         flags=re.I,
     )
     t = re.sub(
-        r"(Ont été évaluées\s+\d+\s+positions\s+sur\s+)\d+(\s+rangs\s+rectilignes)",
+        r"(Ont été évaluées\s+[\d.,]+\s+positions\s+sur\s+)\d+(\s+rangs\s+rectilignes)",
+        rf"\g<1>{n}\g<2>",
+        t,
+        flags=re.I,
+    )
+    t = re.sub(
+        r"([\d.,]+\s+positions ont été évaluées sur\s+)\d+(\s+rangs rectilignes)",
         rf"\g<1>{n}\g<2>",
         t,
         flags=re.I,
