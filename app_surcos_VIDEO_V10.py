@@ -8,7 +8,7 @@ import zipfile
 import tempfile
 import requests
 import re
-import uuid
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +23,158 @@ from scipy.interpolate import UnivariateSpline
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+
+
+# ============================================================
+# GENERADOR CENTRAL DE ID NUMÉRICO DE 8 DÍGITOS
+# ============================================================
+# Todos los ID nuevos propios de TerraCore usan exactamente 8 dígitos.
+# Se reservan los ID encontrados en las hojas existentes para evitar
+# duplicados y se mantiene una caché por sesión para no consultar Sheets
+# cada vez que se crea una fila secundaria.
+# Los ID antiguos se conservan para no romper referencias históricas.
+# ============================================================
+
+_TC_ID8_CACHE_KEY = "_tc_id8_usados_globales_v1"
+_TC_ID8_USADOS_LOCAL = set()
+
+
+def _tc_id8_es_valido(valor):
+    return bool(re.fullmatch(r"\d{8}", str(valor or "").strip()))
+
+
+def _tc_id8_citar_hoja(nombre):
+    return "'" + str(nombre).replace("'", "''") + "'"
+
+
+def _tc_id8_letra_columna(numero):
+    numero = int(numero)
+    salida = ""
+    while numero > 0:
+        numero, resto = divmod(numero - 1, 26)
+        salida = chr(65 + resto) + salida
+    return salida
+
+
+def _tc_id8_cargar_usados():
+    """Carga los ID numéricos ya utilizados en el libro de TerraCore."""
+    try:
+        cache = st.session_state.get(_TC_ID8_CACHE_KEY)
+        if isinstance(cache, set):
+            cache.update(_TC_ID8_USADOS_LOCAL)
+            return cache
+        if isinstance(cache, (list, tuple)):
+            usados = {
+                str(valor).strip()
+                for valor in cache
+                if _tc_id8_es_valido(valor)
+            }
+            usados.update(_TC_ID8_USADOS_LOCAL)
+            st.session_state[_TC_ID8_CACHE_KEY] = usados
+            return usados
+    except Exception:
+        pass
+
+    usados = set(_TC_ID8_USADOS_LOCAL)
+
+    try:
+        if (
+            "historial_google_configurado" in globals()
+            and historial_google_configurado()
+        ):
+            _, sheets_service = obtener_google_clients()
+            spreadsheet_id = _secret_text("GSHEET_ID")
+            meta = sheets_service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
+                fields="sheets.properties.title",
+            ).execute()
+            nombres = [
+                str(item.get("properties", {}).get("title", "") or "").strip()
+                for item in meta.get("sheets", [])
+            ]
+            nombres = [nombre for nombre in nombres if nombre]
+
+            rangos = [
+                f"{_tc_id8_citar_hoja(nombre)}!A2:A"
+                for nombre in nombres
+            ]
+            indice_encabezados_evidencias = None
+            if "Evidencias1" in nombres:
+                indice_encabezados_evidencias = len(rangos)
+                rangos.append("'Evidencias1'!A1:AZ1")
+
+            if rangos:
+                respuesta = sheets_service.spreadsheets().values().batchGet(
+                    spreadsheetId=spreadsheet_id,
+                    ranges=rangos,
+                    valueRenderOption="FORMATTED_VALUE",
+                ).execute()
+                value_ranges = respuesta.get("valueRanges", []) or []
+
+                # Las tablas propias de TerraCore guardan su ID principal en A.
+                for indice in range(min(len(nombres), len(value_ranges))):
+                    for fila in (value_ranges[indice].get("values", []) or []):
+                        valor = str(fila[0] if fila else "").strip()
+                        if _tc_id8_es_valido(valor):
+                            usados.add(valor)
+
+                # Evidencias1 puede tener UNIQUEID en una columna distinta de A.
+                if (
+                    indice_encabezados_evidencias is not None
+                    and indice_encabezados_evidencias < len(value_ranges)
+                ):
+                    matriz = value_ranges[indice_encabezados_evidencias].get("values", []) or []
+                    encabezados = matriz[0] if matriz else []
+                    indice_uniqueid = next(
+                        (
+                            i for i, encabezado in enumerate(encabezados)
+                            if str(encabezado or "").strip().casefold() == "uniqueid"
+                        ),
+                        None,
+                    )
+                    if indice_uniqueid is not None and indice_uniqueid > 0:
+                        letra = _tc_id8_letra_columna(indice_uniqueid + 1)
+                        rango_ids = f"'Evidencias1'!{letra}2:{letra}"
+                        filas_ids = sheets_service.spreadsheets().values().get(
+                            spreadsheetId=spreadsheet_id,
+                            range=rango_ids,
+                            valueRenderOption="FORMATTED_VALUE",
+                        ).execute().get("values", []) or []
+                        for fila in filas_ids:
+                            valor = str(fila[0] if fila else "").strip()
+                            if _tc_id8_es_valido(valor):
+                                usados.add(valor)
+    except Exception:
+        # El generador sigue siendo funcional aunque Sheets no esté disponible;
+        # la escritura del registro reportará por separado cualquier problema.
+        pass
+
+    usados.update(_TC_ID8_USADOS_LOCAL)
+    try:
+        st.session_state[_TC_ID8_CACHE_KEY] = usados
+    except Exception:
+        pass
+    return usados
+
+
+def _tc_id8_nuevo():
+    """Genera un ID único de 8 dígitos numéricos, como texto."""
+    usados = _tc_id8_cargar_usados()
+    for _ in range(1000):
+        # 10,000,000–99,999,999: siempre son exactamente ocho dígitos.
+        candidato = str(10_000_000 + secrets.randbelow(90_000_000))
+        if candidato in usados:
+            continue
+        usados.add(candidato)
+        _TC_ID8_USADOS_LOCAL.add(candidato)
+        try:
+            st.session_state[_TC_ID8_CACHE_KEY] = usados
+        except Exception:
+            pass
+        return candidato
+    raise RuntimeError(
+        "No se pudo generar un ID único de 8 dígitos después de varios intentos."
+    )
 
 # ============================================================
 # EDITOR MANUAL COMPATIBLE CON STREAMLIT MODERNO
@@ -1220,7 +1372,7 @@ def _tg_detectar_offset_historial(row):
         if id_val:
             score += 1
 
-        # UUID/ID interno suele ser largo.
+        # El ID interno puede ser numérico de ocho dígitos o un ID histórico largo.
         if len(id_val) >= 8:
             score += 1
 
@@ -1403,11 +1555,10 @@ def guardar_analisis_en_google(
         or 0.0
     )
 
-    import uuid
     from datetime import datetime, timezone
 
     registro = {
-        "id": str(uuid.uuid4()),
+        "id": _tc_id8_nuevo(),
         "fecha": datetime.now(timezone.utc).isoformat(),
         "nombre": uploaded_image.name,
         "imagen_original_file_id": original_file_id,
@@ -8853,10 +9004,84 @@ def _tg_append_rows(hoja, rows, total_cols):
     ).execute()
 
 
+def _tg_clave_parcela(valor):
+    """Clave comparable para nombres de parcela en español o francés."""
+    texto = str(valor or "").strip()
+    coincidencia = re.fullmatch(r"(?i)(?:parcela|parcelle)\s*0*(\d+)", texto)
+    if coincidencia:
+        return f"parcela {int(coincidencia.group(1))}"
+    return _tg_normalizar_parcela(texto).casefold()
+
+
 def _tg_parcela_id(parcela):
-    """ID estable por parcela e idioma, para separar AppSheet ES y FR."""
+    """Reutiliza el ID de la parcela existente o crea uno numérico de 8 dígitos."""
     nombre = _tg_normalizar_parcela(parcela)
-    return f"PARCELA_{_tg_nombre_seguro(nombre).upper()}_{_tc_idioma_actual()}"
+    idioma = "FR" if str(_tc_idioma_actual() or "").upper() == "FR" else "ES"
+    clave = f"{_tg_clave_parcela(nombre)}|{idioma}"
+
+    try:
+        cache = st.session_state.get("_tc_parcela_id_cache_v1", {}) or {}
+        id_cacheado = str(cache.get(clave, "") or "").strip()
+        if id_cacheado:
+            return id_cacheado
+    except Exception:
+        cache = {}
+
+    # Si la parcela ya existe, conservar su clave antigua para no romper
+    # relaciones históricas que todavía apuntan a ese ID.
+    try:
+        if historial_google_configurado():
+            _, sheets_service = obtener_google_clients()
+            spreadsheet_id = _secret_text("GSHEET_ID")
+            valores = sheets_service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range="'Parcelas'!A1:AZ",
+                valueRenderOption="FORMATTED_VALUE",
+            ).execute().get("values", []) or []
+            if valores:
+                encabezados = [
+                    str(valor or "").strip().casefold()
+                    for valor in (valores[0] or [])
+                ]
+                indice_id = next(
+                    (i for i, valor in enumerate(encabezados) if valor == "id"),
+                    0,
+                )
+                indice_nombre = next(
+                    (i for i, valor in enumerate(encabezados)
+                     if valor in ("nombreparcela", "parcela", "nombre de parcela")),
+                    1,
+                )
+                indice_idioma = next(
+                    (i for i, valor in enumerate(encabezados) if valor == "idioma"),
+                    None,
+                )
+                for fila in valores[1:]:
+                    if indice_nombre >= len(fila):
+                        continue
+                    if _tg_clave_parcela(fila[indice_nombre]) != _tg_clave_parcela(nombre):
+                        continue
+                    if indice_idioma is not None and indice_idioma < len(fila):
+                        idioma_fila = str(fila[indice_idioma] or "").strip().upper()
+                        if idioma_fila in ("ES", "FR") and idioma_fila != idioma:
+                            continue
+                    id_existente = str(
+                        fila[indice_id] if indice_id < len(fila) else ""
+                    ).strip()
+                    if id_existente:
+                        cache[clave] = id_existente
+                        st.session_state["_tc_parcela_id_cache_v1"] = cache
+                        return id_existente
+    except Exception:
+        pass
+
+    nuevo_id = _tc_id8_nuevo()
+    cache[clave] = nuevo_id
+    try:
+        st.session_state["_tc_parcela_id_cache_v1"] = cache
+    except Exception:
+        pass
+    return nuevo_id
 
 
 def _tg_guardar_en_hoja_parcelas(registro):
@@ -9110,6 +9335,40 @@ def _tg_buscar_fila_por_id_hoja(sheets_service, spreadsheet_id, hoja, registro_i
     return None
 
 
+def _tg_buscar_fila_evidencia_historial_tipo(
+    sheets_service,
+    spreadsheet_id,
+    registro_id,
+    tipos,
+):
+    """Busca una evidencia por HistorialID + tipo, compatible con ID antiguos y nuevos."""
+    objetivo = str(registro_id or "").strip()
+    tipos_validos = {
+        str(tipo or "").strip().upper()
+        for tipo in (tipos or [])
+        if str(tipo or "").strip()
+    }
+    if not objetivo or not tipos_validos:
+        return None, ""
+    try:
+        filas = sheets_service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="'Evidencias'!A2:J",
+            valueRenderOption="FORMATTED_VALUE",
+        ).execute().get("values", []) or []
+    except Exception:
+        return None, ""
+
+    for numero_fila, fila in enumerate(filas, start=2):
+        if len(fila) < 4:
+            continue
+        id_relacionado = str(fila[1] or "").strip()
+        tipo = str(fila[3] or "").strip().upper()
+        if id_relacionado == objetivo and tipo in tipos_validos:
+            return numero_fila, str(fila[0] or "").strip()
+    return None, ""
+
+
 def _tg_actualizar_campo_hoja_por_id(
     sheets_service,
     spreadsheet_id,
@@ -9346,7 +9605,7 @@ def _tg_guardar_inventario_surcos(registro, uploaded_name):
         vacios = int(float(_tg_valor_fila_inventario(fila, ["Vacíos", "Vides"], 0) or 0))
         confianza = float(_tg_valor_fila_inventario(fila, ["Confianza", "Confiance"], 0.0) or 0.0)
         rows.append([
-            f"{registro.get('id','')}-S{idx:03d}",
+            _tc_id8_nuevo(),
             registro.get("id", ""),
             registro.get("parcela_id", ""),
             str(numero),
@@ -9374,7 +9633,7 @@ def _tg_guardar_evidencias(registro):
         if not file_id:
             continue
         rows.append([
-            f"EV-{aid}-{tipo}", aid, pid, tipo, nombre, file_id, mime, fecha,
+            _tc_id8_nuevo(), aid, pid, tipo, nombre, file_id, mime, fecha,
             "TerroCore image AI",
             registro.get("idioma", _tc_idioma_actual()),
         ])
@@ -9432,7 +9691,7 @@ def _tg_poligonos_automaticos(uploaded_image, backend_result, uploaded_name):
             arr = np.asarray(puntos, dtype=np.float32)
             area_px = abs(float(cv2.contourArea(arr))) if len(arr) >= 3 else 0.0
             regiones.append({
-                "region_id": f"REG-{rid:03d}-{gidx:03d}",
+                "region_id": _tc_id8_nuevo(),
                 "surco": rid,
                 "primer_slot": int(group[0]),
                 "ultimo_slot": int(group[-1]),
@@ -9457,7 +9716,8 @@ def _tg_guardar_regiones_y_zonas(registro, backend_result, uploaded_image, uploa
     rows_zonas = []
 
     for i, reg in enumerate(regiones, 1):
-        region_id = f"{aid}-{reg['region_id']}"
+        region_id = str(reg.get("region_id") or _tc_id8_nuevo()).strip()
+        zona_id = _tc_id8_nuevo()
         poly_json = json.dumps({"space": "image_px", "points": reg["points"]}, ensure_ascii=False)
         tramo = f"Slots {reg['primer_slot']}-{reg['ultimo_slot']}"
         area_m2 = (area_parcela_m2 * float(reg["area_visual_pct"]) / 100.0) if area_parcela_m2 > 0 else 0.0
@@ -9471,7 +9731,7 @@ def _tg_guardar_regiones_y_zonas(registro, backend_result, uploaded_image, uploa
             registro.get("idioma", _tc_idioma_actual()),
         ])
         rows_zonas.append([
-            f"Z-{region_id}", aid, pid,
+            zona_id, aid, pid,
             tr(f"Zona dañada {i}", f"Zone affectée {i}"), poly_json,
             round(area_m2, 3), nivel, str(reg["surco"]),
             _tc_guardar_valor_appsheet("Pendiente"), fecha,
@@ -9505,7 +9765,7 @@ def _tg_guardar_validacion_muestreo(registro, uploaded_name):
         qr_fin = str(st.session_state.get("tc_qr_fin", "") or "").strip() or _tc_guardar_valor_appsheet("PENDIENTE")
         obs_val = str(st.session_state.get("tc_observaciones_validacion", "") or "").strip() or _tc_guardar_valor_appsheet("Sin observaciones")
         rows.append([
-            f"VAL-{registro.get('id','')}-{i:03d}",
+            _tc_id8_nuevo(),
             registro.get("id", ""), registro.get("parcela_id", ""), str(surco),
             tipo_zona, ia, real, round(error, 2), qr_inicio, qr_fin, fecha,
             obs_val,
@@ -9540,15 +9800,14 @@ def _tg_guardar_captura_base(uploaded_images, altura_vuelo=0.0):
     if not historial_google_configurado() or not uploaded_images:
         return ""
 
-    import uuid
     from datetime import datetime, timezone
     ahora = datetime.now(timezone.utc)
     parcela = _tg_normalizar_parcela(st.session_state.get("tc_parcela_nombre", ""))
     parcela_guardada = _tg_nombre_parcela_guardado(parcela)
     idioma = _tc_idioma_actual()
     pid = _tg_parcela_id(parcela)
-    captura_id = f"CB{ahora.strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:6].upper()}"
-    vuelo_id = f"VU{ahora.strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:6].upper()}"
+    captura_id = _tc_id8_nuevo()
+    vuelo_id = _tc_id8_nuevo()
 
     fecha_cap = st.session_state.get("tc_fecha_captura", "")
     try:
@@ -9625,15 +9884,14 @@ def _tg_guardar_segundo_vuelo_nivel2(
     if not historial_google_configurado():
         raise RuntimeError("Google Sheets/Drive no está configurado.")
 
-    import uuid
     from datetime import datetime, timezone
     ahora = datetime.now(timezone.utc)
     parcela = _tg_normalizar_parcela(st.session_state.get("tc_parcela_nombre", ""))
     idioma = _tc_idioma_actual()
     pid = _tg_parcela_id(parcela)
     region_id = str(region_id or "").strip() or "PARCELA_COMPLETA"
-    vuelo_id = f"VU2{ahora.strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:6].upper()}"
-    analisis2_id = f"AN2{ahora.strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:6].upper()}"
+    vuelo_id = _tc_id8_nuevo()
+    analisis2_id = _tc_id8_nuevo()
 
     try:
         fecha_txt = fecha_vuelo.isoformat()
@@ -9658,7 +9916,7 @@ def _tg_guardar_segundo_vuelo_nivel2(
             up.getvalue(), nombre, up.type or "image/jpeg", "Seguimiento"
         )
         evidencias_rows.append([
-            f"EVS-{vuelo_id}-{idx:03d}", vuelo_id, region_id, pid,
+            _tc_id8_nuevo(), vuelo_id, region_id, pid,
             _tc_guardar_valor_appsheet("Segundo vuelo"), float(altura_m or 0.0),
             str(angulo_camara or _tc_guardar_valor_appsheet("Sin registrar")),
             nombre, file_id, fecha_txt, obs_vuelo, idioma,
@@ -9695,7 +9953,6 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
     if not historial_google_configurado():
         return False, "Historial de Google no configurado."
 
-    import uuid
     from datetime import datetime, timezone
 
     # --------------------------------------------------------
@@ -9716,10 +9973,10 @@ def guardar_analisis_en_google(uploaded_image, backend_result):
         fecha_texto = ahora.strftime("%Y%m%d")
 
     hora_texto = ahora.strftime("%H%M%S")
-    corto = uuid.uuid4().hex[:6].upper()
 
-    # ID solo letras y números.
-    registro_id = f"TC{fecha_texto}{hora_texto}{corto}"
+    # ID numérico de exactamente ocho dígitos.
+    registro_id = _tc_id8_nuevo()
+    corto = registro_id
 
     parcela_archivo = _tg_nombre_seguro(parcela)
     base_nombre = f"{parcela_archivo}_{fecha_texto}_{hora_texto}_{corto}"
@@ -11082,7 +11339,7 @@ def _tc_guardar_poligonos_manuales_nuevo_archivo(
         return False, {}, "No se pudo convertir la imagen manual a PIL."
 
     base = Path(anterior).stem if anterior else Path(nombre_fuente).stem
-    corto = uuid.uuid4().hex[:8].upper()
+    corto = _tc_id8_nuevo()
     nombre_nuevo = f"{base}_manual_{corto}.png"
     contenido = _tc_pil_a_png_bytes(pil)
     if not contenido:
@@ -11147,43 +11404,44 @@ def _tc_guardar_poligonos_manuales_nuevo_archivo(
             except Exception:
                 pass
 
-        # Mantener Evidencias sincronizada con el nuevo ID.
+        # Mantener Evidencias sincronizada buscando por HistorialID + tipo.
+        # Esto funciona tanto con ID antiguos (EV-...) como con ID nuevos de 8 dígitos.
         evidencia_actualizada = False
         for tipo_evidencia in ("POLIGONOS", "POLYGONES"):
-            ev_id = f"EV-{registro_id}-{tipo_evidencia}"
-            if _tg_buscar_fila_por_id_hoja(
+            fila_evidencia, _id_evidencia = _tg_buscar_fila_evidencia_historial_tipo(
                 sheets_service,
                 spreadsheet_id,
-                "Evidencias",
-                ev_id,
-            ):
-                _tg_actualizar_campo_hoja_por_id(
-                    sheets_service,
-                    spreadsheet_id,
-                    "Evidencias",
-                    ev_id,
-                    "NombreArchivo",
-                    nombre_nuevo,
-                )
-                _tg_actualizar_campo_hoja_por_id(
-                    sheets_service,
-                    spreadsheet_id,
-                    "Evidencias",
-                    ev_id,
-                    "DriveFileID",
-                    nuevo_file_id,
-                )
+                registro_id,
+                [tipo_evidencia],
+            )
+            if fila_evidencia:
+                for encabezado, valor in [
+                    ("NombreArchivo", nombre_nuevo),
+                    ("DriveFileID", nuevo_file_id),
+                ]:
+                    col = _tg_buscar_o_crear_encabezado(
+                        sheets_service,
+                        spreadsheet_id,
+                        "Evidencias",
+                        encabezado,
+                    )
+                    letra = _tg_letra_columna(col)
+                    sheets_service.spreadsheets().values().update(
+                        spreadsheetId=spreadsheet_id,
+                        range=f"'Evidencias'!{letra}{fila_evidencia}",
+                        valueInputOption="RAW",
+                        body={"values": [[valor]]},
+                    ).execute()
                 evidencia_actualizada = True
                 break
 
         if not evidencia_actualizada:
-            # Si por alguna razón no existe la evidencia, créala sin duplicar
-            # el análisis principal.
+            # Si por alguna razón no existe la evidencia, créala con ID numérico.
             tipo_guardado = _tc_guardar_valor_appsheet("POLIGONOS")
             _tg_append_rows(
                 "Evidencias",
                 [[
-                    f"EV-{registro_id}-{tipo_guardado}",
+                    _tc_id8_nuevo(),
                     registro_id,
                     "",
                     tipo_guardado,
@@ -11191,7 +11449,7 @@ def _tc_guardar_poligonos_manuales_nuevo_archivo(
                     nuevo_file_id,
                     "image/png",
                     datetime.now(timezone.utc).isoformat(),
-                    "TerroCore image AI - corrección manual",
+                    "TerraCore image AI - corrección manual",
                     _tc_idioma_actual(),
                 ]],
                 10,
@@ -13161,11 +13419,12 @@ with main_col:
                                 if historial_google_ok and isinstance(historial_google_info, dict)
                                 else uploaded_image.name
                             )
-                            id_resultado = (
-                                historial_google_info.get("id", f"{idx_img}_{uploaded_image.name}")
-                                if historial_google_ok and isinstance(historial_google_info, dict)
-                                else f"{idx_img}_{uploaded_image.name}"
-                            )
+                            if historial_google_ok and isinstance(historial_google_info, dict):
+                                id_resultado = str(
+                                    historial_google_info.get("id") or _tc_id8_nuevo()
+                                ).strip()
+                            else:
+                                id_resultado = _tc_id8_nuevo()
 
                             # Confirmar visualmente el guardado de cada foto antes de
                             # continuar con la siguiente, sin esperar al final del lote.
@@ -13714,7 +13973,7 @@ with main_col:
                         region_seg = st.text_input(
                             "RegionID",
                             key="tc_seg_region_id",
-                            placeholder="PARCELA_COMPLETA o TC...-REG-001-001"
+                            placeholder="PARCELA_COMPLETA o ID de región de 8 dígitos"
                         )
                         tipo_seg = st.selectbox(
                             "TipoVuelo",
@@ -14957,12 +15216,7 @@ def _tc_v364_guardar_evidencias(
         uniqueid = ""
 
     if not uniqueid:
-        uniqueid = (
-            "TCVID-"
-            + datetime.now().strftime("%Y%m%d-%H%M%S")
-            + "-"
-            + os.urandom(3).hex().upper()
-        )
+        uniqueid = _tc_id8_nuevo()
 
     nombre_final = str(nombre_analisis or "").strip()
     if not nombre_final:
