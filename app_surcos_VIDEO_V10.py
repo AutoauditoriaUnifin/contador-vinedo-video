@@ -14043,18 +14043,19 @@ else:
 
 
 # ============================================================
-# TERRACORE - MODULO DE CARGA DE VIDEOS V3.6.4
+# TERRACORE - MODULO DE CARGA DE VIDEOS V3.6.5
 #
 # 1. Sube dos videos a Google Drive.
 # 2. Detecta el análisis válido más reciente del idioma actual.
 # 3. No utiliza un selector manual que pueda quedarse obsoleto.
 # 4. Guarda los enlaces en la misma fila de HistorialTerroCore.
-# 5. Solo modifica las columnas Video y Video simulación.
-# 6. No escribe en Evidencias1.
-# 7. No agrega filas nuevas al historial.
-# 8. Valida ID e idioma antes y después de guardar.
-# 9. No analiza videos ni procesa fotogramas.
-# 10. Conserva las columnas y los registros existentes.
+# 5. Solo modifica Video y Video simulación en la fila del análisis.
+# 6. Guarda también el registro de los videos en Evidencias1.
+# 7. Reutiliza la evidencia del mismo HistorialID e idioma para evitar duplicados.
+# 8. No agrega filas nuevas al historial de análisis.
+# 9. Valida ID e idioma antes y después de guardar.
+# 10. No analiza videos ni procesa fotogramas.
+# 11. Conserva las columnas y los registros existentes.
 # ============================================================
 
 import json
@@ -14076,7 +14077,18 @@ from googleapiclient.http import MediaIoBaseUpload
 # ============================================================
 
 TC_V364_HISTORIAL = "HistorialTerroCore"
+TC_V364_EVIDENCIAS = "Evidencias1"
 TC_V364_CARPETA_VIDEOS = "VideosTerraCore"
+
+TC_V364_COLUMNAS_EVIDENCIA = [
+    "UNIQUEID",
+    "NOMBRE",
+    "DESCRIPCION",
+    "Video",
+    "Video simulación",
+    "Idioma",
+    "HistorialID",
+]
 
 TC_V364_COLUMNAS_VIDEO = [
     "Video",
@@ -14622,6 +14634,440 @@ def _tc_v364_obtener_historial(
 
 
 # ============================================================
+# 5B. FUNCIONES PARA LA TABLA EVIDENCIAS1
+# ============================================================
+
+def _tc_v364_obtener_propiedades_pestana(
+    sheets,
+    id_hoja,
+    nombre_pestana,
+    crear_si_falta=False,
+):
+    """Obtiene las dimensiones reales de una pestaña de Sheets.
+
+    Si crear_si_falta=True, crea la pestaña cuando no existe.
+    """
+    campos = (
+        "sheets(properties(" 
+        "sheetId,title," 
+        "gridProperties(rowCount,columnCount)" 
+        "))"
+    )
+
+    meta = sheets.spreadsheets().get(
+        spreadsheetId=id_hoja,
+        fields=campos,
+    ).execute()
+
+    for hoja in meta.get("sheets", []):
+        propiedades = hoja.get("properties", {})
+        if propiedades.get("title") == nombre_pestana:
+            grid = propiedades.get("gridProperties", {})
+            return {
+                "sheet_id": propiedades.get("sheetId"),
+                "row_count": int(grid.get("rowCount", 1000)),
+                "column_count": int(grid.get("columnCount", 26)),
+            }
+
+    if not crear_si_falta:
+        raise ValueError(
+            f"No existe la pestaña '{nombre_pestana}' en Google Sheets."
+        )
+
+    sheets.spreadsheets().batchUpdate(
+        spreadsheetId=id_hoja,
+        body={
+            "requests": [
+                {
+                    "addSheet": {
+                        "properties": {
+                            "title": nombre_pestana,
+                            "gridProperties": {
+                                "rowCount": 1000,
+                                "columnCount": max(26, len(TC_V364_COLUMNAS_EVIDENCIA)),
+                            },
+                        }
+                    }
+                }
+            ]
+        },
+    ).execute()
+
+    meta = sheets.spreadsheets().get(
+        spreadsheetId=id_hoja,
+        fields=campos,
+    ).execute()
+
+    for hoja in meta.get("sheets", []):
+        propiedades = hoja.get("properties", {})
+        if propiedades.get("title") == nombre_pestana:
+            grid = propiedades.get("gridProperties", {})
+            return {
+                "sheet_id": propiedades.get("sheetId"),
+                "row_count": int(grid.get("rowCount", 1000)),
+                "column_count": int(grid.get("columnCount", 26)),
+            }
+
+    raise RuntimeError(
+        f"No se pudo crear o localizar la pestaña '{nombre_pestana}'."
+    )
+
+
+def _tc_v364_leer_pestana(
+    sheets,
+    id_hoja,
+    nombre_pestana,
+    crear_si_falta=False,
+):
+    """Lee una pestaña usando su número real de columnas."""
+    propiedades = _tc_v364_obtener_propiedades_pestana(
+        sheets,
+        id_hoja,
+        nombre_pestana,
+        crear_si_falta=crear_si_falta,
+    )
+
+    ultima_columna = _tc_v364_letra_columna(
+        max(0, propiedades["column_count"] - 1)
+    )
+
+    respuesta = sheets.spreadsheets().values().get(
+        spreadsheetId=id_hoja,
+        range=_tc_v364_rango(
+            nombre_pestana,
+            f"A1:{ultima_columna}",
+        ),
+    ).execute()
+
+    return propiedades, respuesta.get("values", [])
+
+
+def _tc_v364_asegurar_encabezados_evidencias(
+    sheets,
+    id_hoja,
+):
+    """Asegura los siete encabezados de Evidencias1 sin borrar datos.
+
+    Los encabezados faltantes se agregan después de la última columna
+    que tenga datos, en lugar de escribir sobre columnas existentes.
+    """
+    propiedades, filas = _tc_v364_leer_pestana(
+        sheets,
+        id_hoja,
+        TC_V364_EVIDENCIAS,
+        crear_si_falta=True,
+    )
+
+    fila_encabezados = filas[0] if filas else []
+    hay_encabezados = any(str(x or "").strip() for x in fila_encabezados)
+
+    if not hay_encabezados:
+        ultima_columna = _tc_v364_letra_columna(
+            len(TC_V364_COLUMNAS_EVIDENCIA) - 1
+        )
+        sheets.spreadsheets().values().update(
+            spreadsheetId=id_hoja,
+            range=_tc_v364_rango(
+                TC_V364_EVIDENCIAS,
+                f"A1:{ultima_columna}1",
+            ),
+            valueInputOption="RAW",
+            body={"values": [TC_V364_COLUMNAS_EVIDENCIA]},
+        ).execute()
+        _, filas = _tc_v364_leer_pestana(
+            sheets, id_hoja, TC_V364_EVIDENCIAS
+        )
+        return list(filas[0]) if filas else list(TC_V364_COLUMNAS_EVIDENCIA)
+
+    encabezados = list(fila_encabezados)
+    indices = {
+        _tc_v364_normalizar_encabezado(nombre): indice
+        for indice, nombre in enumerate(encabezados)
+    }
+
+    faltantes = [
+        nombre
+        for nombre in TC_V364_COLUMNAS_EVIDENCIA
+        if _tc_v364_normalizar_encabezado(nombre) not in indices
+    ]
+
+    if faltantes:
+        # Usa la última columna realmente ocupada en cualquier fila.
+        # Así se evita escribir en columnas que ya contienen datos.
+        ultima_columna_usada = max(
+            (len(fila) for fila in filas),
+            default=len(encabezados),
+        )
+        inicio = max(ultima_columna_usada, len(encabezados))
+        columnas_necesarias = inicio + len(faltantes)
+        columnas_actuales = propiedades["column_count"]
+
+        if columnas_necesarias > columnas_actuales:
+            sheets.spreadsheets().batchUpdate(
+                spreadsheetId=id_hoja,
+                body={
+                    "requests": [
+                        {
+                            "appendDimension": {
+                                "sheetId": propiedades["sheet_id"],
+                                "dimension": "COLUMNS",
+                                "length": columnas_necesarias - columnas_actuales,
+                            }
+                        }
+                    ]
+                },
+            ).execute()
+
+        actualizaciones = []
+        for desplazamiento, nombre in enumerate(faltantes):
+            letra = _tc_v364_letra_columna(inicio + desplazamiento)
+            actualizaciones.append(
+                {
+                    "range": _tc_v364_rango(
+                        TC_V364_EVIDENCIAS,
+                        f"{letra}1",
+                    ),
+                    "values": [[nombre]],
+                }
+            )
+
+        _tc_v364_guardar_celdas(
+            sheets,
+            id_hoja,
+            actualizaciones,
+        )
+
+    _, filas = _tc_v364_leer_pestana(
+        sheets,
+        id_hoja,
+        TC_V364_EVIDENCIAS,
+    )
+
+    encabezados_finales = filas[0] if filas else []
+    indices_finales = {
+        _tc_v364_normalizar_encabezado(nombre): indice
+        for indice, nombre in enumerate(encabezados_finales)
+    }
+
+    faltantes_finales = [
+        nombre
+        for nombre in TC_V364_COLUMNAS_EVIDENCIA
+        if _tc_v364_normalizar_encabezado(nombre) not in indices_finales
+    ]
+
+    if faltantes_finales:
+        raise ValueError(
+            "No se pudieron preparar estos encabezados en Evidencias1: "
+            + ", ".join(faltantes_finales)
+        )
+
+    return list(encabezados_finales)
+
+
+def _tc_v364_asegurar_filas_pestana(
+    sheets,
+    id_hoja,
+    sheet_id,
+    fila_necesaria,
+):
+    """Amplía la cuadrícula de una pestaña si la fila rebasa sus límites."""
+    propiedades = _tc_v364_obtener_propiedades_pestana(
+        sheets,
+        id_hoja,
+        TC_V364_EVIDENCIAS,
+        crear_si_falta=True,
+    )
+
+    filas_actuales = propiedades["row_count"]
+    fila_necesaria = int(fila_necesaria)
+
+    if fila_necesaria > filas_actuales:
+        sheets.spreadsheets().batchUpdate(
+            spreadsheetId=id_hoja,
+            body={
+                "requests": [
+                    {
+                        "appendDimension": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "length": fila_necesaria - filas_actuales,
+                        }
+                    }
+                ]
+            },
+        ).execute()
+
+
+def _tc_v364_guardar_evidencias(
+    sheets,
+    id_hoja,
+    historial_id,
+    idioma,
+    nombre_analisis,
+    fecha_analisis,
+    enlaces,
+):
+    """Crea o actualiza el registro de videos en Evidencias1.
+
+    La coincidencia se determina con HistorialID + Idioma. Si ya existe,
+    conserva UNIQUEID y actualiza el registro; no crea un duplicado nuevo.
+    """
+    historial_id = str(historial_id or "").strip()
+    idioma = "FR" if str(idioma or "").strip().upper() == "FR" else "ES"
+
+    if not historial_id:
+        raise ValueError("No se puede guardar Evidencias1 sin HistorialID.")
+
+    encabezados = _tc_v364_asegurar_encabezados_evidencias(
+        sheets,
+        id_hoja,
+    )
+    propiedades, filas = _tc_v364_leer_pestana(
+        sheets,
+        id_hoja,
+        TC_V364_EVIDENCIAS,
+    )
+
+    indices = {
+        _tc_v364_normalizar_encabezado(nombre): indice
+        for indice, nombre in enumerate(encabezados)
+    }
+
+    # Buscar un registro existente con el mismo análisis e idioma.
+    coincidencias = []
+    for numero_fila, fila in enumerate(filas[1:], start=2):
+        id_relacionado = _tc_v364_valor_fila(
+            fila, indices, "HistorialID"
+        )
+        idioma_fila = _tc_v364_valor_fila(
+            fila, indices, "Idioma"
+        ).strip().upper()
+
+        if id_relacionado == historial_id and idioma_fila == idioma:
+            coincidencias.append((numero_fila, fila))
+
+    if coincidencias:
+        # Si hay registros históricos duplicados, actualiza el más reciente.
+        fila_destino, fila_existente = coincidencias[-1]
+        uniqueid = _tc_v364_valor_fila(
+            fila_existente, indices, "UNIQUEID"
+        )
+    else:
+        fila_destino = max(len(filas) + 1, 2)
+        uniqueid = ""
+
+    if not uniqueid:
+        uniqueid = (
+            "TCVID-"
+            + datetime.now().strftime("%Y%m%d-%H%M%S")
+            + "-"
+            + os.urandom(3).hex().upper()
+        )
+
+    nombre_final = str(nombre_analisis or "").strip()
+    if not nombre_final:
+        nombre_final = f"TerraCore {historial_id}"
+
+    fecha_final = str(fecha_analisis or "").strip()
+    descripcion = f"Videos vinculados al análisis {historial_id}"
+    if fecha_final:
+        descripcion += f". Fecha del análisis: {fecha_final}"
+    descripcion += "."
+
+    valores = {
+        "UNIQUEID": uniqueid,
+        "NOMBRE": nombre_final,
+        "DESCRIPCION": descripcion,
+        "Video": str(enlaces.get("video") or "").strip(),
+        "Video simulación": str(enlaces.get("video simulacion") or "").strip(),
+        "Idioma": idioma,
+        "HistorialID": historial_id,
+    }
+
+    _tc_v364_asegurar_filas_pestana(
+        sheets,
+        id_hoja,
+        propiedades["sheet_id"],
+        fila_destino,
+    )
+
+    actualizaciones = []
+    for nombre_columna, valor in valores.items():
+        indice = indices.get(_tc_v364_normalizar_encabezado(nombre_columna))
+        if indice is None:
+            raise ValueError(
+                f"Falta la columna '{nombre_columna}' en Evidencias1."
+            )
+
+        letra = _tc_v364_letra_columna(indice)
+        actualizaciones.append(
+            {
+                "range": _tc_v364_rango(
+                    TC_V364_EVIDENCIAS,
+                    f"{letra}{fila_destino}",
+                ),
+                "values": [[valor]],
+            }
+        )
+
+    _tc_v364_guardar_celdas(
+        sheets,
+        id_hoja,
+        actualizaciones,
+    )
+
+    # Verificar el registro por HistorialID + Idioma y los dos enlaces.
+    _, filas_verificacion = _tc_v364_leer_pestana(
+        sheets,
+        id_hoja,
+        TC_V364_EVIDENCIAS,
+    )
+
+    verificado = False
+    for fila in filas_verificacion[1:]:
+        id_relacionado = _tc_v364_valor_fila(
+            fila, indices, "HistorialID"
+        )
+        idioma_fila = _tc_v364_valor_fila(
+            fila, indices, "Idioma"
+        ).strip().upper()
+
+        if id_relacionado != historial_id or idioma_fila != idioma:
+            continue
+
+        video_guardado = _tc_v364_valor_fila(
+            fila, indices, "Video"
+        )
+        simulacion_guardada = _tc_v364_valor_fila(
+            fila, indices, "Video simulación"
+        )
+        uniqueid_guardado = _tc_v364_valor_fila(
+            fila, indices, "UNIQUEID"
+        )
+
+        if (
+            video_guardado == valores["Video"]
+            and simulacion_guardada == valores["Video simulación"]
+            and uniqueid_guardado == uniqueid
+        ):
+            verificado = True
+            break
+
+    if not verificado:
+        raise RuntimeError(
+            "Se intentó guardar Evidencias1, pero no se pudo verificar "
+            "el registro por HistorialID e Idioma."
+        )
+
+    return {
+        "fila": fila_destino,
+        "uniqueid": uniqueid,
+        "historial_id": historial_id,
+        "idioma": idioma,
+    }
+
+
+# ============================================================
 # 6. OBTENER VALORES Y BUSCAR ANALISIS
 # ============================================================
 
@@ -15133,9 +15579,8 @@ def _tc_v364_guardar_en_misma_fila(
     Actualiza exclusivamente las columnas Video y
     Video simulación de la fila identificada por ID.
 
-    No utiliza append().
-    No crea filas nuevas.
-    No escribe en Evidencias1.
+    No utiliza append() ni crea filas nuevas en el historial.
+    El registro asociado en Evidencias1 se guarda por separado.
     """
 
     # Volver a buscar el ID exacto antes de escribir.
@@ -15294,9 +15739,10 @@ def _tc_v364_guardar_videos(
     video_simulacion,
 ):
     """
-    1. Valida el análisis.
+    1. Valida el análisis y su idioma.
     2. Sube los dos videos a Drive.
-    3. Actualiza únicamente los enlaces de ese análisis.
+    3. Actualiza únicamente Video y Video simulación en el análisis.
+    4. Crea o actualiza el registro relacionado en Evidencias1.
     """
 
     historial_id = str(
@@ -15362,7 +15808,7 @@ def _tc_v364_guardar_videos(
         "Video_simulacion",
     )
 
-    # Buscar nuevamente el ID exacto y guardar los enlaces.
+    # Buscar nuevamente el ID exacto y guardar los enlaces en el análisis.
     resultado = (
         _tc_v364_guardar_en_misma_fila(
             sheets,
@@ -15373,6 +15819,26 @@ def _tc_v364_guardar_videos(
         )
     )
 
+    # Guardar también el registro de evidencia. No crea duplicados cuando
+    # ya existe una fila con el mismo HistorialID + Idioma.
+    try:
+        evidencia = _tc_v364_guardar_evidencias(
+            sheets=sheets,
+            id_hoja=id_hoja,
+            historial_id=contexto["historial_id"],
+            idioma=contexto["idioma"],
+            nombre_analisis=contexto.get("nombre", ""),
+            fecha_analisis=contexto.get("fecha", ""),
+            enlaces=enlaces,
+        )
+    except Exception as error:
+        raise RuntimeError(
+            "Los videos se subieron a Drive y los enlaces se guardaron "
+            "en HistorialTerroCore, pero falló el guardado en Evidencias1. "
+            "Detalle: " + str(error)
+        ) from error
+
+    resultado["evidencia"] = evidencia
     return resultado
 
 
@@ -15605,8 +16071,8 @@ def render_seccion_video_v364():
 
         st.success(
             t(
-                "¡Los dos videos se guardaron correctamente!",
-                "Les deux vidéos ont été enregistrées avec succès !",
+                "¡Los dos videos se guardaron correctamente en HistorialTerroCore y Evidencias1!",
+                "Les deux vidéos ont été enregistrées dans HistorialTerroCore et Evidencias1 !",
             )
         )
 
@@ -15624,6 +16090,19 @@ def render_seccion_video_v364():
             f"**{t('Idioma verificado', 'Langue vérifiée')}:** "
             f"`{resultado['idioma']}`"
         )
+
+        evidencia = resultado.get("evidencia", {})
+        if evidencia:
+            st.markdown(
+                f"**{t('Fila guardada en Evidencias1', 'Ligne enregistrée dans Evidencias1')}:** "
+                f"`{evidencia.get('fila', '')}`"
+            )
+            st.markdown(
+                f"**UNIQUEID:** `{evidencia.get('uniqueid', '')}`"
+            )
+            st.markdown(
+                f"**HistorialID:** `{evidencia.get('historial_id', '')}`"
+            )
 
         enlaces = resultado[
             "enlaces"
@@ -15645,14 +16124,15 @@ def render_seccion_video_v364():
 
         st.caption(
             t(
-                f"Se actualizaron únicamente las columnas "
-                f"Video y Video simulación de la fila "
-                f"{resultado['fila']}. No se creó una fila "
-                "nueva y no se escribió en Evidencias1.",
-                f"Seules les colonnes Video et Video simulación "
-                f"de la ligne {resultado['fila']} ont été mises "
-                "à jour. Aucune nouvelle ligne n'a été créée "
-                "et aucune donnée n'a été écrite dans Evidencias1.",
+                f"Se actualizaron únicamente las columnas Video y Video simulación "
+                f"del análisis en la fila {resultado['fila']}; además, se creó o "
+                "actualizó el registro correspondiente en Evidencias1. "
+                "No se creó una fila nueva en HistorialTerroCore.",
+                f"Seules les colonnes Video et Video simulación de l'analyse "
+                f"à la ligne {resultado['fila']} ont été mises à jour ; "
+                "l'enregistrement correspondant dans Evidencias1 a également "
+                "été créé ou mis à jour. Aucune nouvelle ligne n'a été créée "
+                "dans HistorialTerroCore.",
             )
         )
 
