@@ -9754,7 +9754,13 @@ def _tg_guardar_inventario_surcos(registro, uploaded_name):
         slots = int(float(_tg_valor_fila_inventario(fila, ["Slots", "Emplacements"], 0) or 0))
         ocupados = int(float(_tg_valor_fila_inventario(fila, ["Ocupados", "Occupés"], 0) or 0))
         vacios = int(float(_tg_valor_fila_inventario(fila, ["Vacíos", "Vides"], 0) or 0))
-        confianza = float(_tg_valor_fila_inventario(fila, ["Confianza", "Confiance"], 0.0) or 0.0)
+        # Guardar la confianza real de la estimación de slots; la confianza
+        # geométrica del surco es una métrica distinta y no debe sustituirla.
+        confianza = float(_tg_valor_fila_inventario(
+            fila,
+            ["Confianza de imagen", "Confiance de l’image", "Confianza de slots", "Confiance des emplacements", "Confianza", "Confiance"],
+            0.0,
+        ) or 0.0)
         rows.append([
             _tc_id8_nuevo(),
             registro.get("id", ""),
@@ -10759,13 +10765,22 @@ def _ocv2_inventory_from_file(uploaded_file):
         draw.text((tx,ty), label, fill=(255,255,255), font=font, stroke_width=2, stroke_fill=(35,20,25))
 
         occ = max(0, count - len(vacant))
+        # Separamos dos conceptos para no confundir la detección de la línea
+        # con la confianza de la estimación de posiciones (slots).
+        # r["confidence"] viene del soporte visual de la línea del surco.
+        # r["slot_confidence"] viene de la periodicidad y contraste de los slots.
         table.append({
-            tr("Surco","Rang"): label,
-            tr("Slots","Emplacements"): count,
-            tr("Ocupados","Occupés"): occ,
-            tr("Vacíos","Vides"): len(vacant),
-            tr("Confianza","Confiance"): round(float(r.get("slot_confidence",0.0))*100.0, 1),
-            tr("Estado","État"): tr("OpenCV local","OpenCV local"),
+            tr("Surco", "Rang"): label,
+            tr("Slots", "Emplacements"): count,
+            tr("Ocupados", "Occupés"): occ,
+            tr("Vacíos", "Vides"): len(vacant),
+            tr("Confianza del surco", "Confiance du rang"): round(
+                float(np.clip(r.get("confidence", 0.0), 0.0, 1.0)) * 100.0, 1
+            ),
+            tr("Confianza de imagen", "Confiance de l’image"): round(
+                float(np.clip(r.get("slot_confidence", 0.0), 0.0, 1.0)) * 100.0, 1
+            ),
+            tr("Estado", "État"): tr("OpenCV local", "OpenCV local"),
         })
 
     if not table:
@@ -13186,8 +13201,8 @@ with main_col:
 
         st.caption(
             tr(
-                f"Imagen de referencia: {st.session_state.tc_inventario_fuente or '—'}. Confianza media: {float(st.session_state.tc_inventario_confianza or 0.0)*100:.1f}%.",
-                f"Image de référence : {st.session_state.tc_inventario_fuente or '—'}. Confiance moyenne : {float(st.session_state.tc_inventario_confianza or 0.0)*100:.1f} %."
+                f"Imagen de referencia: {st.session_state.tc_inventario_fuente or '—'}. Confianza media de imagen: {float(st.session_state.tc_inventario_confianza or 0.0)*100:.1f}%.",
+                f"Image de référence : {st.session_state.tc_inventario_fuente or '—'}. Confiance moyenne de l’image : {float(st.session_state.tc_inventario_confianza or 0.0)*100:.1f} %."
             )
         )
 
@@ -13219,7 +13234,7 @@ with main_col:
                                 slots_ind = 0
                         i2.metric(tr("Slots", "Emplacements"), slots_ind)
                         i3.metric(
-                            tr("Confianza", "Confiance"),
+                            tr("Confianza de imagen", "Confiance de l’image"),
                             f"{float(inv_individual.get('confidence', 0.0))*100:.1f}%"
                         )
 
@@ -13325,8 +13340,8 @@ with main_col:
         st.markdown(tr("### Tabla automática por surco", "### Tableau automatique par rang"))
         st.caption(
             tr(
-                ".",
-                "."
+                "Confianza del surco = soporte visual de la línea detectada. Confianza de imagen = estimación basada en la periodicidad y el contraste visual usados para estimar las posiciones. No es un porcentaje de plantas correctas ni de aciertos comprobados en campo.",
+                "Confiance du rang = support visuel de la ligne détectée. Confiance de l’image = estimation basée sur la périodicité et le contraste visuel utilisés pour estimer les positions. Ce n’est pas un pourcentage de plantes correctes ni un taux de réussite vérifié sur le terrain."
             )
         )
 
@@ -13335,7 +13350,7 @@ with main_col:
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            key="tc_editor_inventario_video_flow",
+            key="tc_editor_inventario_video_flow_v2",
             column_config={
                 tr("Surco", "Rang"): st.column_config.TextColumn(
                     tr("Surco", "Rang"), disabled=True, width="small"
@@ -13349,8 +13364,15 @@ with main_col:
                 tr("Vacíos", "Vides"): st.column_config.NumberColumn(
                     tr("Vacíos", "Vides"), min_value=0, step=1, format="%d"
                 ),
-                tr("Confianza de la imagen", "Confiance "): st.column_config.NumberColumn(
-                    tr("Confianza de la imagen", "Confiance"),
+                tr("Confianza del surco", "Confiance du rang"): st.column_config.NumberColumn(
+                    tr("Confianza del surco", "Confiance du rang"),
+                    min_value=0.0,
+                    max_value=100.0,
+                    format="%.1f %%",
+                    disabled=True,
+                ),
+                tr("Confianza de imagen", "Confiance de l’image"): st.column_config.NumberColumn(
+                    tr("Confianza de imagen", "Confiance de l’image"),
                     min_value=0.0,
                     max_value=100.0,
                     format="%.1f %%",
