@@ -13340,36 +13340,20 @@ with main_col:
         st.markdown(tr("### Tabla automática por surco", "### Tableau automatique par rang"))
         st.info(
             tr(
-                """**¿Cómo leer las dos confianzas?**
+                """**1. Confianza del surco:** mide el soporte visual de la línea detectada.
+**Fórmula:** `limitar(58 % + mínimo(32 puntos, soporte visual × 220), entre 45 % y 92 %).`
 
-**1. Confianza del surco**  
-Mide qué tan clara es la señal visual alineada con la línea que OpenCV detectó como surco. El algoritmo calcula el soporte visual promedio de esa franja: una señal más fuerte aumenta la puntuación.
+**2. Confianza de imagen:** estima la periodicidad y el contraste visual utilizados para calcular las posiciones de las plantas.
+**Fórmula:** `limitar(confianza base + mínimo(25 puntos, contraste relativo × 20), entre 30 % y 95 %).`
 
-**Fórmula sencilla:** `Confianza = limitar(58 % + mínimo(32 puntos, soporte visual × 220), entre 45 % y 92 %).`
+**Confianza base:** con periodicidad clara, `limitar(45 % + correlación × 55 %, entre 45 % y 90 %)`; sin patrón claro, 35 %. Si se usa el respaldo por falta de slots, 42 %.""",
+                """**1. Confiance du rang :** mesure le support visuel de la ligne détectée.
+**Formule :** `limiter(58 % + minimum(32 points, support visuel × 220), entre 45 % et 92 %).`
 
-**2. Confianza de imagen**  
-Estima si la señal visual se repite a intervalos regulares a lo largo del surco (**periodicidad**) y cuánto contraste hay entre las posiciones propuestas (**slots**).
+**2. Confiance de l’image :** estime la périodicité et le contraste visuel utilisés pour calculer les positions des plantes.
+**Formule :** `limiter(confiance de base + minimum(25 points, contraste relatif × 20), entre 30 % et 95 %).`
 
-**Fórmula sencilla:** `Confianza de imagen = limitar(confianza base + mínimo(25 puntos, contraste relativo × 20), entre 30 % y 95 %).`
-
-La **confianza base** se obtiene así: si detecta un patrón repetitivo claro, parte de `45 % + correlación × 55 %` (limitado a 45–90 %); si no encuentra un patrón suficientemente claro, usa un valor de respaldo de **35 %**. Si además tiene que generar las posiciones con una separación de respaldo porque no obtuvo al menos dos slots, asigna **42 %**.
-
-**¿De dónde salen los números?** Del procesamiento de la fotografía: el soporte visual sale de la máscara de vegetación en la franja del surco; la correlación mide si el patrón se repite; y el contraste se calcula con la variación de las puntuaciones visuales de los slots. **No se calcula directamente a partir de Slots, Ocupados o Vacíos.** Estos porcentajes son puntuaciones internas del algoritmo; no significan que ese porcentaje de plantas sea correcto ni que se haya comprobado en campo. En el modo alternativo del detector, la confianza del surco se fija en 66 % como valor de respaldo.""",
-                """**Comment lire les deux niveaux de confiance ?**
-
-**1. Confiance du rang**  
-Mesure la clarté du signal visuel aligné sur la ligne qu’OpenCV a détectée comme rang. L’algorithme calcule le support visuel moyen de cette bande : plus le signal est fort, plus le score augmente.
-
-**Formule simple :** `Confiance = limiter(58 % + minimum(32 points, support visuel × 220), entre 45 % et 92 %).`
-
-**2. Confiance de l’image**  
-Estime si le signal visuel se répète à intervalles réguliers le long du rang (**périodicité**) et le contraste entre les positions proposées (**emplacements**).
-
-**Formule simple :** `Confiance de l’image = limiter(confiance de base + minimum(25 points, contraste relatif × 20), entre 30 % et 95 %).`
-
-La **confiance de base** est calculée ainsi : si un motif répétitif clair est détecté, elle part de `45 % + corrélation × 55 %` (limitée à 45–90 %) ; sinon, une valeur de secours de **35 %** est utilisée. Si l’algorithme doit aussi créer les positions à partir d’un espacement de secours parce qu’il n’a pas obtenu au moins deux emplacements, il attribue **42 %**.
-
-**D’où viennent les nombres ?** Du traitement de la photo : le support visuel vient du masque de végétation dans la bande du rang ; la corrélation mesure si le motif se répète ; et le contraste est calculé à partir de la variation des scores visuels des emplacements. **Le calcul n’utilise pas directement les nombres Emplacements, Occupés ou Vides.** Ces pourcentages sont des scores internes de l’algorithme ; ils ne signifient pas que ce pourcentage de plantes est correct ni que le résultat a été vérifié sur le terrain. Dans le mode alternatif du détecteur, la confiance du rang est fixée à 66 % comme valeur de secours."""
+**Confiance de base :** avec une périodicité claire, `limiter(45 % + corrélation × 55 %, entre 45 % et 90 %)` ; sans motif clair, 35 %. En cas de secours faute d’emplacements, 42 %."""
             )
         )
 
