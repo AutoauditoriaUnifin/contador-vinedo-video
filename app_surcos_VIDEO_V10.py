@@ -13349,8 +13349,8 @@ with main_col:
                 tr("Vacíos", "Vides"): st.column_config.NumberColumn(
                     tr("Vacíos", "Vides"), min_value=0, step=1, format="%d"
                 ),
-                tr("Confianza de la imagen", "Confiance"): st.column_config.NumberColumn(
-                    tr("Confianza", "Confiance"),
+                tr("Confianza de la imagen", "Confiance "): st.column_config.NumberColumn(
+                    tr("Confianza de la imagen", "Confiance"),
                     min_value=0.0,
                     max_value=100.0,
                     format="%.1f %%",
