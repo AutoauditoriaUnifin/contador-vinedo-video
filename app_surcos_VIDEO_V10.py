@@ -10748,19 +10748,24 @@ def _tc_mejorar_calidad_imagen(pil_img):
         return original
 
 
-def _ocv2_inventory_from_file(uploaded_file):
-    
-# Leer y conservar la fotografía original
-pil_original = Image.open(
-    io.BytesIO(uploaded_file.getvalue())
-).convert("RGB")
+  def _ocv2_inventory_from_file(uploaded_file):
+    # Leer la fotografía original
+    pil_original = Image.open(
+        io.BytesIO(uploaded_file.getvalue())
+    ).convert("RGB")
 
-# Mejorar la imagen antes de analizarla
-pil = _tc_mejorar_calidad_imagen(pil_original)
+    # Mejorar la imagen antes de analizarla
+    pil = _tc_mejorar_calidad_imagen(pil_original)
 
-# Ejecutar la detección sobre la imagen mejorada
-w, h = pil.size
-base = _ocv2_detect_straight_rows(pil)
+    # Ejecutar la detección sobre la imagen mejorada
+    w, h = pil.size
+    base = _ocv2_detect_straight_rows(pil)
+
+    # Continuar con el análisis original
+    rows = [dict(r) for r in base["rows"]]
+    response_map = np.asarray(
+        base["response_map"], dtype=np.float32
+    )
 
     rows = [dict(r) for r in base["rows"]]
     response_map = np.asarray(base["response_map"], dtype=np.float32)
