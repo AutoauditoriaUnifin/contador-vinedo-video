@@ -9756,11 +9756,6 @@ def _tg_guardar_inventario_surcos(registro, uploaded_name):
         vacios = int(float(_tg_valor_fila_inventario(fila, ["Vacíos", "Vides"], 0) or 0))
         # Guardar la confianza real de la estimación de slots; la confianza
         # geométrica del surco es una métrica distinta y no debe sustituirla.
-        confianza = float(_tg_valor_fila_inventario(
-            fila,
-            ["Confianza de imagen", "Confiance de l’image", "Confianza de slots", "Confiance des emplacements", "Confianza", "Confiance"],
-            0.0,
-        ) or 0.0)
         rows.append([
             _tc_id8_nuevo(),
             registro.get("id", ""),
@@ -10855,9 +10850,6 @@ def _ocv2_inventory_from_file(uploaded_file):
             tr("Vacíos", "Vides"): len(vacant),
             tr("Confianza del surco", "Confiance du rang"): round(
                 float(np.clip(r.get("confidence", 0.0), 0.0, 1.0)) * 100.0, 1
-            ),
-            tr("Confianza de imagen", "Confiance de l’image"): round(
-                float(np.clip(r.get("slot_confidence", 0.0), 0.0, 1.0)) * 100.0, 1
             ),
             tr("Estado", "État"): tr("OpenCV local", "OpenCV local"),
         })
@@ -13312,11 +13304,7 @@ with main_col:
                             except Exception:
                                 slots_ind = 0
                         i2.metric(tr("Slots", "Emplacements"), slots_ind)
-                        i3.metric(
-                            tr("Confianza de imagen", "Confiance de l’image"),
-                            f"{float(inv_individual.get('confidence', 0.0))*100:.1f}%"
-                        )
-
+                    
                         # Corrección manual del número REAL de surcos.
                         # Esto NO borra geometrías: solo corrige el número reportado.
                         surcos_auto_img = int(inv_individual.get("count", 0) or 0)
@@ -13444,18 +13432,6 @@ Mide qué tan clara se ve la línea del surco en la fotografía.
 
 **Ejemplo:** soporte visual de 0.10 → 58 + (0.10 × 220) = 80 %.
 
-### 📷 2. Confianza de imagen
-
-Estima la regularidad y visibilidad del patrón de las plantas.
-
-**Fórmula:** `confianza base + min(25, contraste relativo × 20)`
-
-- **Patrón claro:** base de 45 % a 90 %, según la correlación.
-- **Sin patrón claro:** base de 35 %.
-- **Método alternativo por falta de slots:** base de 42 %.
-- **Contraste:** suma hasta 25 puntos.
-- **Resultado final:** entre 30 % y 95 %.
-
 ### ℹ️ Origen de los valores
 
 Los números son parámetros configurados manualmente que TerroCore aplica a las fotografías.
@@ -13476,18 +13452,6 @@ Mesure la clarté de la ligne du rang sur la photographie.
 - **Résultat :** 45 % et 92 %.
 
 **Exemple :** support visuel de 0,10 → 58 + (0,10 × 220) = 80 %.
-
-### 📷 2. Confiance de l'image
-
-Estime la régularité et la visibilité du motif des plantes.
-
-**Formule :** `confiance de base + min(25, contraste relatif × 20)`
-
-- **Motif clair :** base de 45 % à 90 %, selon la corrélation.
-- **Aucun motif clair :** base de 35 %.
-- **Méthode alternative faute de slots :** base de 42 %.
-- **Contraste :** ajoute jusqu'à 25 points.
-- **Résultat final :** entre 30 % et 95 %.
 
 ### ℹ️ Origine des valeurs
 
@@ -13518,13 +13482,6 @@ Les pourcentages sont des estimations de l'algorithme, et non des taux de réuss
                 ),
                 tr("Confianza del surco", "Confiance du rang"): st.column_config.NumberColumn(
                     tr("Confianza del surco", "Confiance du rang"),
-                    min_value=0.0,
-                    max_value=100.0,
-                    format="%.1f %%",
-                    disabled=True,
-                ),
-                tr("Confianza de imagen", "Confiance de l’image"): st.column_config.NumberColumn(
-                    tr("Confianza de imagen", "Confiance de l’image"),
                     min_value=0.0,
                     max_value=100.0,
                     format="%.1f %%",
