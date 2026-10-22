@@ -13361,7 +13361,7 @@ Mide qué tan clara se ve la línea del surco en la fotografía.
 - **Soporte visual:** aumenta la puntuación según la claridad de la línea.
 - **220:** factor de ajuste.
 - **32:** máximo de puntos adicionales.
-- **Resultado:** limitado entre 45 % y 92 %.
+- **Resultado:** entre 45 % y 92 %.
 
 **Ejemplo:** soporte visual de 0.10 → 58 + (0.10 × 220) = 80 %.
 
@@ -13375,11 +13375,11 @@ Estima la regularidad y visibilidad del patrón de las plantas.
 - **Sin patrón claro:** base de 35 %.
 - **Método alternativo por falta de slots:** base de 42 %.
 - **Contraste:** suma hasta 25 puntos.
-- **Resultado final:** limitado entre 30 % y 95 %.
+- **Resultado final:** entre 30 % y 95 %.
 
 ### ℹ️ Origen de los valores
 
-Los números son parámetros configurados manualmente que TerraCore aplica a las fotografías reales.
+Los números son parámetros configurados manualmente que TerroCore aplica a las fotografías.
 
 Los porcentajes son estimaciones del algoritmo, no tasas de acierto comprobadas.
                 """,
@@ -13394,7 +13394,7 @@ Mesure la clarté de la ligne du rang sur la photographie.
 - **Support visuel :** augmente le score selon la clarté de la ligne.
 - **220 :** facteur d'ajustement.
 - **32 :** maximum de points supplémentaires.
-- **Résultat :** limité entre 45 % et 92 %.
+- **Résultat :** 45 % et 92 %.
 
 **Exemple :** support visuel de 0,10 → 58 + (0,10 × 220) = 80 %.
 
@@ -13408,11 +13408,11 @@ Estime la régularité et la visibilité du motif des plantes.
 - **Aucun motif clair :** base de 35 %.
 - **Méthode alternative faute de slots :** base de 42 %.
 - **Contraste :** ajoute jusqu'à 25 points.
-- **Résultat final :** limité entre 30 % et 95 %.
+- **Résultat final :** entre 30 % et 95 %.
 
 ### ℹ️ Origine des valeurs
 
-Les nombres sont des paramètres configurés manuellement que TerraCore applique aux photographies réelles.
+Les nombres sont des paramètres configurés manuellement que TerroCore applique aux photographies.
 
 Les pourcentages sont des estimations de l'algorithme, et non des taux de réussite vérifiés.
                 """
