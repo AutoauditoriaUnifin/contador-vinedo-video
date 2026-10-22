@@ -10748,7 +10748,7 @@ def _tc_mejorar_calidad_imagen(pil_img):
         return original
 
 
-  def _ocv2_inventory_from_file(uploaded_file):
+def _ocv2_inventory_from_file(uploaded_file):
     # Leer la fotografía original
     pil_original = Image.open(
         io.BytesIO(uploaded_file.getvalue())
@@ -10766,9 +10766,6 @@ def _tc_mejorar_calidad_imagen(pil_img):
     response_map = np.asarray(
         base["response_map"], dtype=np.float32
     )
-
-    rows = [dict(r) for r in base["rows"]]
-    response_map = np.asarray(base["response_map"], dtype=np.float32)
 
     # 1) Encontrar un paso común de planta para evitar conteos erráticos entre hileras.
     pitch_candidates = []
