@@ -13487,9 +13487,6 @@ Les pourcentages sont des estimations de l'algorithme, et non des taux de réuss
                     format="%.1f %%",
                     disabled=True,
                 ),
-                tr("Estado", "État"): st.column_config.TextColumn(
-                    tr("Estado", "État"), disabled=True, width="medium"
-                ),
             }
         )
 
