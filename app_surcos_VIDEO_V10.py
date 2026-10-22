@@ -13337,27 +13337,25 @@ with main_col:
                             )
                         )
 
-        st.markdown(tr("### Tabla automática por surco", "### Tableau automatique par rang"))
-        st.info(
-            # ============================================================
-# EXPLICACIÓN DE LOS PORCENTAJES — ESPAÑOL / FRANCÉS
-# ============================================================
+        st.markdown(tr(
+            "### Tabla automática por surco",
+            "### Tableau automatique par rang"
+        ))
 
-with st.expander(
-    tr(
-        "📊 ¿Cómo se calculan los porcentajes de confianza?",
-        "📊 Comment les niveaux de confiance sont-ils calculés ?"
-    ),
-    expanded=False
-):
-    st.markdown(tr(
-        """
+        with st.expander(
+            tr(
+                "📊 ¿Cómo se calculan los porcentajes?",
+                "📊 Comment les pourcentages sont-ils calculés ?"
+            ),
+            expanded=False
+        ):
+            st.markdown(tr(
+                """
 ### 🌱 1. Confianza del surco
 
-Mide qué tan clara es la línea del surco en la fotografía.
+Mide qué tan clara se ve la línea del surco en la fotografía.
 
-**Fórmula:**
-`58 + min(32, soporte visual × 220)`
+**Fórmula:** `58 + min(32, soporte visual × 220)`
 
 - **58:** puntuación inicial.
 - **Soporte visual:** aumenta la puntuación según la claridad de la línea.
@@ -13365,64 +13363,60 @@ Mide qué tan clara es la línea del surco en la fotografía.
 - **32:** máximo de puntos adicionales.
 - **Resultado:** limitado entre 45 % y 92 %.
 
-**Ejemplo:** soporte visual de 0.10 → 58 + (0.10 × 220) = **80 %**.
+**Ejemplo:** soporte visual de 0.10 → 58 + (0.10 × 220) = 80 %.
 
 ### 📷 2. Confianza de imagen
 
-Estima qué tan regular y visible es el patrón de las plantas.
+Estima la regularidad y visibilidad del patrón de las plantas.
 
-**Fórmula:**
-`confianza base + min(25, contraste relativo × 20)`
+**Fórmula:** `confianza base + min(25, contraste relativo × 20)`
 
 - **Patrón claro:** base de 45 % a 90 %, según la correlación.
 - **Sin patrón claro:** base de 35 %.
 - **Método alternativo por falta de slots:** base de 42 %.
-- **Contraste:** puede sumar hasta 25 puntos.
+- **Contraste:** suma hasta 25 puntos.
 - **Resultado final:** limitado entre 30 % y 95 %.
 
-### ℹ️ ¿De dónde salen los valores?
+### ℹ️ Origen de los valores
 
-Los números son parámetros configurados manualmente. TerraCore los aplica a las fotografías reales para calcular estas puntuaciones.
+Los números son parámetros configurados manualmente que TerraCore aplica a las fotografías reales.
 
-**Importante:** son estimaciones del algoritmo, no porcentajes de acierto comprobados.
-        """,
-        """
+Los porcentajes son estimaciones del algoritmo, no tasas de acierto comprobadas.
+                """,
+                """
 ### 🌱 1. Confiance du rang
 
 Mesure la clarté de la ligne du rang sur la photographie.
 
-**Formule :**
-`58 + min(32, support visuel × 220)`
+**Formule :** `58 + min(32, support visuel × 220)`
 
 - **58 :** score initial.
-- **Support visuel :** le score augmente selon la clarté de la ligne.
+- **Support visuel :** augmente le score selon la clarté de la ligne.
 - **220 :** facteur d'ajustement.
-- **32 :** nombre maximal de points supplémentaires.
+- **32 :** maximum de points supplémentaires.
 - **Résultat :** limité entre 45 % et 92 %.
 
-**Exemple :** support visuel de 0,10 → 58 + (0,10 × 220) = **80 %**.
+**Exemple :** support visuel de 0,10 → 58 + (0,10 × 220) = 80 %.
 
 ### 📷 2. Confiance de l'image
 
 Estime la régularité et la visibilité du motif des plantes.
 
-**Formule :**
-`confiance de base + min(25, contraste relatif × 20)`
+**Formule :** `confiance de base + min(25, contraste relatif × 20)`
 
 - **Motif clair :** base de 45 % à 90 %, selon la corrélation.
 - **Aucun motif clair :** base de 35 %.
-- **Méthode alternative faute de slots détectés :** base de 42 %.
-- **Contraste :** peut ajouter jusqu'à 25 points.
+- **Méthode alternative faute de slots :** base de 42 %.
+- **Contraste :** ajoute jusqu'à 25 points.
 - **Résultat final :** limité entre 30 % et 95 %.
 
-### ℹ️ D'où viennent ces valeurs ?
+### ℹ️ Origine des valeurs
 
-Les nombres sont des paramètres configurés manuellement. TerraCore les applique aux photographies réelles pour calculer ces scores.
+Les nombres sont des paramètres configurés manuellement que TerraCore applique aux photographies réelles.
 
-**Important :** ce sont des estimations de l'algorithme, et non des taux de réussite vérifiés.
-        """
-    ))
-        )
+Les pourcentages sont des estimations de l'algorithme, et non des taux de réussite vérifiés.
+                """
+            ))
 
         edited = st.data_editor(
             tabla_actual,
