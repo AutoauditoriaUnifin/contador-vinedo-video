@@ -10680,11 +10680,88 @@ def _ocv2_slot_positions(row, full_size):
         return [_tg_point_on_polyline(pts, 0.5)]
     return [_tg_point_on_polyline(pts, i / float(count - 1)) for i in range(count)]
 
+  
+# ============================================================
+# TERRACORE — MEJORA AUTOMÁTICA DE CALIDAD DE IMAGEN
+# Contraste adaptativo + nitidez suave
+# ============================================================
+
+def _tc_mejorar_calidad_imagen(pil_img):
+    """
+    Mejora moderadamente el contraste y la nitidez de la fotografía
+    para facilitar la detección de surcos y patrones de plantas.
+
+    No modifica el archivo original.
+    No aumenta artificialmente la confianza.
+    """
+    original = pil_img.convert("RGB")
+
+    try:
+        # Convertir imagen a matriz RGB
+        rgb = np.asarray(original, dtype=np.uint8)
+
+        # Separar luminosidad y color
+        lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
+        l, a, b = cv2.split(lab)
+
+        # Mejorar contraste local sin exagerarlo
+        clahe = cv2.createCLAHE(
+            clipLimit=1.6,
+            tileGridSize=(8, 8)
+        )
+        l_mejorado = clahe.apply(l)
+
+        # Reconstruir la imagen conservando los canales de color
+        lab_mejorado = cv2.merge((l_mejorado, a, b))
+        rgb_mejorado = cv2.cvtColor(
+            lab_mejorado,
+            cv2.COLOR_LAB2RGB
+        )
+
+        # Aplicar nitidez suave
+        desenfoque = cv2.GaussianBlur(
+            rgb_mejorado,
+            (0, 0),
+            sigmaX=0.8
+        )
+
+        nitidez = cv2.addWeighted(
+            rgb_mejorado,
+            1.12,
+            desenfoque,
+            -0.12,
+            0
+        )
+
+        # Asegurar valores válidos de píxeles
+        nitidez = np.clip(
+            nitidez, 0, 255
+        ).astype(np.uint8)
+
+        return Image.fromarray(nitidez)
+
+    except Exception as exc:
+        # Si falla la mejora, utilizar la imagen original
+        print(
+            f"TerraCore: no se pudo mejorar la imagen: {exc}"
+        )
+        return original
+
 
 def _ocv2_inventory_from_file(uploaded_file):
-    pil = Image.open(io.BytesIO(uploaded_file.getvalue())).convert("RGB")
-    w, h = pil.size
-    base = _ocv2_detect_straight_rows(pil)
+    
+# Leer y conservar la fotografía original
+pil_original = Image.open(
+    io.BytesIO(uploaded_file.getvalue())
+).convert("RGB")
+
+# Mejorar la imagen antes de analizarla
+pil = _tc_mejorar_calidad_imagen(pil_original)
+
+# Ejecutar la detección sobre la imagen mejorada
+w, h = pil.size
+base = _ocv2_detect_straight_rows(pil)
+
     rows = [dict(r) for r in base["rows"]]
     response_map = np.asarray(base["response_map"], dtype=np.float32)
 
