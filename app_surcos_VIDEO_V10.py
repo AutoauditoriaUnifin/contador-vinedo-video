@@ -13339,22 +13339,89 @@ with main_col:
 
         st.markdown(tr("### Tabla automática por surco", "### Tableau automatique par rang"))
         st.info(
-            tr(
-                """**1. Confianza del surco:** mide el soporte visual de la línea detectada.
-**Fórmula:** `limitar(58 % + mínimo(32 puntos, soporte visual × 220), entre 45 % y 92 %).`
+            # ============================================================
+# EXPLICACIÓN DE LOS PORCENTAJES — ESPAÑOL / FRANCÉS
+# ============================================================
 
-**2. Confianza de imagen:** estima la periodicidad y el contraste visual utilizados para calcular las posiciones de las plantas.
-**Fórmula:** `limitar(confianza base + mínimo(25 puntos, contraste relativo × 20), entre 30 % y 95 %).`
+with st.expander(
+    tr(
+        "📊 ¿Cómo se calculan los porcentajes de confianza?",
+        "📊 Comment les niveaux de confiance sont-ils calculés ?"
+    ),
+    expanded=False
+):
+    st.markdown(tr(
+        """
+### 🌱 1. Confianza del surco
 
-**Confianza base:** con periodicidad clara, `limitar(45 % + correlación × 55 %, entre 45 % y 90 %)`; sin patrón claro, 35 %. Si se usa el respaldo por falta de slots, 42 %.""",
-                """**1. Confiance du rang :** mesure le support visuel de la ligne détectée.
-**Formule :** `limiter(58 % + minimum(32 points, support visuel × 220), entre 45 % et 92 %).`
+Mide qué tan clara es la línea del surco en la fotografía.
 
-**2. Confiance de l’image :** estime la périodicité et le contraste visuel utilisés pour calculer les positions des plantes.
-**Formule :** `limiter(confiance de base + minimum(25 points, contraste relatif × 20), entre 30 % et 95 %).`
+**Fórmula:**
+`58 + min(32, soporte visual × 220)`
 
-**Confiance de base :** avec une périodicité claire, `limiter(45 % + corrélation × 55 %, entre 45 % et 90 %)` ; sans motif clair, 35 %. En cas de secours faute d’emplacements, 42 %."""
-            )
+- **58:** puntuación inicial.
+- **Soporte visual:** aumenta la puntuación según la claridad de la línea.
+- **220:** factor de ajuste.
+- **32:** máximo de puntos adicionales.
+- **Resultado:** limitado entre 45 % y 92 %.
+
+**Ejemplo:** soporte visual de 0.10 → 58 + (0.10 × 220) = **80 %**.
+
+### 📷 2. Confianza de imagen
+
+Estima qué tan regular y visible es el patrón de las plantas.
+
+**Fórmula:**
+`confianza base + min(25, contraste relativo × 20)`
+
+- **Patrón claro:** base de 45 % a 90 %, según la correlación.
+- **Sin patrón claro:** base de 35 %.
+- **Método alternativo por falta de slots:** base de 42 %.
+- **Contraste:** puede sumar hasta 25 puntos.
+- **Resultado final:** limitado entre 30 % y 95 %.
+
+### ℹ️ ¿De dónde salen los valores?
+
+Los números son parámetros configurados manualmente. TerraCore los aplica a las fotografías reales para calcular estas puntuaciones.
+
+**Importante:** son estimaciones del algoritmo, no porcentajes de acierto comprobados.
+        """,
+        """
+### 🌱 1. Confiance du rang
+
+Mesure la clarté de la ligne du rang sur la photographie.
+
+**Formule :**
+`58 + min(32, support visuel × 220)`
+
+- **58 :** score initial.
+- **Support visuel :** le score augmente selon la clarté de la ligne.
+- **220 :** facteur d'ajustement.
+- **32 :** nombre maximal de points supplémentaires.
+- **Résultat :** limité entre 45 % et 92 %.
+
+**Exemple :** support visuel de 0,10 → 58 + (0,10 × 220) = **80 %**.
+
+### 📷 2. Confiance de l'image
+
+Estime la régularité et la visibilité du motif des plantes.
+
+**Formule :**
+`confiance de base + min(25, contraste relatif × 20)`
+
+- **Motif clair :** base de 45 % à 90 %, selon la corrélation.
+- **Aucun motif clair :** base de 35 %.
+- **Méthode alternative faute de slots détectés :** base de 42 %.
+- **Contraste :** peut ajouter jusqu'à 25 points.
+- **Résultat final :** limité entre 30 % et 95 %.
+
+### ℹ️ D'où viennent ces valeurs ?
+
+Les nombres sont des paramètres configurés manuellement. TerraCore les applique aux photographies réelles pour calculer ces scores.
+
+**Important :** ce sont des estimations de l'algorithme, et non des taux de réussite vérifiés.
+        """
+    ))
         )
 
         edited = st.data_editor(
