@@ -13286,25 +13286,6 @@ with main_col:
             for idx, up in enumerate(uploaded_images, 1):
                 with st.expander(f"{idx}. {up.name}", expanded=(up.name == ref_name)):
                     inv_individual = inv_map.get(up.name)
-
-                    if inv_individual:
-                        i1, i2, i3 = st.columns(3)
-                        i1.metric(
-                            tr("Surcos", "Rangs"),
-                            int(inv_individual.get("count", 0) or 0)
-                        )
-                        tabla_ind = inv_individual.get("table")
-                        slots_ind = 0
-                        if tabla_ind is not None:
-                            try:
-                                slots_ind = int(
-                                    pd.to_numeric(tabla_ind["Slots"], errors="coerce")
-                                    .fillna(0).sum()
-                                )
-                            except Exception:
-                                slots_ind = 0
-                        i2.metric(tr("Slots", "Emplacements"), slots_ind)
-                    
                         # Corrección manual del número REAL de surcos.
                         # Esto NO borra geometrías: solo corrige el número reportado.
                         surcos_auto_img = int(inv_individual.get("count", 0) or 0)
