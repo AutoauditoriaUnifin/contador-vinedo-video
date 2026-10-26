@@ -13416,50 +13416,184 @@ with main_col:
             ),
             expanded=False
         ):
-            st.markdown(tr(
-                """
+            
+            st.markdown(
+                tr(
+                    """
 ### 🌱 1. Confianza del surco
 
-Mide qué tan clara se ve la línea del surco en la fotografía.
+**¿Qué significa esta puntuación?**
 
-**Fórmula:** `58 + min(32, soporte visual × 220)`
+La confianza del surco es un indicador que utiliza TerraCore para estimar cuánto respaldo visual encuentra el algoritmo alrededor de la línea detectada en una fotografía.
 
-- **58:** puntuación inicial.
-- **Soporte visual:** aumenta la puntuación según la claridad de la línea.
-- **220:** factor de ajuste.
-- **32:** máximo de puntos adicionales.
-- **Resultado:** entre 45 % y 92 %.
+Para calcularla, el programa identifica píxeles que clasifica como vegetación verde, alinea la imagen con la orientación general de los surcos y analiza una franja estrecha alrededor de cada línea detectada.
 
-**Ejemplo:** soporte visual de 0.10 → 58 + (0.10 × 220) = 80 %.
+La cantidad promedio de vegetación identificada en esa franja se utiliza como **soporte visual** para calcular la puntuación.
 
-### ℹ️ Origen de los valores
+### 🔍 ¿Cómo se calcula?
 
-Los números son parámetros configurados manualmente que TerroCore aplica a las fotografías.
+**Paso 1. Identificar la vegetación**
 
-Los porcentajes son estimaciones del algoritmo, no tasas de acierto comprobadas.
-                """,
-                """
+TerraCore aplica una máscara de vegetación para distinguir los píxeles que cumplen sus criterios de color verde.
+
+**Paso 2. Analizar la franja del surco**
+
+El programa toma una franja estrecha alrededor de la posición detectada y calcula qué proporción de sus píxeles está clasificada como vegetación. Después, suaviza los valores para reducir pequeñas variaciones visuales.
+
+**Paso 3. Calcular el soporte visual**
+
+El algoritmo promedia esos valores a lo largo del segmento analizado.
+
+El resultado, denominado `support`, es un valor entre 0 y 1:
+
+- `0.00`: no se detectó soporte de vegetación en promedio en la franja analizada.
+- `0.10`: aproximadamente el 10 % de los píxeles de esa franja se clasifica como vegetación, en promedio.
+- `0.15`: aproximadamente el 15 % se clasifica como vegetación, en promedio.
+
+Estos valores describen la máscara de vegetación; no representan directamente la probabilidad de que el surco esté correctamente detectado.
+
+### 🧮 Fórmula real del código
+
+`confianza = clip(0.58 + min(0.32, support × 2.2), 0.45, 0.92)`
+
+La fórmula contiene cuatro parámetros:
+
+- **0.58 — Puntuación inicial:** el cálculo comienza en 58 %. Es un valor establecido manualmente, no una precisión previamente comprobada.
+- **`support × 2.2` — Incremento según el soporte visual:** multiplica el soporte calculado para convertirlo en puntos adicionales de confianza.
+- **0.32 — Incremento máximo:** limita los puntos adicionales a 32. Aunque aumente el soporte visual, no se pueden sumar más de 32 puntos porcentuales.
+- **`clip(…, 0.45, 0.92)` — Límites de seguridad:** restringe el resultado al intervalo del 45 % al 92 %. Sin embargo, en esta ruta normal, el resultado efectivo está entre el 58 % y el 90 %, por lo que estos límites no modifican el resultado habitual.
+
+### 📊 Ejemplos paso a paso
+
+**Ejemplo A: soporte visual de 0.00**
+
+1. Multiplicación: `0.00 × 2.2 = 0.00`.
+2. Incremento aplicado: `min(0.32, 0.00) = 0.00`.
+3. Resultado: `0.58 + 0.00 = 0.58`.
+
+**Confianza estimada: 58 %.**
+
+**Ejemplo B: soporte visual de 0.10**
+
+1. Multiplicación: `0.10 × 2.2 = 0.22`.
+2. Como `0.22` es menor que `0.32`, se suman 22 puntos porcentuales.
+3. Resultado: `0.58 + 0.22 = 0.80`.
+
+**Confianza estimada: 80 %.**
+
+**Ejemplo C: soporte visual de 0.15**
+
+1. Multiplicación: `0.15 × 2.2 = 0.33`.
+2. El incremento está limitado a `0.32`, por lo que no se suman 33 puntos, sino un máximo de 32.
+3. Resultado: `0.58 + 0.32 = 0.90`.
+
+**Confianza estimada: 90 %.**
+
+A partir de un soporte aproximado de `0.1455`, la fórmula alcanza su máximo del 90 %. Un soporte mayor ya no aumenta la puntuación.
+
+### ⚙️ ¿Qué ocurre si TerraCore utiliza la detección alternativa?
+
+Cuando el programa no consigue construir la cuadrícula global de surcos, utiliza otro procedimiento de detección. En esa ruta, el código asigna directamente una puntuación de `0.66`, equivalente al **66 %**, a cada surco detectado.
+
+En ese caso, la puntuación no se calcula con la fórmula del soporte visual: se utiliza el valor fijo configurado en el código.
+
+### ℹ️ ¿Cómo debe interpretarse la confianza?
+
+Una puntuación más alta indica que la fórmula encontró mayor soporte de vegetación en la franja analizada. No garantiza que la línea esté correctamente ubicada, que el surco sea recto ni que el número de surcos detectados sea correcto.
+
+Los parámetros de la fórmula están configurados manualmente. Para conocer la precisión real del detector, sería necesario comparar sus resultados con surcos identificados y verificados manualmente.
+
+**Importante:** la confianza es una estimación orientativa del algoritmo, no un porcentaje de acierto comprobado.
+                    """,
+                    """
 ### 🌱 1. Confiance du rang
 
-Mesure la clarté de la ligne du rang sur la photographie.
+**Que signifie ce score ?**
 
-**Formule :** `58 + min(32, support visuel × 220)`
+La confiance du rang est un indicateur utilisé par TerraCore pour estimer le soutien visuel trouvé par l'algorithme autour de la ligne détectée sur une photographie.
 
-- **58 :** score initial.
-- **Support visuel :** augmente le score selon la clarté de la ligne.
-- **220 :** facteur d'ajustement.
-- **32 :** maximum de points supplémentaires.
-- **Résultat :** 45 % et 92 %.
+Le programme identifie les pixels qu'il classe comme végétation verte, aligne l'image sur l'orientation générale des rangs et analyse une bande étroite autour de chaque ligne détectée.
 
-**Exemple :** support visuel de 0,10 → 58 + (0,10 × 220) = 80 %.
+La proportion moyenne de végétation identifiée dans cette bande sert de **support visuel** pour calculer le score.
 
-### ℹ️ Origine des valeurs
+### 🔍 Comment le calcul est-il effectué ?
 
-Les nombres sont des paramètres configurés manuellement que TerroCore applique aux photographies.
+**Étape 1. Identifier la végétation**
 
-Les pourcentages sont des estimations de l'algorithme, et non des taux de réussite vérifiés.
-                """
-            ))
+TerraCore applique un masque de végétation pour distinguer les pixels qui répondent à ses critères de couleur verte.
+
+**Étape 2. Analyser la bande du rang**
+
+Le programme examine une bande étroite autour de la position détectée et calcule la proportion de pixels classés comme végétation. Les valeurs sont ensuite lissées pour réduire les petites variations visuelles.
+
+**Étape 3. Calculer le support visuel**
+
+L'algorithme calcule la moyenne de ces valeurs le long du segment analysé.
+
+Le résultat, appelé `support`, est compris entre 0 et 1 :
+
+- `0.00` : aucun support végétal détecté en moyenne dans la bande analysée.
+- `0.10` : environ 10 % des pixels de cette bande sont classés comme végétation, en moyenne.
+- `0.15` : environ 15 % sont classés comme végétation, en moyenne.
+
+Ces valeurs décrivent le masque de végétation ; elles ne représentent pas directement la probabilité que le rang ait été correctement détecté.
+
+### 🧮 Formule réelle du code
+
+`confiance = clip(0.58 + min(0.32, support × 2.2), 0.45, 0.92)`
+
+La formule comporte quatre paramètres :
+
+- **0.58 — Score initial :** le calcul commence à 58 %. Il s'agit d'une valeur définie manuellement, et non d'une précision préalablement vérifiée.
+- **`support × 2.2` — Augmentation selon le support visuel :** multiplie le support calculé pour obtenir des points supplémentaires.
+- **0.32 — Augmentation maximale :** limite les points supplémentaires à 32. Même si le support visuel augmente, le score ne peut pas recevoir plus de 32 points supplémentaires.
+- **`clip(…, 0.45, 0.92)` — Limites de sécurité :** maintient le résultat entre 45 % et 92 %. Cependant, dans cette voie normale, le résultat effectif se situe entre 58 % et 90 % ; ces limites ne modifient donc pas le résultat habituel.
+
+### 📊 Exemples étape par étape
+
+**Exemple A : support visuel de 0.00**
+
+1. Multiplication : `0.00 × 2.2 = 0.00`.
+2. Augmentation appliquée : `min(0.32, 0.00) = 0.00`.
+3. Résultat : `0.58 + 0.00 = 0.58`.
+
+**Confiance estimée : 58 %.**
+
+**Exemple B : support visuel de 0.10**
+
+1. Multiplication : `0.10 × 2.2 = 0.22`.
+2. Comme `0.22` est inférieur à `0.32`, 22 points de pourcentage sont ajoutés.
+3. Résultat : `0.58 + 0.22 = 0.80`.
+
+**Confiance estimée : 80 %.**
+
+**Exemple C : support visuel de 0.15**
+
+1. Multiplication : `0.15 × 2.2 = 0.33`.
+2. L'augmentation est limitée à `0.32` : on ajoute donc au maximum 32 points, et non 33.
+3. Résultat : `0.58 + 0.32 = 0.90`.
+
+**Confiance estimée : 90 %.**
+
+À partir d'un support d'environ `0.1455`, la formule atteint son maximum de 90 %. Un support supérieur n'augmente plus le score.
+
+### ⚙️ Que se passe-t-il avec la détection alternative ?
+
+Lorsque le programme ne parvient pas à construire la grille globale des rangs, il utilise une autre méthode de détection. Dans cette voie, le code attribue directement un score de `0.66`, soit **66 %**, à chaque rang détecté.
+
+Dans ce cas, le score n'est pas calculé avec la formule du support visuel : la valeur fixe configurée dans le code est utilisée.
+
+### ℹ️ Comment interpréter la confiance ?
+
+Un score plus élevé indique que la formule a trouvé davantage de support végétal dans la bande analysée. Il ne garantit pas que la ligne soit correctement positionnée, que le rang soit droit ni que le nombre de rangs détectés soit exact.
+
+Les paramètres de la formule sont configurés manuellement. Pour connaître la précision réelle du détecteur, il faudrait comparer ses résultats avec des rangs identifiés et vérifiés manuellement.
+
+**Important :** la confiance est une estimation indicative de l'algorithme, et non un pourcentage de réussite vérifié.
+                    """
+                )
+            )
+
 
         edited = st.data_editor(
             tabla_actual,
