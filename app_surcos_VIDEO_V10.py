@@ -13438,7 +13438,7 @@ TerroCore identifica la vegetación verde, analiza una franja alrededor de la l�
 
 Estos valores numéricos están configurados manualmente en el código.
 
-### 📊 Ejemplos
+### Ejemplos
 
 - **Support = 0.00:** confianza del **58 %**.
 - **Support = 0.10:** se suma 0.10 × 2.2 = 0.22; confianza del **80 %**.
@@ -13466,7 +13466,7 @@ TerroCore identifie la végétation verte, analyse une bande autour de la ligne 
 
 Ces valeurs numériques sont définies manuellement dans le code ; elles ne représentent pas une précision vérifiée.
 
-### 📊 Exemples
+### Exemples
 
 - **Support = 0.00 :** confiance de **58 %**.
 - **Support = 0.10 :** on ajoute 0.10 × 2.2 = 0.22 ; confiance de **80 %**.
