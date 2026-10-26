@@ -13145,8 +13145,8 @@ with main_col:
         progress = st.progress(
             5,
             text=tr(
-                "OpenCV está detectando los surcos rectos y alineando los slots...",
-                "OpenCV détecte les rangs droits et aligne les emplacements..."
+                "Se está detectando los surcos rectos y alineando los slots...",
+                "Se détecte les rangs droits et aligne les emplacements..."
             )
         )
 
@@ -13226,8 +13226,8 @@ with main_col:
             progress.progress(100, text=tr("Inventarios terminados.", "Inventaires terminés."))
             st.success(
                 tr(
-                    f"✅ Se analizaron {len(inventarios_por_imagen)} fotografía(s) con OpenCV.",
-                    f"✅ {len(inventarios_por_imagen)} photographie(s) analysée(s) avec OpenCV."
+                    f"✅ Se analizaron {len(inventarios_por_imagen)} fotografía(s) .",
+                    f"✅ {len(inventarios_por_imagen)} photographie(s) analysée(s) ."
                 )
             )
 
