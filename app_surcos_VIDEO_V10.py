@@ -13418,182 +13418,64 @@ with main_col:
         ):
             
             st.markdown(
-                tr(
-                    """
-### 🌱 1. Confianza del surco
+    tr(
+        """
+### 1. Confianza del surco
+**¿Qué significa?**
+Es un indicador que estima cuánto respaldo visual encuentra TerroCore alrededor de cada surco detectado en la fotografía.
+**¿Cómo se calcula?**
+TerroCore identifica la vegetación verde, analiza una franja alrededor de la línea detectada y calcula la proporción promedio de píxeles clasificados como vegetación. Este valor se denomina `support` y va de 0 a 100.
 
-**¿Qué significa esta puntuación?**
-
-La confianza del surco es un indicador que utiliza TerraCore para estimar cuánto respaldo visual encuentra el algoritmo alrededor de la línea detectada en una fotografía.
-
-Para calcularla, el programa identifica píxeles que clasifica como vegetación verde, alinea la imagen con la orientación general de los surcos y analiza una franja estrecha alrededor de cada línea detectada.
-
-La cantidad promedio de vegetación identificada en esa franja se utiliza como **soporte visual** para calcular la puntuación.
-
-### 🔍 ¿Cómo se calcula?
-
-**Paso 1. Identificar la vegetación**
-
-TerraCore aplica una máscara de vegetación para distinguir los píxeles que cumplen sus criterios de color verde.
-
-**Paso 2. Analizar la franja del surco**
-
-El programa toma una franja estrecha alrededor de la posición detectada y calcula qué proporción de sus píxeles está clasificada como vegetación. Después, suaviza los valores para reducir pequeñas variaciones visuales.
-
-**Paso 3. Calcular el soporte visual**
-
-El algoritmo promedia esos valores a lo largo del segmento analizado.
-
-El resultado, denominado `support`, es un valor entre 0 y 1:
-
-- `0.00`: no se detectó soporte de vegetación en promedio en la franja analizada.
-- `0.10`: aproximadamente el 10 % de los píxeles de esa franja se clasifica como vegetación, en promedio.
-- `0.15`: aproximadamente el 15 % se clasifica como vegetación, en promedio.
-
-Estos valores describen la máscara de vegetación; no representan directamente la probabilidad de que el surco esté correctamente detectado.
-
-### 🧮 Fórmula real del código
-
+### Fórmula utilizada
 `confianza = clip(0.58 + min(0.32, support × 2.2), 0.45, 0.92)`
+**¿Qué significa cada valor?**
 
-La fórmula contiene cuatro parámetros:
+- **0.58 — Confianza inicial del 58 %:** es el valor inicial establecido manualmente en el código.
+- **`support` — Soporte visual:** representa la proporción promedio de vegetación detectada alrededor del surco.
+- **2.2 — Factor de incremento:** multiplica el soporte visual para calcular cuánto aumenta la confianza.
+- **0.32 — Incremento máximo:** permite sumar hasta 32 puntos porcentuales a la confianza inicial.
+- **0.1 y 100 — Ajuste del resultado:** la función `clip()` hace que el resultado quede entre el 1 % y el 100 %. Con esta fórmula, la puntuación habitual va del 1 % al 100 %.
 
-- **0.58 — Puntuación inicial:** el cálculo comienza en 58 %. Es un valor establecido manualmente, no una precisión previamente comprobada.
-- **`support × 2.2` — Incremento según el soporte visual:** multiplica el soporte calculado para convertirlo en puntos adicionales de confianza.
-- **0.32 — Incremento máximo:** limita los puntos adicionales a 32. Aunque aumente el soporte visual, no se pueden sumar más de 32 puntos porcentuales.
-- **`clip(…, 0.45, 0.92)` — Límites de seguridad:** restringe el resultado al intervalo del 45 % al 92 %. Sin embargo, en esta ruta normal, el resultado efectivo está entre el 58 % y el 90 %, por lo que estos límites no modifican el resultado habitual.
+Estos valores numéricos están configurados manualmente en el código.
 
-### 📊 Ejemplos paso a paso
+### 📊 Ejemplos
 
-**Ejemplo A: soporte visual de 0.00**
+- **Support = 0.00:** confianza del **58 %**.
+- **Support = 0.10:** se suma 0.10 × 2.2 = 0.22; confianza del **80 %**.
+- **Support = 0.15:** el incremento alcanza su máximo de 0.32; confianza del **90 %**.
 
-1. Multiplicación: `0.00 × 2.2 = 0.00`.
-2. Incremento aplicado: `min(0.32, 0.00) = 0.00`.
-3. Resultado: `0.58 + 0.00 = 0.58`.
-
-**Confianza estimada: 58 %.**
-
-**Ejemplo B: soporte visual de 0.10**
-
-1. Multiplicación: `0.10 × 2.2 = 0.22`.
-2. Como `0.22` es menor que `0.32`, se suman 22 puntos porcentuales.
-3. Resultado: `0.58 + 0.22 = 0.80`.
-
-**Confianza estimada: 80 %.**
-
-**Ejemplo C: soporte visual de 0.15**
-
-1. Multiplicación: `0.15 × 2.2 = 0.33`.
-2. El incremento está limitado a `0.32`, por lo que no se suman 33 puntos, sino un máximo de 32.
-3. Resultado: `0.58 + 0.32 = 0.90`.
-
-**Confianza estimada: 90 %.**
-
-A partir de un soporte aproximado de `0.1455`, la fórmula alcanza su máximo del 90 %. Un soporte mayor ya no aumenta la puntuación.
-
-### ⚙️ ¿Qué ocurre si TerraCore utiliza la detección alternativa?
-
-Cuando el programa no consigue construir la cuadrícula global de surcos, utiliza otro procedimiento de detección. En esa ruta, el código asigna directamente una puntuación de `0.66`, equivalente al **66 %**, a cada surco detectado.
-
-En ese caso, la puntuación no se calcula con la fórmula del soporte visual: se utiliza el valor fijo configurado en el código.
-
-### ℹ️ ¿Cómo debe interpretarse la confianza?
-
-Una puntuación más alta indica que la fórmula encontró mayor soporte de vegetación en la franja analizada. No garantiza que la línea esté correctamente ubicada, que el surco sea recto ni que el número de surcos detectados sea correcto.
-
-Los parámetros de la fórmula están configurados manualmente. Para conocer la precisión real del detector, sería necesario comparar sus resultados con surcos identificados y verificados manualmente.
-
-**Importante:** la confianza es una estimación orientativa del algoritmo, no un porcentaje de acierto comprobado.
-                    """,
-                    """
-### 🌱 1. Confiance du rang
-
+**Interpretación:** cuanto mayor sea el soporte visual de la vegetación detectada, mayor será la confianza estimada. Esta puntuación es un indicador del algoritmo.
+        """,
+        """
+### 1. Confiance du rang
 **Que signifie ce score ?**
+C'est un indicateur qui estime le soutien visuel trouvé par TerroCore autour de chaque rang détecté sur la photographie.
+**Comment est-il calculé ?**
 
-La confiance du rang est un indicateur utilisé par TerraCore pour estimer le soutien visuel trouvé par l'algorithme autour de la ligne détectée sur une photographie.
+TerroCore identifie la végétation verte, analyse une bande autour de la ligne détectée et calcule la proportion moyenne de pixels classés comme végétation. Cette valeur est appelée `support` et varie de 0 à 1.
 
-Le programme identifie les pixels qu'il classe comme végétation verte, aligne l'image sur l'orientation générale des rangs et analyse une bande étroite autour de chaque ligne détectée.
-
-La proportion moyenne de végétation identifiée dans cette bande sert de **support visuel** pour calculer le score.
-
-### 🔍 Comment le calcul est-il effectué ?
-
-**Étape 1. Identifier la végétation**
-
-TerraCore applique un masque de végétation pour distinguer les pixels qui répondent à ses critères de couleur verte.
-
-**Étape 2. Analyser la bande du rang**
-
-Le programme examine une bande étroite autour de la position détectée et calcule la proportion de pixels classés comme végétation. Les valeurs sont ensuite lissées pour réduire les petites variations visuelles.
-
-**Étape 3. Calculer le support visuel**
-
-L'algorithme calcule la moyenne de ces valeurs le long du segment analysé.
-
-Le résultat, appelé `support`, est compris entre 0 et 1 :
-
-- `0.00` : aucun support végétal détecté en moyenne dans la bande analysée.
-- `0.10` : environ 10 % des pixels de cette bande sont classés comme végétation, en moyenne.
-- `0.15` : environ 15 % sont classés comme végétation, en moyenne.
-
-Ces valeurs décrivent le masque de végétation ; elles ne représentent pas directement la probabilité que le rang ait été correctement détecté.
-
-### 🧮 Formule réelle du code
-
+### Formule utilisée
 `confiance = clip(0.58 + min(0.32, support × 2.2), 0.45, 0.92)`
+**Que signifie chaque valeur ?**
 
-La formule comporte quatre paramètres :
+- **0.58 — Confiance initiale de 58 % :** c'est la valeur de départ définie manuellement dans le code.
+- **`support` — Support visuel :** représente la proportion moyenne de végétation détectée autour du rang.
+- **2.2 — Facteur d'augmentation :** multiplie le support visuel pour calculer l'augmentation de la confiance.
+- **0.32 — Augmentation maximale :** permet d'ajouter jusqu'à 32 points de pourcentage à la confiance initiale.
+- **0.1 et 100 — Ajustement du résultat :** la fonction `clip()` maintient le résultat entre 1 % et 100 %. Avec cette formule, le score habituel varie de 1 % à 100 %.
 
-- **0.58 — Score initial :** le calcul commence à 58 %. Il s'agit d'une valeur définie manuellement, et non d'une précision préalablement vérifiée.
-- **`support × 2.2` — Augmentation selon le support visuel :** multiplie le support calculé pour obtenir des points supplémentaires.
-- **0.32 — Augmentation maximale :** limite les points supplémentaires à 32. Même si le support visuel augmente, le score ne peut pas recevoir plus de 32 points supplémentaires.
-- **`clip(…, 0.45, 0.92)` — Limites de sécurité :** maintient le résultat entre 45 % et 92 %. Cependant, dans cette voie normale, le résultat effectif se situe entre 58 % et 90 % ; ces limites ne modifient donc pas le résultat habituel.
+Ces valeurs numériques sont définies manuellement dans le code ; elles ne représentent pas une précision vérifiée.
 
-### 📊 Exemples étape par étape
+### 📊 Exemples
 
-**Exemple A : support visuel de 0.00**
+- **Support = 0.00 :** confiance de **58 %**.
+- **Support = 0.10 :** on ajoute 0.10 × 2.2 = 0.22 ; confiance de **80 %**.
+- **Support = 0.15 :** l'augmentation atteint son maximum de 0.32 ; confiance de **90 %**.
 
-1. Multiplication : `0.00 × 2.2 = 0.00`.
-2. Augmentation appliquée : `min(0.32, 0.00) = 0.00`.
-3. Résultat : `0.58 + 0.00 = 0.58`.
-
-**Confiance estimée : 58 %.**
-
-**Exemple B : support visuel de 0.10**
-
-1. Multiplication : `0.10 × 2.2 = 0.22`.
-2. Comme `0.22` est inférieur à `0.32`, 22 points de pourcentage sont ajoutés.
-3. Résultat : `0.58 + 0.22 = 0.80`.
-
-**Confiance estimée : 80 %.**
-
-**Exemple C : support visuel de 0.15**
-
-1. Multiplication : `0.15 × 2.2 = 0.33`.
-2. L'augmentation est limitée à `0.32` : on ajoute donc au maximum 32 points, et non 33.
-3. Résultat : `0.58 + 0.32 = 0.90`.
-
-**Confiance estimée : 90 %.**
-
-À partir d'un support d'environ `0.1455`, la formule atteint son maximum de 90 %. Un support supérieur n'augmente plus le score.
-
-### ⚙️ Que se passe-t-il avec la détection alternative ?
-
-Lorsque le programme ne parvient pas à construire la grille globale des rangs, il utilise une autre méthode de détection. Dans cette voie, le code attribue directement un score de `0.66`, soit **66 %**, à chaque rang détecté.
-
-Dans ce cas, le score n'est pas calculé avec la formule du support visuel : la valeur fixe configurée dans le code est utilisée.
-
-### ℹ️ Comment interpréter la confiance ?
-
-Un score plus élevé indique que la formule a trouvé davantage de support végétal dans la bande analysée. Il ne garantit pas que la ligne soit correctement positionnée, que le rang soit droit ni que le nombre de rangs détectés soit exact.
-
-Les paramètres de la formule sont configurés manuellement. Pour connaître la précision réelle du détecteur, il faudrait comparer ses résultats avec des rangs identifiés et vérifiés manuellement.
-
-**Important :** la confiance est une estimation indicative de l'algorithme, et non un pourcentage de réussite vérifié.
-                    """
-                )
-            )
-
+**Interprétation :** plus le support visuel de la végétation détectée est élevé, plus la confiance estimée augmente. Ce score est un indicateur de l'algorithme.
+        """
+    )
+)
 
         edited = st.data_editor(
             tabla_actual,
