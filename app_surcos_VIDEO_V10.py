@@ -13409,122 +13409,192 @@ with main_col:
             "### Tableau automatique par rang"
         ))
 
-        with st.expander(
-            tr(
-                "📊 ¿Cómo se calculan los porcentajes?",
-                "📊 Comment les pourcentages sont-ils calculés ?"
-            ),
-            expanded=False
-        ):
-            
-            st.markdown(
+        # ============================================================
+# 📊 EXPLICACIÓN DE LOS PORCENTAJES
+# ============================================================
+with st.expander(
     tr(
-        """
+        "📊 ¿Cómo se calculan los porcentajes?",
+        "📊 Comment les pourcentages sont-ils calculés ?"
+    ),
+    expanded=False
+):
+    st.markdown(
+        tr(
+            """
 ### 1. Confianza del surco
+
 **¿Qué significa?**
-Es un indicador que estima cuánto respaldo visual encuentra TerroCore alrededor de cada surco detectado en la fotografía.
+
+Es un indicador que estima cuánto respaldo visual encuentra TerraCore alrededor de cada surco detectado en la fotografía.
+
 **¿Cómo se calcula?**
-TerroCore identifica la vegetación verde, analiza una franja alrededor de la línea detectada y calcula la proporción promedio de píxeles clasificados como vegetación. Este valor se denomina `support` y va de 0 a 100.
+
+TerraCore identifica la vegetación verde, analiza una franja alrededor de la línea detectada y calcula la proporción promedio de píxeles clasificados como vegetación. Este valor se denomina `support` y va de **0 a 1**.
 
 ### Fórmula utilizada
+
 `confianza = clip(0.58 + min(0.32, support × 2.2), 0.45, 0.92)`
+
 **¿Qué significa cada valor?**
 
 - **0.58 — Confianza inicial del 58 %:** es el valor inicial establecido manualmente en el código.
 - **`support` — Soporte visual:** representa la proporción promedio de vegetación detectada alrededor del surco.
 - **2.2 — Factor de incremento:** multiplica el soporte visual para calcular cuánto aumenta la confianza.
 - **0.32 — Incremento máximo:** permite sumar hasta 32 puntos porcentuales a la confianza inicial.
-- **0.1 y 100 — Ajuste del resultado:** la función `clip()` hace que el resultado quede entre el 1 % y el 100 %. Con esta fórmula, la puntuación habitual va del 1 % al 100 %.
+- **0.45 y 0.92 — Ajuste del resultado:** hacen que el resultado quede entre el 45 % y el 92 %. Con esta fórmula, la puntuación habitual va del 58 % al 90 %.
 
 Estos valores numéricos están configurados manualmente en el código.
 
 ### Ejemplos
 
 - **Support = 0.00:** confianza del **58 %**.
-- **Support = 0.10:** se suma 0.10 × 2.2 = 0.22; confianza del **80 %**.
+- **Support = 0.10:** se suma `0.10 × 2.2 = 0.22`; confianza del **80 %**.
 - **Support = 0.15:** el incremento alcanza su máximo de 0.32; confianza del **90 %**.
 
-**Interpretación:** cuanto mayor sea el soporte visual de la vegetación detectada, mayor será la confianza estimada. Esta puntuación es un indicador del algoritmo.
-        """,
-        """
+**Interpretación:** cuanto mayor sea el soporte visual de la vegetación detectada, mayor será la confianza estimada. Esta puntuación es un indicador del algoritmo, no un porcentaje de acierto comprobado.
+            """,
+            """
 ### 1. Confiance du rang
+
 **Que signifie ce score ?**
-C'est un indicateur qui estime le soutien visuel trouvé par TerroCore autour de chaque rang détecté sur la photographie.
+
+C'est un indicateur qui estime le soutien visuel trouvé par TerraCore autour de chaque rang détecté sur la photographie.
+
 **Comment est-il calculé ?**
 
-TerroCore identifie la végétation verte, analyse une bande autour de la ligne détectée et calcule la proportion moyenne de pixels classés comme végétation. Cette valeur est appelée `support` et varie de 0 à 1.
+TerraCore identifie la végétation verte, analyse une bande autour de la ligne détectée et calcule la proportion moyenne de pixels classés comme végétation. Cette valeur est appelée `support` et varie de **0 à 1**.
 
 ### Formule utilisée
+
 `confiance = clip(0.58 + min(0.32, support × 2.2), 0.45, 0.92)`
+
 **Que signifie chaque valeur ?**
 
 - **0.58 — Confiance initiale de 58 % :** c'est la valeur de départ définie manuellement dans le code.
 - **`support` — Support visuel :** représente la proportion moyenne de végétation détectée autour du rang.
 - **2.2 — Facteur d'augmentation :** multiplie le support visuel pour calculer l'augmentation de la confiance.
 - **0.32 — Augmentation maximale :** permet d'ajouter jusqu'à 32 points de pourcentage à la confiance initiale.
-- **0.1 et 100 — Ajustement du résultat :** la fonction `clip()` maintient le résultat entre 1 % et 100 %. Avec cette formule, le score habituel varie de 1 % à 100 %.
+- **0.45 et 0.92 — Ajustement du résultat :** maintiennent le résultat entre 45 % et 92 %. Avec cette formule, le score habituel varie de 58 % à 90 %.
 
-Ces valeurs numériques sont définies manuellement dans le code ; elles ne représentent pas une précision vérifiée.
+Ces valeurs numériques sont définies manuellement dans le code.
 
 ### Exemples
 
 - **Support = 0.00 :** confiance de **58 %**.
-- **Support = 0.10 :** on ajoute 0.10 × 2.2 = 0.22 ; confiance de **80 %**.
+- **Support = 0.10 :** on ajoute `0.10 × 2.2 = 0.22` ; confiance de **80 %**.
 - **Support = 0.15 :** l'augmentation atteint son maximum de 0.32 ; confiance de **90 %**.
 
-**Interprétation :** plus le support visuel de la végétation détectée est élevé, plus la confiance estimée augmente. Ce score est un indicateur de l'algorithme.
-        """
+**Interprétation :** plus le support visuel de la végétation détectée est élevé, plus la confiance estimée augmente. Ce score est un indicateur de l'algorithme, et non un pourcentage de réussite vérifié.
+            """
+        )
     )
-)
 
-        edited = st.data_editor(
-            tabla_actual,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="fixed",
-            key="tc_editor_inventario_video_flow_v2",
-            column_config={
-                tr("Surco", "Rang"): st.column_config.TextColumn(
-                    tr("Surco", "Rang"), disabled=True, width="small"
-                ),
-                tr("Slots", "Emplacements"): st.column_config.NumberColumn(
-                    tr("Slots", "Emplacements"), min_value=0, step=1, format="%d"
-                ),
-                tr("Ocupados", "Occupés"): st.column_config.NumberColumn(
-                    tr("Ocupados", "Occupés"), min_value=0, step=1, format="%d"
-                ),
-                tr("Vacíos", "Vides"): st.column_config.NumberColumn(
-                    tr("Vacíos", "Vides"), min_value=0, step=1, format="%d"
-                ),
-                tr("Confianza del surco", "Confiance du rang"): st.column_config.NumberColumn(
-                    tr("Confianza del surco", "Confiance du rang"),
-                    min_value=0.0,
-                    max_value=100.0,
-                    format="%.1f %%",
-                    disabled=True,
-                ),
-            }
+
+# ============================================================
+# 📋 TABLA AUTOMÁTICA POR SURCO (OCULTA POR DEFECTO)
+# ============================================================
+with st.expander(
+    tr(
+        "📋 Mostrar tabla automática por surco",
+        "📋 Afficher le tableau automatique par rang"
+    ),
+    expanded=False
+):
+    st.markdown(
+        tr(
+            "### Tabla automática por surco",
+            "### Tableau automatique par rang"
+        )
+    )
+
+    st.caption(
+        tr(
+            "OpenCV estima Slots, Ocupados y Vacíos. Puedes corregir los valores antes de confirmar.",
+            "OpenCV estime les emplacements, les rangs occupés et les rangs vides. Vous pouvez corriger les valeurs avant de confirmer."
+        )
+    )
+
+    # Detecta el nombre real de la columna de confianza.
+    # Así funciona si se llama "Confianza" o "Confianza del surco".
+    col_confianza = (
+        "Confianza del surco"
+        if "Confianza del surco" in tabla_actual.columns
+        else "Confianza"
+    )
+
+    edited = st.data_editor(
+        tabla_actual,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        key="tc_editor_inventario_video_flow_v2",
+        column_config={
+            "Surco": st.column_config.TextColumn(
+                tr("Surco", "Rang"),
+                disabled=True,
+                width="small"
+            ),
+            "Slots": st.column_config.NumberColumn(
+                tr("Slots", "Emplacements"),
+                min_value=0,
+                step=1,
+                format="%d"
+            ),
+            "Ocupados": st.column_config.NumberColumn(
+                tr("Ocupados", "Occupés"),
+                min_value=0,
+                step=1,
+                format="%d"
+            ),
+            "Vacíos": st.column_config.NumberColumn(
+                tr("Vacíos", "Vides"),
+                min_value=0,
+                step=1,
+                format="%d"
+            ),
+            col_confianza: st.column_config.NumberColumn(
+                tr("Confianza del surco", "Confiance du rang"),
+                min_value=0.0,
+                max_value=100.0,
+                format="%.1f %%",
+                disabled=True
+            ),
+            "Estado": st.column_config.TextColumn(
+                tr("Estado", "État"),
+                disabled=True,
+                width="medium"
+            ),
+        }
+    )
+
+    st.session_state.tc_tabla_inventario = edited
+
+    # Sincroniza los cambios con los datos del inventario.
+    if ref_name:
+        _tc_sincronizar_tabla_inventario_editada(
+            ref_name,
+            edited
         )
 
-        st.session_state.tc_tabla_inventario = edited
+    total_slots, total_ocupados, total_vacios, inventario_valido = (
+        _tc_metricas_tabla(edited.copy())
+    )
 
-        # IMPORTANTE: la edición de Slots/Ocupados/Vacíos ya no se queda
-        # solo en la tabla visual. Se sincroniza con las filas que utilizará
-        # el análisis de estado visual.
-        if ref_name:
-            _tc_sincronizar_tabla_inventario_editada(
-                ref_name,
-                edited,
+    if inventario_valido:
+        st.success(
+            tr(
+                "✅ Validación correcta: Slots = Ocupados + Vacíos en todos los surcos.",
+                "✅ Validation correcte : Emplacements = Occupés + Vides pour tous les rangs."
             )
-
-        total_slots, total_ocupados, total_vacios, inventario_valido = _tc_metricas_tabla(
-            edited.copy()
         )
-
-        if inventario_valido:
-            st.success("✅ Validación correcta: Slots = Ocupados + Vacíos en todos los surcos.")
-        else:
-            st.error("Revisa la tabla: cada surco debe cumplir Slots = Ocupados + Vacíos.")
+    else:
+        st.error(
+            tr(
+                "Revisa la tabla: cada surco debe cumplir Slots = Ocupados + Vacíos.",
+                "Vérifiez le tableau : chaque rang doit respecter Emplacements = Occupés + Vides."
+            )
+        )
 
         # ====================================================
         # ③ VALIDACIÓN QR - MISMA CONFIRMACIÓN QUE YA EXISTÍA
