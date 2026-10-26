@@ -13494,107 +13494,92 @@ Ces valeurs numériques sont définies manuellement dans le code.
 # ============================================================
 # 📋 TABLA AUTOMÁTICA POR SURCO (OCULTA POR DEFECTO)
 # ============================================================
-with st.expander(
-    tr(
-        "📋 Mostrar tabla automática por surco",
-        "📋 Afficher le tableau automatique par rang"
-    ),
-    expanded=False
-):
-    st.markdown(
+if st.session_state.tc_inventario_procesado:
+
+    tabla_actual = st.session_state.tc_tabla_inventario
+
+    if tabla_actual is None:
+        tabla_actual = _tc_resultado_a_fila_surcos(0)
+
+    with st.expander(
         tr(
-            "### Tabla automática por surco",
-            "### Tableau automatique par rang"
-        )
-    )
+            "📋 Mostrar tabla automática por surco",
+            "📋 Afficher le tableau automatique par rang"
+        ),
+        expanded=False
+    ):
 
-    st.caption(
-        tr(
-            "OpenCV estima Slots, Ocupados y Vacíos. Puedes corregir los valores antes de confirmar.",
-            "OpenCV estime les emplacements, les rangs occupés et les rangs vides. Vous pouvez corriger les valeurs avant de confirmer."
-        )
-    )
-
-    # Detecta el nombre real de la columna de confianza.
-    # Así funciona si se llama "Confianza" o "Confianza del surco".
-    col_confianza = (
-        "Confianza del surco"
-        if "Confianza del surco" in tabla_actual.columns
-        else "Confianza"
-    )
-
-    edited = st.data_editor(
-        tabla_actual,
-        use_container_width=True,
-        hide_index=True,
-        num_rows="fixed",
-        key="tc_editor_inventario_video_flow_v2",
-        column_config={
-            "Surco": st.column_config.TextColumn(
-                tr("Surco", "Rang"),
-                disabled=True,
-                width="small"
-            ),
-            "Slots": st.column_config.NumberColumn(
-                tr("Slots", "Emplacements"),
-                min_value=0,
-                step=1,
-                format="%d"
-            ),
-            "Ocupados": st.column_config.NumberColumn(
-                tr("Ocupados", "Occupés"),
-                min_value=0,
-                step=1,
-                format="%d"
-            ),
-            "Vacíos": st.column_config.NumberColumn(
-                tr("Vacíos", "Vides"),
-                min_value=0,
-                step=1,
-                format="%d"
-            ),
-            col_confianza: st.column_config.NumberColumn(
-                tr("Confianza del surco", "Confiance du rang"),
-                min_value=0.0,
-                max_value=100.0,
-                format="%.1f %%",
-                disabled=True
-            ),
-            "Estado": st.column_config.TextColumn(
-                tr("Estado", "État"),
-                disabled=True,
-                width="medium"
-            ),
-        }
-    )
-
-    st.session_state.tc_tabla_inventario = edited
-
-    # Sincroniza los cambios con los datos del inventario.
-    if ref_name:
-        _tc_sincronizar_tabla_inventario_editada(
-            ref_name,
-            edited
+        edited = st.data_editor(
+            tabla_actual,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key="tc_editor_inventario_video_flow_v2",
+            column_config={
+                "Surco": st.column_config.TextColumn(
+                    tr("Surco", "Rang"),
+                    disabled=True,
+                    width="small"
+                ),
+                "Slots": st.column_config.NumberColumn(
+                    tr("Slots", "Emplacements"),
+                    min_value=0,
+                    step=1,
+                    format="%d"
+                ),
+                "Ocupados": st.column_config.NumberColumn(
+                    tr("Ocupados", "Occupés"),
+                    min_value=0,
+                    step=1,
+                    format="%d"
+                ),
+                "Vacíos": st.column_config.NumberColumn(
+                    tr("Vacíos", "Vides"),
+                    min_value=0,
+                    step=1,
+                    format="%d"
+                ),
+                "Confianza": st.column_config.NumberColumn(
+                    tr("Confianza del surco", "Confiance du rang"),
+                    min_value=0.0,
+                    max_value=100.0,
+                    format="%.1f %%",
+                    disabled=True
+                ),
+                "Estado": st.column_config.TextColumn(
+                    tr("Estado", "État"),
+                    disabled=True,
+                    width="medium"
+                ),
+            }
         )
 
-    total_slots, total_ocupados, total_vacios, inventario_valido = (
-        _tc_metricas_tabla(edited.copy())
-    )
+        st.session_state.tc_tabla_inventario = edited
 
-    if inventario_valido:
-        st.success(
-            tr(
-                "✅ Validación correcta: Slots = Ocupados + Vacíos en todos los surcos.",
-                "✅ Validation correcte : Emplacements = Occupés + Vides pour tous les rangs."
+        if ref_name:
+            _tc_sincronizar_tabla_inventario_editada(
+                ref_name,
+                edited
             )
+
+        total_slots, total_ocupados, total_vacios, inventario_valido = (
+            _tc_metricas_tabla(edited.copy())
         )
-    else:
-        st.error(
-            tr(
-                "Revisa la tabla: cada surco debe cumplir Slots = Ocupados + Vacíos.",
-                "Vérifiez le tableau : chaque rang doit respecter Emplacements = Occupés + Vides."
+
+        if inventario_valido:
+            st.success(
+                tr(
+                    "✅ Validación correcta: Slots = Ocupados + Vacíos en todos los surcos.",
+                    "✅ Validation correcte : Emplacements = Occupés + Vides pour tous les rangs."
+                )
             )
-        )
+        else:
+            st.error(
+                tr(
+                    "Revisa la tabla: cada surco debe cumplir Slots = Ocupados + Vacíos.",
+                    "Vérifiez le tableau : chaque rang doit respecter Emplacements = Occupés + Vides."
+                )
+            )
 
         # ====================================================
         # ③ VALIDACIÓN QR - MISMA CONFIRMACIÓN QUE YA EXISTÍA
