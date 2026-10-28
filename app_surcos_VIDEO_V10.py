@@ -13409,13 +13409,14 @@ with main_col:
             "### Tableau automatique par rang"
         ))
 
-        # ============================================================
-# 📊 EXPLICACIÓN DE LOS PORCENTAJES
+       
+# ============================================================
+# 📊 EXPLICACIÓN DE LA CONFIANZA DEL SURCO
 # ============================================================
 with st.expander(
     tr(
-        "📊 ¿Cómo se calculan los porcentajes?",
-        "📊 Comment les pourcentages sont-ils calculés ?"
+        "📊 ¿Cómo se calcula la confianza del surco?",
+        "📊 Comment la confiance du rang est-elle calculée ?"
     ),
     expanded=False
 ):
@@ -13426,69 +13427,74 @@ with st.expander(
 
 **¿Qué significa?**
 
-Es un indicador que estima cuánto respaldo visual encuentra TerraCore alrededor de cada surco detectado en la fotografía.
+Es un indicador que estima cuánto respaldo visual encuentra TerraCore a lo largo de cada surco detectado en la fotografía.
 
 **¿Cómo se calcula?**
 
-TerraCore identifica la vegetación verde, analiza una franja alrededor de la línea detectada y calcula la proporción promedio de píxeles clasificados como vegetación. Este valor se denomina `support` y va de **0 a 1**.
+TerraCore divide cada surco en 10 tramos y analiza cada uno para determinar en cuántos encuentra evidencia visual del surco.
 
-### Fórmula utilizada
-
-`confianza = clip(0.58 + min(0.32, support × 2.2), 0.45, 0.92)`
-
-**¿Qué significa cada valor?**
-
-- **0.58 — Confianza inicial del 58 %:** es el valor inicial establecido manualmente en el código.
-- **`support` — Soporte visual:** representa la proporción promedio de vegetación detectada alrededor del surco.
-- **2.2 — Factor de incremento:** multiplica el soporte visual para calcular cuánto aumenta la confianza.
-- **0.32 — Incremento máximo:** permite sumar hasta 32 puntos porcentuales a la confianza inicial.
-- **0.45 y 0.92 — Ajuste del resultado:** hacen que el resultado quede entre el 45 % y el 92 %. Con esta fórmula, la puntuación habitual va del 58 % al 90 %.
-
-Estos valores numéricos están configurados manualmente en el código.
-
-### Ejemplos
-
-- **Support = 0.00:** confianza del **58 %**.
-- **Support = 0.10:** se suma `0.10 × 2.2 = 0.22`; confianza del **80 %**.
-- **Support = 0.15:** el incremento alcanza su máximo de 0.32; confianza del **90 %**.
-
-**Interpretación:** cuanto mayor sea el soporte visual de la vegetación detectada, mayor será la confianza estimada. Esta puntuación es un indicador del algoritmo, no un porcentaje de acierto comprobado.
+**Fórmula utilizada**
             """,
             """
 ### 1. Confiance du rang
 
 **Que signifie ce score ?**
 
-C'est un indicateur qui estime le soutien visuel trouvé par TerraCore autour de chaque rang détecté sur la photographie.
+C'est un indicateur qui estime le soutien visuel trouvé par TerraCore le long de chaque rang détecté sur la photographie.
 
 **Comment est-il calculé ?**
 
-TerraCore identifie la végétation verte, analyse une bande autour de la ligne détectée et calcule la proportion moyenne de pixels classés comme végétation. Cette valeur est appelée `support` et varie de **0 à 1**.
+TerraCore divise chaque rang en 10 segments et analyse chacun d'eux pour déterminer dans combien de segments il trouve des indices visuels du rang.
 
-### Formule utilisée
-
-`confiance = clip(0.58 + min(0.32, support × 2.2), 0.45, 0.92)`
-
-**Que signifie chaque valeur ?**
-
-- **0.58 — Confiance initiale de 58 % :** c'est la valeur de départ définie manuellement dans le code.
-- **`support` — Support visuel :** représente la proportion moyenne de végétation détectée autour du rang.
-- **2.2 — Facteur d'augmentation :** multiplie le support visuel pour calculer l'augmentation de la confiance.
-- **0.32 — Augmentation maximale :** permet d'ajouter jusqu'à 32 points de pourcentage à la confiance initiale.
-- **0.45 et 0.92 — Ajustement du résultat :** maintiennent le résultat entre 45 % et 92 %. Avec cette formule, le score habituel varie de 58 % à 90 %.
-
-Ces valeurs numériques sont définies manuellement dans le code.
-
-### Exemples
-
-- **Support = 0.00 :** confiance de **58 %**.
-- **Support = 0.10 :** on ajoute `0.10 × 2.2 = 0.22` ; confiance de **80 %**.
-- **Support = 0.15 :** l'augmentation atteint son maximum de 0.32 ; confiance de **90 %**.
-
-**Interprétation :** plus le support visuel de la végétation détectée est élevé, plus la confiance estimée augmente. Ce score est un indicateur de l'algorithme, et non un pourcentage de réussite vérifié.
+**Formule utilisée**
             """
         )
     )
+
+    st.latex(
+        tr(
+            r"\text{Confianza (\%)} = \frac{\text{Tramos detectados}}{\text{Tramos revisados}} \times 100",
+            r"\text{Confiance (\%)} = \frac{\text{Segments détectés}}{\text{Segments examinés}} \times 100"
+        )
+    )
+
+    st.markdown(
+        tr(
+            """
+**¿Qué significa cada parte?**
+
+- **Tramos detectados:** cantidad de tramos en los que TerraCore encuentra evidencia visual del surco.
+- **Tramos revisados:** total de tramos analizados; en este cálculo son 10.
+- **× 100:** convierte el resultado en un porcentaje.
+
+### Ejemplos
+
+- 5 de 10 tramos detectados = **50 %**.
+- 7 de 10 tramos detectados = **70 %**.
+- 9 de 10 tramos detectados = **90 %**.
+- 10 de 10 tramos detectados = **100 %**.
+
+**Interpretación:** cuanto mayor sea el porcentaje, más tramos del surco presentan evidencia visual. Es un indicador del algoritmo, no una garantía de que la detección sea correcta.
+            """,
+            """
+**Que signifie chaque partie ?**
+
+- **Segments détectés :** nombre de segments dans lesquels TerraCore trouve des indices visuels du rang.
+- **Segments examinés :** nombre total de segments analysés ; ce calcul en utilise 10.
+- **× 100 :** convertit le résultat en pourcentage.
+
+### Exemples
+
+- 5 segments détectés sur 10 = **50 %**.
+- 7 segments détectés sur 10 = **70 %**.
+- 9 segments détectés sur 10 = **90 %**.
+- 10 segments détectés sur 10 = **100 %**.
+
+**Interprétation :** plus le pourcentage est élevé, plus le rang présente des indices visuels dans ses segments. C'est un indicateur de l'algorithme, pas une garantie de détection correcte.
+            """
+        )
+    )
+
 
 
 # ============================================================
