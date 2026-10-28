@@ -13501,6 +13501,14 @@ if st.session_state.tc_inventario_procesado:
     if tabla_actual is None:
         tabla_actual = _tc_resultado_a_fila_surcos(0)
 
+    # Detectar el nombre real de la columna de confianza.
+    # Esto permite usar "Confianza" o "Confianza del surco".
+    col_confianza = (
+        "Confianza del surco"
+        if "Confianza del surco" in tabla_actual.columns
+        else "Confianza"
+    )
+
     with st.expander(
         tr(
             "📋 Mostrar tabla automática por surco",
@@ -13539,8 +13547,11 @@ if st.session_state.tc_inventario_procesado:
                     step=1,
                     format="%d"
                 ),
-                "Confianza": st.column_config.NumberColumn(
-                    tr("Confianza del surco", "Confiance du rang"),
+                col_confianza: st.column_config.NumberColumn(
+                    tr(
+                        "Confianza del surco",
+                        "Confiance du rang"
+                    ),
                     min_value=0.0,
                     max_value=100.0,
                     format="%.1f %%",
@@ -13554,14 +13565,17 @@ if st.session_state.tc_inventario_procesado:
             }
         )
 
+        # Guardar la tabla editada.
         st.session_state.tc_tabla_inventario = edited
 
+        # Sincronizar los cambios con el inventario.
         if ref_name:
             _tc_sincronizar_tabla_inventario_editada(
                 ref_name,
                 edited
             )
 
+        # Calcular las métricas del inventario.
         total_slots, total_ocupados, total_vacios, inventario_valido = (
             _tc_metricas_tabla(edited.copy())
         )
@@ -13581,46 +13595,51 @@ if st.session_state.tc_inventario_procesado:
                 )
             )
 
-        # ====================================================
-        # ③ VALIDACIÓN QR - MISMA CONFIRMACIÓN QUE YA EXISTÍA
-        # ====================================================
-        st.markdown(
-            f"<div class='tc-stage-title'>③ {tr('Validación QR','Validation QR')}</div>",
-            unsafe_allow_html=True
+    # ========================================================
+    # ③ VALIDACIÓN QR (FUERA DEL DESPLEGABLE DE LA TABLA)
+    # ========================================================
+    st.markdown(
+        f"<div class='tc-stage-title'>③ {tr('Validación QR', 'Validation QR')}</div>",
+        unsafe_allow_html=True
+    )
+
+    st.caption(
+        tr(
+            "La validación confirma el inventario antes de desbloquear el estado visual y los polígonos.",
+            "La validation confirme l’inventaire avant de déverrouiller l’état visuel et les polygones."
         )
-        st.caption(
+    )
+
+    if st.button(
+        tr(
+            "➕ Agregar validación",
+            "➕ Ajouter la validation"
+        ),
+        type="primary",
+        use_container_width=True,
+        disabled=(not inventario_valido),
+        key="tc_confirmar_inventario_video_flow"
+    ):
+        st.session_state.tc_inventario_confirmado = True
+
+        st.success(
             tr(
-                "La validación confirma el Inventario antes de desbloquear el estado visual y los polígonos.",
-                "La validation confirme l’inventaire avant de déverrouiller l’état visuel et les polygones."
+                "✅ Inventario validado. Se desbloqueó Regiones críticas.",
+                "✅ Inventaire validé. Les régions critiques sont déverrouillées."
             )
         )
 
-        if st.button(
-            tr("➕ Agregar validación", "➕ Ajouter la validation"),
-            type="primary",
-            use_container_width=True,
-            disabled=(not inventario_valido),
-            key="tc_confirmar_inventario_video_flow"
-        ):
-            st.session_state.tc_inventario_confirmado = True
-            st.success(
-                tr(
-                    "✅ Inventario validado. Se desbloqueó Regiones críticas.",
-                    "✅ Inventaire validé. Les régions critiques sont déverrouillées."
-                )
-            )
-            st.rerun()
+        st.rerun()
 
-        if st.session_state.tc_inventario_confirmado:
-            st.success(
-                tr(
-                    "✅ Validación registrada.",
-                    "✅ Validation enregistrée."
-                )
+    if st.session_state.tc_inventario_confirmado:
+        st.success(
+            tr(
+                "✅ Validación registrada.",
+                "✅ Validation enregistrée."
             )
+        )
 
     st.markdown("---")
-
     # ========================================================
     # ④ REGIONES CRÍTICAS / ESTADO VISUAL
     # ========================================================
