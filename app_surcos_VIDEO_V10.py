@@ -13427,7 +13427,7 @@ with st.expander(
 
 **¿Qué significa?**
 
-Es un indicador que estima cuánto respaldo visual encuentra TerraCore a lo largo de cada surco detectado en la fotografía.
+Es un indicador que estima cuánto respaldo visual encuentra TerroCore a lo largo de cada surco detectado en la fotografía.
 
 **¿Cómo se calcula?**
 
@@ -13440,7 +13440,7 @@ TerraCore divide cada surco en 10 tramos y analiza cada uno para determinar en c
 
 **Que signifie ce score ?**
 
-C'est un indicateur qui estime le soutien visuel trouvé par TerraCore le long de chaque rang détecté sur la photographie.
+C'est un indicateur qui estime le soutien visuel trouvé par TerroCore le long de chaque rang détecté sur la photographie.
 
 **Comment est-il calculé ?**
 
@@ -13463,7 +13463,7 @@ TerraCore divise chaque rang en 10 segments et analyse chacun d'eux pour déterm
             """
 **¿Qué significa cada parte?**
 
-- **Tramos detectados:** cantidad de tramos en los que TerraCore encuentra evidencia visual del surco.
+- **Tramos detectados:** cantidad de tramos en los que TerroCore encuentra evidencia visual del surco.
 - **Tramos revisados:** total de tramos analizados; en este cálculo son 10.
 - **× 100:** convierte el resultado en un porcentaje.
 
@@ -13479,7 +13479,7 @@ TerraCore divise chaque rang en 10 segments et analyse chacun d'eux pour déterm
             """
 **Que signifie chaque partie ?**
 
-- **Segments détectés :** nombre de segments dans lesquels TerraCore trouve des indices visuels du rang.
+- **Segments détectés :** nombre de segments dans lesquels TerroCore trouve des indices visuels du rang.
 - **Segments examinés :** nombre total de segments analysés ; ce calcul en utilise 10.
 - **× 100 :** convertit le résultat en pourcentage.
 
