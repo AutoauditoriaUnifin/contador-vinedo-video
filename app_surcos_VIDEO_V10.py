@@ -14505,6 +14505,735 @@ if st.session_state.tc_inventario_procesado:
                             st.caption("4. Polígonos")
                             _tc_ui_image(item.get("polygon_image"))
 
+                            
+# ============================================================
+# TERROCORE — CENTRO DE VITICULTURA DE PRECISIÓN
+# Módulo adicional: análisis visual, riego, rutas y trazabilidad
+# No reemplaza el motor ni el historial existente.
+# Requiere los imports que ya utiliza TerroCore:
+# streamlit as st, cv2, numpy as np, pandas as pd
+# ============================================================
+
+import math as _tc20_math
+from datetime import datetime as _tc20_datetime
+
+
+# ------------------------------------------------------------
+# 1. FUNCIONES AUXILIARES
+# ------------------------------------------------------------
+
+def _tc20_mascara_vegetacion(imagen_rgb):
+    """
+    Calcula una máscara aproximada de vegetación verde.
+    Es un indicador visual, no una medición agronómica validada.
+    """
+    imagen_bgr = cv2.cvtColor(imagen_rgb, cv2.COLOR_RGB2BGR)
+    hsv = cv2.cvtColor(imagen_bgr, cv2.COLOR_BGR2HSV)
+
+    inferior = np.array([25, 35, 30], dtype=np.uint8)
+    superior = np.array([100, 255, 255], dtype=np.uint8)
+
+    mascara = cv2.inRange(hsv, inferior, superior)
+
+    kernel = np.ones((3, 3), np.uint8)
+    mascara = cv2.morphologyEx(
+        mascara, cv2.MORPH_OPEN, kernel
+    )
+    mascara = cv2.morphologyEx(
+        mascara, cv2.MORPH_CLOSE, kernel
+    )
+
+    return mascara
+
+
+def _tc20_analizar_imagen(imagen_pil):
+    """
+    Devuelve indicadores visuales y un mapa de cobertura.
+    """
+    imagen_rgb = np.array(imagen_pil.convert("RGB"))
+
+    if imagen_rgb.ndim != 3 or imagen_rgb.shape[2] != 3:
+        raise ValueError("La imagen no tiene un formato RGB válido.")
+
+    alto, ancho = imagen_rgb.shape[:2]
+    mascara = _tc20_mascara_vegetacion(imagen_rgb)
+
+    cobertura = (
+        float(np.count_nonzero(mascara))
+        / float(mascara.size)
+        * 100.0
+    )
+
+    # Cobertura en una cuadrícula de 3 x 3.
+    zonas = []
+    for fila in range(3):
+        for columna in range(3):
+            y1 = fila * alto // 3
+            y2 = (fila + 1) * alto // 3
+            x1 = columna * ancho // 3
+            x2 = (columna + 1) * ancho // 3
+
+            recorte = mascara[y1:y2, x1:x2]
+            porcentaje = (
+                float(np.count_nonzero(recorte))
+                / max(1, recorte.size)
+                * 100.0
+            )
+
+            zonas.append({
+                "Zona": f"F{fila + 1}-C{columna + 1}",
+                "Cobertura verde (%)": round(porcentaje, 2),
+                "Indicador": (
+                    "Baja" if porcentaje < 10
+                    else "Media" if porcentaje < 30
+                    else "Alta"
+                )
+            })
+
+    # Dividir la imagen en 12 segmentos horizontales.
+    # Los segmentos son una referencia visual, no plantas individuales.
+    segmentos = []
+    for i in range(12):
+        x1 = i * ancho // 12
+        x2 = (i + 1) * ancho // 12
+        recorte = mascara[:, x1:x2]
+
+        porcentaje = (
+            float(np.count_nonzero(recorte))
+            / max(1, recorte.size)
+            * 100.0
+        )
+
+        segmentos.append({
+            "Segmento": i + 1,
+            "Cobertura verde (%)": round(porcentaje, 2),
+            "Revisión sugerida": (
+                "Revisar" if porcentaje < 10 else "Sin alerta visual"
+            )
+        })
+
+    # Mapa de calor visual de cobertura.
+    mapa = cv2.applyColorMap(mascara, cv2.COLORMAP_JET)
+    mapa_rgb = cv2.cvtColor(mapa, cv2.COLOR_BGR2RGB)
+
+    return {
+        "cobertura_verde_pct": round(cobertura, 2),
+        "zonas": pd.DataFrame(zonas),
+        "segmentos": pd.DataFrame(segmentos),
+        "imagen_rgb": imagen_rgb,
+        "mascara": mascara,
+        "mapa_rgb": mapa_rgb,
+        "ancho": ancho,
+        "alto": alto,
+    }
+
+
+def _tc20_distancia_km(lat1, lon1, lat2, lon2):
+    """Distancia geográfica aproximada entre dos coordenadas GPS."""
+    radio_tierra = 6371.0
+
+    lat1, lon1, lat2, lon2 = map(
+        _tc20_math.radians,
+        [lat1, lon1, lat2, lon2]
+    )
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+
+    a = (
+        _tc20_math.sin(dlat / 2) ** 2
+        + _tc20_math.cos(lat1)
+        * _tc20_math.cos(lat2)
+        * _tc20_math.sin(dlon / 2) ** 2
+    )
+
+    return 2 * radio_tierra * _tc20_math.asin(
+        min(1.0, _tc20_math.sqrt(a))
+    )
+
+
+def _tc20_ordenar_ruta(puntos):
+    """
+    Heurística de vecino más cercano.
+    Reduce distancias geográficas estimadas; no garantiza el óptimo
+    por carretera ni considera caminos privados u obstáculos.
+    """
+    if len(puntos) < 2:
+        return puntos.copy(), 0.0
+
+    pendientes = puntos.copy()
+    ruta = [pendientes.pop(0)]
+    distancia_total = 0.0
+
+    while pendientes:
+        actual = ruta[-1]
+
+        indice = min(
+            range(len(pendientes)),
+            key=lambda i: _tc20_distancia_km(
+                actual["Latitud"],
+                actual["Longitud"],
+                pendientes[i]["Latitud"],
+                pendientes[i]["Longitud"],
+            )
+        )
+
+        siguiente = pendientes.pop(indice)
+
+        distancia_total += _tc20_distancia_km(
+            actual["Latitud"],
+            actual["Longitud"],
+            siguiente["Latitud"],
+            siguiente["Longitud"],
+        )
+
+        ruta.append(siguiente)
+
+    return ruta, distancia_total
+
+
+# ------------------------------------------------------------
+# 2. ESTADO DE LOS NUEVOS MÓDULOS
+# ------------------------------------------------------------
+
+if "tc20_registros_trazabilidad" not in st.session_state:
+    st.session_state.tc20_registros_trazabilidad = []
+
+if "tc20_resultados_visuales" not in st.session_state:
+    st.session_state.tc20_resultados_visuales = []
+
+
+# ------------------------------------------------------------
+# 3. INTERFAZ PRINCIPAL
+# ------------------------------------------------------------
+
+st.markdown("---")
+st.markdown(
+    "## 🍇 Centro de Viticultura de Precisión — TerroCore"
+)
+st.caption(
+    "Herramientas complementarias para analizar parcelas, "
+    "estimar necesidades de riego, planificar recorridos "
+    "y registrar observaciones."
+)
+
+(
+    tab_visual,
+    tab_riego,
+    tab_rutas,
+    tab_trazabilidad,
+    tab_exportar,
+) = st.tabs([
+    "🌿 Análisis visual",
+    "💧 Riego",
+    "🗺️ Rutas",
+    "🏷️ Trazabilidad",
+    "📥 Exportar",
+])
+
+
+# ------------------------------------------------------------
+# 4. ANÁLISIS VISUAL DE PARCELAS
+# ------------------------------------------------------------
+
+with tab_visual:
+    st.subheader("Cobertura verde y zonas de revisión")
+
+    st.info(
+        "Sube una imagen para obtener indicadores visuales. "
+        "Los resultados dependen de la iluminación, la cámara, "
+        "la escala y la orientación de la imagen."
+    )
+
+    imagen_tc20 = st.file_uploader(
+        "Imagen de la parcela",
+        type=["jpg", "jpeg", "png", "webp"],
+        key="tc20_imagen_parcela",
+    )
+
+    parcela_tc20 = st.text_input(
+        "Nombre o ID de parcela",
+        key="tc20_parcela_visual",
+        placeholder="Ej. Parcela V74",
+    )
+
+    umbral_tc20 = st.slider(
+        "Umbral para marcar baja cobertura (%)",
+        min_value=1,
+        max_value=30,
+        value=10,
+        key="tc20_umbral_visual",
+    )
+
+    if imagen_tc20 is not None:
+        try:
+            from PIL import Image as _TC20Image
+
+            pil_tc20 = _TC20Image.open(imagen_tc20)
+            resultado_tc20 = _tc20_analizar_imagen(pil_tc20)
+
+            cobertura_tc20 = resultado_tc20["cobertura_verde_pct"]
+
+            st.markdown("### Indicadores de la imagen")
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric(
+                "Cobertura verde visual",
+                f"{cobertura_tc20:.1f}%"
+            )
+            c2.metric(
+                "Zonas evaluadas",
+                len(resultado_tc20["zonas"])
+            )
+            c3.metric(
+                "Segmentos para revisar",
+                int(
+                    (
+                        resultado_tc20["segmentos"][
+                            "Cobertura verde (%)"
+                        ] < umbral_tc20
+                    ).sum()
+                )
+            )
+
+            izquierda, derecha = st.columns(2)
+
+            with izquierda:
+                st.markdown("**Imagen original**")
+                st.image(
+                    resultado_tc20["imagen_rgb"],
+                    use_container_width=True,
+                )
+
+            with derecha:
+                st.markdown("**Mapa de cobertura visual**")
+                st.image(
+                    resultado_tc20["mapa_rgb"],
+                    use_container_width=True,
+                )
+
+            st.markdown("### Cobertura por zonas")
+            tabla_zonas = resultado_tc20["zonas"].copy()
+            tabla_zonas["Indicador"] = tabla_zonas[
+                "Cobertura verde (%)"
+            ].apply(
+                lambda x: (
+                    "Baja" if x < umbral_tc20
+                    else "Media" if x < 30
+                    else "Alta"
+                )
+            )
+            st.dataframe(
+                tabla_zonas,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.markdown("### Segmentos que conviene inspeccionar")
+            tabla_segmentos = resultado_tc20["segmentos"].copy()
+            tabla_segmentos["Revisión sugerida"] = tabla_segmentos[
+                "Cobertura verde (%)"
+            ].apply(
+                lambda x: "Revisar" if x < umbral_tc20
+                else "Sin alerta visual"
+            )
+            st.dataframe(
+                tabla_segmentos,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            if st.button(
+                "Guardar resultado visual en esta sesión",
+                key="tc20_guardar_visual",
+            ):
+                st.session_state.tc20_resultados_visuales.append({
+                    "Fecha": _tc20_datetime.now().isoformat(
+                        timespec="seconds"
+                    ),
+                    "Parcela": parcela_tc20.strip(),
+                    "Imagen": imagen_tc20.name,
+                    "Cobertura verde (%)": cobertura_tc20,
+                    "Zonas con baja cobertura": int(
+                        (
+                            tabla_zonas["Cobertura verde (%)"]
+                            < umbral_tc20
+                        ).sum()
+                    ),
+                    "Segmentos para revisar": int(
+                        (
+                            tabla_segmentos["Cobertura verde (%)"]
+                            < umbral_tc20
+                        ).sum()
+                    ),
+                })
+                st.success(
+                    "Resultado guardado en la sesión actual. "
+                    "Puedes exportarlo desde la pestaña Exportar."
+                )
+
+        except Exception as exc:
+            st.error(f"No se pudo analizar la imagen: {exc}")
+
+
+# ------------------------------------------------------------
+# 5. CALCULADORA DE RIEGO
+# ------------------------------------------------------------
+
+with tab_riego:
+    st.subheader("Estimación diaria de riego")
+
+    st.caption(
+        "Ingresa valores locales de evapotranspiración, "
+        "coeficiente del cultivo y eficiencia del sistema."
+    )
+
+    with st.form("tc20_form_riego"):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            et0 = st.number_input(
+                "ET₀ (mm/día)",
+                min_value=0.0,
+                max_value=20.0,
+                value=5.0,
+                step=0.1,
+            )
+            kc = st.number_input(
+                "Coeficiente Kc",
+                min_value=0.0,
+                max_value=2.0,
+                value=0.70,
+                step=0.05,
+            )
+            superficie = st.number_input(
+                "Superficie (m²)",
+                min_value=1.0,
+                value=10000.0,
+                step=500.0,
+            )
+
+        with col2:
+            lluvia = st.number_input(
+                "Lluvia efectiva (mm/día)",
+                min_value=0.0,
+                max_value=100.0,
+                value=0.0,
+                step=0.5,
+            )
+            eficiencia = st.number_input(
+                "Eficiencia del riego (%)",
+                min_value=1,
+                max_value=100,
+                value=90,
+                step=1,
+            )
+
+        calcular_riego = st.form_submit_button(
+            "Calcular requerimiento"
+        )
+
+    if calcular_riego:
+        necesidad_bruta = max(
+            0.0,
+            et0 * kc - lluvia
+        )
+
+        litros_dia = (
+            necesidad_bruta
+            * superficie
+            / (eficiencia / 100.0)
+        )
+
+        st.markdown("### Resultado estimado")
+
+        a, b, c = st.columns(3)
+        a.metric(
+            "Necesidad neta",
+            f"{necesidad_bruta:.2f} mm/día",
+        )
+        b.metric(
+            "Volumen diario",
+            f"{litros_dia:,.0f} L/día",
+        )
+        c.metric(
+            "Volumen diario",
+            f"{litros_dia / 1000:,.2f} m³/día",
+        )
+
+        st.caption(
+            "Estimación simplificada: ETc = ET₀ × Kc. "
+            "La lluvia efectiva se resta de la necesidad neta "
+            "y después se ajusta por la eficiencia indicada. "
+            "Valida los valores con las condiciones del suelo, "
+            "el estado fenológico y las recomendaciones agronómicas."
+        )
+
+
+# ------------------------------------------------------------
+# 6. OPTIMIZACIÓN GEOGRÁFICA DE RECORRIDOS
+# ------------------------------------------------------------
+
+with tab_rutas:
+    st.subheader("Orden sugerido para visitar puntos de inspección")
+
+    st.write(
+        "Pega un punto por línea con este formato: "
+        "`Nombre,Latitud,Longitud`."
+    )
+
+    st.code(
+        "Parcela A,25.12345,-100.12345\n"
+        "Surco 1,25.12400,-100.12200\n"
+        "Surco 2,25.12500,-100.12100",
+        language="text",
+    )
+
+    texto_puntos = st.text_area(
+        "Puntos GPS",
+        height=150,
+        key="tc20_puntos_ruta",
+        placeholder="Nombre,Latitud,Longitud",
+    )
+
+    if st.button("Calcular orden sugerido", key="tc20_calcular_ruta"):
+        puntos = []
+        errores = []
+
+        for numero, linea in enumerate(
+            texto_puntos.splitlines(), start=1
+        ):
+            if not linea.strip():
+                continue
+
+            partes = [p.strip() for p in linea.split(",")]
+
+            if len(partes) != 3:
+                errores.append(
+                    f"Línea {numero}: debe contener nombre, latitud y longitud."
+                )
+                continue
+
+            try:
+                nombre = partes[0]
+                lat = float(partes[1])
+                lon = float(partes[2])
+
+                if not (-90 <= lat <= 90):
+                    raise ValueError("Latitud fuera de rango.")
+                if not (-180 <= lon <= 180):
+                    raise ValueError("Longitud fuera de rango.")
+                if not nombre:
+                    nombre = f"Punto {numero}"
+
+                puntos.append({
+                    "Punto": nombre,
+                    "Latitud": lat,
+                    "Longitud": lon,
+                })
+
+            except ValueError:
+                errores.append(
+                    f"Línea {numero}: coordenadas no válidas."
+                )
+
+        for error in errores:
+            st.warning(error)
+
+        if len(puntos) < 2:
+            st.error(
+                "Introduce al menos dos puntos GPS válidos."
+            )
+        else:
+            ruta, distancia = _tc20_ordenar_ruta(puntos)
+            df_ruta = pd.DataFrame(ruta)
+            df_ruta.insert(
+                0, "Orden",
+                range(1, len(df_ruta) + 1)
+            )
+
+            st.markdown("### Orden recomendado")
+            st.dataframe(
+                df_ruta,
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.metric(
+                "Distancia geográfica estimada",
+                f"{distancia:.2f} km",
+            )
+
+            coordenadas = [
+                f'{p["Latitud"]},{p["Longitud"]}'
+                for p in ruta
+            ]
+
+            if len(coordenadas) >= 2:
+                url_maps = (
+                    "https://www.google.com/maps/dir/"
+                    + "/".join(coordenadas)
+                )
+                st.link_button(
+                    "Abrir recorrido en Google Maps",
+                    url_maps,
+                )
+
+            st.caption(
+                "El orden se calcula por distancia en línea recta "
+                "mediante vecino más cercano. No equivale a una "
+                "ruta vial optimizada y puede necesitar ajustes "
+                "para caminos reales, accesos y pendientes."
+            )
+
+
+# ------------------------------------------------------------
+# 7. REGISTRO DE TRAZABILIDAD
+# ------------------------------------------------------------
+
+with tab_trazabilidad:
+    st.subheader("Registro de parcela, surco y planta")
+
+    with st.form("tc20_form_trazabilidad"):
+        parcela_tr = st.text_input(
+            "Parcela *",
+            key="tc20_tr_parcela",
+        )
+        surco_tr = st.text_input(
+            "Surco",
+            key="tc20_tr_surco",
+        )
+        planta_tr = st.text_input(
+            "Identificador de planta / QR",
+            key="tc20_tr_planta",
+        )
+        etapa_tr = st.selectbox(
+            "Etapa observada",
+            [
+                "Sin especificar",
+                "Brotación",
+                "Crecimiento vegetativo",
+                "Floración",
+                "Cuajado",
+                "Envero",
+                "Maduración",
+                "Cosecha",
+                "Reposo vegetativo",
+            ],
+            key="tc20_tr_etapa",
+        )
+        observaciones_tr = st.text_area(
+            "Observaciones de campo",
+            key="tc20_tr_observaciones",
+        )
+
+        registrar_tr = st.form_submit_button(
+            "Registrar observación"
+        )
+
+    if registrar_tr:
+        if not parcela_tr.strip():
+            st.error("El campo Parcela es obligatorio.")
+        else:
+            st.session_state.tc20_registros_trazabilidad.append({
+                "Fecha": _tc20_datetime.now().isoformat(
+                    timespec="seconds"
+                ),
+                "Parcela": parcela_tr.strip(),
+                "Surco": surco_tr.strip(),
+                "Planta_QR": planta_tr.strip(),
+                "Etapa": etapa_tr,
+                "Observaciones": observaciones_tr.strip(),
+            })
+            st.success(
+                "Observación agregada a los registros de esta sesión."
+            )
+
+    registros_tr = st.session_state.tc20_registros_trazabilidad
+
+    if registros_tr:
+        st.markdown("### Registros capturados")
+        st.dataframe(
+            pd.DataFrame(registros_tr),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info(
+            "Todavía no hay registros de trazabilidad en esta sesión."
+        )
+
+
+# ------------------------------------------------------------
+# 8. EXPORTACIÓN DE RESULTADOS
+# ------------------------------------------------------------
+
+with tab_exportar:
+    st.subheader("Exportar información de los módulos")
+
+    resultados_visuales = st.session_state.tc20_resultados_visuales
+    registros_trazabilidad = (
+        st.session_state.tc20_registros_trazabilidad
+    )
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("**Análisis visual**")
+
+        if resultados_visuales:
+            df_visual = pd.DataFrame(resultados_visuales)
+            st.dataframe(
+                df_visual,
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.download_button(
+                "Descargar análisis visual CSV",
+                data=df_visual.to_csv(
+                    index=False
+                ).encode("utf-8-sig"),
+                file_name="TerroCore_analisis_visual.csv",
+                mime="text/csv",
+                key="tc20_exportar_visual",
+            )
+        else:
+            st.caption("No hay resultados visuales guardados.")
+
+    with col_b:
+        st.markdown("**Trazabilidad**")
+
+        if registros_trazabilidad:
+            df_trazabilidad = pd.DataFrame(registros_trazabilidad)
+            st.dataframe(
+                df_trazabilidad,
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.download_button(
+                "Descargar trazabilidad CSV",
+                data=df_trazabilidad.to_csv(
+                    index=False
+                ).encode("utf-8-sig"),
+                file_name="TerroCore_trazabilidad.csv",
+                mime="text/csv",
+                key="tc20_exportar_trazabilidad",
+            )
+        else:
+            st.caption("No hay registros de trazabilidad guardados.")
+
+    st.warning(
+        "Estos registros nuevos se mantienen en la sesión de Streamlit "
+        "y se pueden exportar. Este bloque no los escribe todavía en "
+        "Google Sheets ni en el historial actual de TerroCore. "
+        "La conexión persistente se debe agregar usando la estructura "
+        "real de tus hojas, sin crear filas duplicadas ni alterar "
+        "los análisis existentes."
+    )
+
+# ============================================================
+# FIN DEL CENTRO DE VITICULTURA DE PRECISIÓN
+# ============================================================
+
 
 # ============================================================
 # ⑦ HISTORIAL POR PARCELA
