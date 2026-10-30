@@ -13409,14 +13409,13 @@ with main_col:
             "### Tableau automatique par rang"
         ))
 
-       
-# ============================================================
-# 📊 EXPLICACIÓN DE LA CONFIANZA DEL SURCO
+        # ============================================================
+# 📊 EXPLICACIÓN DE LOS PORCENTAJES
 # ============================================================
 with st.expander(
     tr(
-        "📊 ¿Cómo se calcula la confianza del surco?",
-        "📊 Comment la confiance du rang est-elle calculée ?"
+        "📊 ¿Cómo se calculan los porcentajes?",
+        "📊 Comment les pourcentages sont-ils calculés ?"
     ),
     expanded=False
 ):
@@ -13427,74 +13426,69 @@ with st.expander(
 
 **¿Qué significa?**
 
-Es un indicador que estima cuánto respaldo visual encuentra TerroCore a lo largo de cada surco detectado en la fotografía.
+Es un indicador que estima cuánto respaldo visual encuentra TerraCore alrededor de cada surco detectado en la fotografía.
 
 **¿Cómo se calcula?**
 
-TerraCore divide cada surco en 10 tramos y analiza cada uno para determinar en cuántos encuentra evidencia visual del surco.
+TerraCore identifica la vegetación verde, analiza una franja alrededor de la línea detectada y calcula la proporción promedio de píxeles clasificados como vegetación. Este valor se denomina `support` y va de **0 a 1**.
 
-**Fórmula utilizada**
+### Fórmula utilizada
+
+`confianza = clip(0.58 + min(0.32, support × 2.2), 0.45, 0.92)`
+
+**¿Qué significa cada valor?**
+
+- **0.58 — Confianza inicial del 58 %:** es el valor inicial establecido manualmente en el código.
+- **`support` — Soporte visual:** representa la proporción promedio de vegetación detectada alrededor del surco.
+- **2.2 — Factor de incremento:** multiplica el soporte visual para calcular cuánto aumenta la confianza.
+- **0.32 — Incremento máximo:** permite sumar hasta 32 puntos porcentuales a la confianza inicial.
+- **0.45 y 0.92 — Ajuste del resultado:** hacen que el resultado quede entre el 45 % y el 92 %. Con esta fórmula, la puntuación habitual va del 58 % al 90 %.
+
+Estos valores numéricos están configurados manualmente en el código.
+
+### Ejemplos
+
+- **Support = 0.00:** confianza del **58 %**.
+- **Support = 0.10:** se suma `0.10 × 2.2 = 0.22`; confianza del **80 %**.
+- **Support = 0.15:** el incremento alcanza su máximo de 0.32; confianza del **90 %**.
+
+**Interpretación:** cuanto mayor sea el soporte visual de la vegetación detectada, mayor será la confianza estimada. Esta puntuación es un indicador del algoritmo, no un porcentaje de acierto comprobado.
             """,
             """
 ### 1. Confiance du rang
 
 **Que signifie ce score ?**
 
-C'est un indicateur qui estime le soutien visuel trouvé par TerroCore le long de chaque rang détecté sur la photographie.
+C'est un indicateur qui estime le soutien visuel trouvé par TerraCore autour de chaque rang détecté sur la photographie.
 
 **Comment est-il calculé ?**
 
-TerraCore divise chaque rang en 10 segments et analyse chacun d'eux pour déterminer dans combien de segments il trouve des indices visuels du rang.
+TerraCore identifie la végétation verte, analyse une bande autour de la ligne détectée et calcule la proportion moyenne de pixels classés comme végétation. Cette valeur est appelée `support` et varie de **0 à 1**.
 
-**Formule utilisée**
-            """
-        )
-    )
+### Formule utilisée
 
-    st.latex(
-        tr(
-            r"\text{Confianza (\%)} = \frac{\text{Tramos detectados}}{\text{Tramos revisados}} \times 100",
-            r"\text{Confiance (\%)} = \frac{\text{Segments détectés}}{\text{Segments examinés}} \times 100"
-        )
-    )
+`confiance = clip(0.58 + min(0.32, support × 2.2), 0.45, 0.92)`
 
-    st.markdown(
-        tr(
-            """
-**¿Qué significa cada parte?**
+**Que signifie chaque valeur ?**
 
-- **Tramos detectados:** cantidad de tramos en los que TerroCore encuentra evidencia visual del surco.
-- **Tramos revisados:** total de tramos analizados; en este cálculo son 10.
-- **× 100:** convierte el resultado en un porcentaje.
+- **0.58 — Confiance initiale de 58 % :** c'est la valeur de départ définie manuellement dans le code.
+- **`support` — Support visuel :** représente la proportion moyenne de végétation détectée autour du rang.
+- **2.2 — Facteur d'augmentation :** multiplie le support visuel pour calculer l'augmentation de la confiance.
+- **0.32 — Augmentation maximale :** permet d'ajouter jusqu'à 32 points de pourcentage à la confiance initiale.
+- **0.45 et 0.92 — Ajustement du résultat :** maintiennent le résultat entre 45 % et 92 %. Avec cette formule, le score habituel varie de 58 % à 90 %.
 
-### Ejemplos
-
-- 5 de 10 tramos detectados = **50 %**.
-- 7 de 10 tramos detectados = **70 %**.
-- 9 de 10 tramos detectados = **90 %**.
-- 10 de 10 tramos detectados = **100 %**.
-
-**Interpretación:** cuanto mayor sea el porcentaje, más tramos del surco presentan evidencia visual. Es un indicador del algoritmo, no una garantía de que la detección sea correcta.
-            """,
-            """
-**Que signifie chaque partie ?**
-
-- **Segments détectés :** nombre de segments dans lesquels TerroCore trouve des indices visuels du rang.
-- **Segments examinés :** nombre total de segments analysés ; ce calcul en utilise 10.
-- **× 100 :** convertit le résultat en pourcentage.
+Ces valeurs numériques sont définies manuellement dans le code.
 
 ### Exemples
 
-- 5 segments détectés sur 10 = **50 %**.
-- 7 segments détectés sur 10 = **70 %**.
-- 9 segments détectés sur 10 = **90 %**.
-- 10 segments détectés sur 10 = **100 %**.
+- **Support = 0.00 :** confiance de **58 %**.
+- **Support = 0.10 :** on ajoute `0.10 × 2.2 = 0.22` ; confiance de **80 %**.
+- **Support = 0.15 :** l'augmentation atteint son maximum de 0.32 ; confiance de **90 %**.
 
-**Interprétation :** plus le pourcentage est élevé, plus le rang présente des indices visuels dans ses segments. C'est un indicateur de l'algorithme, pas une garantie de détection correcte.
+**Interprétation :** plus le support visuel de la végétation détectée est élevé, plus la confiance estimée augmente. Ce score est un indicateur de l'algorithme, et non un pourcentage de réussite vérifié.
             """
         )
     )
-
 
 
 # ============================================================
@@ -14504,735 +14498,6 @@ if st.session_state.tc_inventario_procesado:
                         with r4:
                             st.caption("4. Polígonos")
                             _tc_ui_image(item.get("polygon_image"))
-
-                            
-# ============================================================
-# TERROCORE — CENTRO DE VITICULTURA DE PRECISIÓN
-# Módulo adicional: análisis visual, riego, rutas y trazabilidad
-# No reemplaza el motor ni el historial existente.
-# Requiere los imports que ya utiliza TerroCore:
-# streamlit as st, cv2, numpy as np, pandas as pd
-# ============================================================
-
-import math as _tc20_math
-from datetime import datetime as _tc20_datetime
-
-
-# ------------------------------------------------------------
-# 1. FUNCIONES AUXILIARES
-# ------------------------------------------------------------
-
-def _tc20_mascara_vegetacion(imagen_rgb):
-    """
-    Calcula una máscara aproximada de vegetación verde.
-    Es un indicador visual, no una medición agronómica validada.
-    """
-    imagen_bgr = cv2.cvtColor(imagen_rgb, cv2.COLOR_RGB2BGR)
-    hsv = cv2.cvtColor(imagen_bgr, cv2.COLOR_BGR2HSV)
-
-    inferior = np.array([25, 35, 30], dtype=np.uint8)
-    superior = np.array([100, 255, 255], dtype=np.uint8)
-
-    mascara = cv2.inRange(hsv, inferior, superior)
-
-    kernel = np.ones((3, 3), np.uint8)
-    mascara = cv2.morphologyEx(
-        mascara, cv2.MORPH_OPEN, kernel
-    )
-    mascara = cv2.morphologyEx(
-        mascara, cv2.MORPH_CLOSE, kernel
-    )
-
-    return mascara
-
-
-def _tc20_analizar_imagen(imagen_pil):
-    """
-    Devuelve indicadores visuales y un mapa de cobertura.
-    """
-    imagen_rgb = np.array(imagen_pil.convert("RGB"))
-
-    if imagen_rgb.ndim != 3 or imagen_rgb.shape[2] != 3:
-        raise ValueError("La imagen no tiene un formato RGB válido.")
-
-    alto, ancho = imagen_rgb.shape[:2]
-    mascara = _tc20_mascara_vegetacion(imagen_rgb)
-
-    cobertura = (
-        float(np.count_nonzero(mascara))
-        / float(mascara.size)
-        * 100.0
-    )
-
-    # Cobertura en una cuadrícula de 3 x 3.
-    zonas = []
-    for fila in range(3):
-        for columna in range(3):
-            y1 = fila * alto // 3
-            y2 = (fila + 1) * alto // 3
-            x1 = columna * ancho // 3
-            x2 = (columna + 1) * ancho // 3
-
-            recorte = mascara[y1:y2, x1:x2]
-            porcentaje = (
-                float(np.count_nonzero(recorte))
-                / max(1, recorte.size)
-                * 100.0
-            )
-
-            zonas.append({
-                "Zona": f"F{fila + 1}-C{columna + 1}",
-                "Cobertura verde (%)": round(porcentaje, 2),
-                "Indicador": (
-                    "Baja" if porcentaje < 10
-                    else "Media" if porcentaje < 30
-                    else "Alta"
-                )
-            })
-
-    # Dividir la imagen en 12 segmentos horizontales.
-    # Los segmentos son una referencia visual, no plantas individuales.
-    segmentos = []
-    for i in range(12):
-        x1 = i * ancho // 12
-        x2 = (i + 1) * ancho // 12
-        recorte = mascara[:, x1:x2]
-
-        porcentaje = (
-            float(np.count_nonzero(recorte))
-            / max(1, recorte.size)
-            * 100.0
-        )
-
-        segmentos.append({
-            "Segmento": i + 1,
-            "Cobertura verde (%)": round(porcentaje, 2),
-            "Revisión sugerida": (
-                "Revisar" if porcentaje < 10 else "Sin alerta visual"
-            )
-        })
-
-    # Mapa de calor visual de cobertura.
-    mapa = cv2.applyColorMap(mascara, cv2.COLORMAP_JET)
-    mapa_rgb = cv2.cvtColor(mapa, cv2.COLOR_BGR2RGB)
-
-    return {
-        "cobertura_verde_pct": round(cobertura, 2),
-        "zonas": pd.DataFrame(zonas),
-        "segmentos": pd.DataFrame(segmentos),
-        "imagen_rgb": imagen_rgb,
-        "mascara": mascara,
-        "mapa_rgb": mapa_rgb,
-        "ancho": ancho,
-        "alto": alto,
-    }
-
-
-def _tc20_distancia_km(lat1, lon1, lat2, lon2):
-    """Distancia geográfica aproximada entre dos coordenadas GPS."""
-    radio_tierra = 6371.0
-
-    lat1, lon1, lat2, lon2 = map(
-        _tc20_math.radians,
-        [lat1, lon1, lat2, lon2]
-    )
-
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-
-    a = (
-        _tc20_math.sin(dlat / 2) ** 2
-        + _tc20_math.cos(lat1)
-        * _tc20_math.cos(lat2)
-        * _tc20_math.sin(dlon / 2) ** 2
-    )
-
-    return 2 * radio_tierra * _tc20_math.asin(
-        min(1.0, _tc20_math.sqrt(a))
-    )
-
-
-def _tc20_ordenar_ruta(puntos):
-    """
-    Heurística de vecino más cercano.
-    Reduce distancias geográficas estimadas; no garantiza el óptimo
-    por carretera ni considera caminos privados u obstáculos.
-    """
-    if len(puntos) < 2:
-        return puntos.copy(), 0.0
-
-    pendientes = puntos.copy()
-    ruta = [pendientes.pop(0)]
-    distancia_total = 0.0
-
-    while pendientes:
-        actual = ruta[-1]
-
-        indice = min(
-            range(len(pendientes)),
-            key=lambda i: _tc20_distancia_km(
-                actual["Latitud"],
-                actual["Longitud"],
-                pendientes[i]["Latitud"],
-                pendientes[i]["Longitud"],
-            )
-        )
-
-        siguiente = pendientes.pop(indice)
-
-        distancia_total += _tc20_distancia_km(
-            actual["Latitud"],
-            actual["Longitud"],
-            siguiente["Latitud"],
-            siguiente["Longitud"],
-        )
-
-        ruta.append(siguiente)
-
-    return ruta, distancia_total
-
-
-# ------------------------------------------------------------
-# 2. ESTADO DE LOS NUEVOS MÓDULOS
-# ------------------------------------------------------------
-
-if "tc20_registros_trazabilidad" not in st.session_state:
-    st.session_state.tc20_registros_trazabilidad = []
-
-if "tc20_resultados_visuales" not in st.session_state:
-    st.session_state.tc20_resultados_visuales = []
-
-
-# ------------------------------------------------------------
-# 3. INTERFAZ PRINCIPAL
-# ------------------------------------------------------------
-
-st.markdown("---")
-st.markdown(
-    "## 🍇 Centro de Viticultura de Precisión — TerroCore"
-)
-st.caption(
-    "Herramientas complementarias para analizar parcelas, "
-    "estimar necesidades de riego, planificar recorridos "
-    "y registrar observaciones."
-)
-
-(
-    tab_visual,
-    tab_riego,
-    tab_rutas,
-    tab_trazabilidad,
-    tab_exportar,
-) = st.tabs([
-    "🌿 Análisis visual",
-    "💧 Riego",
-    "🗺️ Rutas",
-    "🏷️ Trazabilidad",
-    "📥 Exportar",
-])
-
-
-# ------------------------------------------------------------
-# 4. ANÁLISIS VISUAL DE PARCELAS
-# ------------------------------------------------------------
-
-with tab_visual:
-    st.subheader("Cobertura verde y zonas de revisión")
-
-    st.info(
-        "Sube una imagen para obtener indicadores visuales. "
-        "Los resultados dependen de la iluminación, la cámara, "
-        "la escala y la orientación de la imagen."
-    )
-
-    imagen_tc20 = st.file_uploader(
-        "Imagen de la parcela",
-        type=["jpg", "jpeg", "png", "webp"],
-        key="tc20_imagen_parcela",
-    )
-
-    parcela_tc20 = st.text_input(
-        "Nombre o ID de parcela",
-        key="tc20_parcela_visual",
-        placeholder="Ej. Parcela V74",
-    )
-
-    umbral_tc20 = st.slider(
-        "Umbral para marcar baja cobertura (%)",
-        min_value=1,
-        max_value=30,
-        value=10,
-        key="tc20_umbral_visual",
-    )
-
-    if imagen_tc20 is not None:
-        try:
-            from PIL import Image as _TC20Image
-
-            pil_tc20 = _TC20Image.open(imagen_tc20)
-            resultado_tc20 = _tc20_analizar_imagen(pil_tc20)
-
-            cobertura_tc20 = resultado_tc20["cobertura_verde_pct"]
-
-            st.markdown("### Indicadores de la imagen")
-
-            c1, c2, c3 = st.columns(3)
-            c1.metric(
-                "Cobertura verde visual",
-                f"{cobertura_tc20:.1f}%"
-            )
-            c2.metric(
-                "Zonas evaluadas",
-                len(resultado_tc20["zonas"])
-            )
-            c3.metric(
-                "Segmentos para revisar",
-                int(
-                    (
-                        resultado_tc20["segmentos"][
-                            "Cobertura verde (%)"
-                        ] < umbral_tc20
-                    ).sum()
-                )
-            )
-
-            izquierda, derecha = st.columns(2)
-
-            with izquierda:
-                st.markdown("**Imagen original**")
-                st.image(
-                    resultado_tc20["imagen_rgb"],
-                    use_container_width=True,
-                )
-
-            with derecha:
-                st.markdown("**Mapa de cobertura visual**")
-                st.image(
-                    resultado_tc20["mapa_rgb"],
-                    use_container_width=True,
-                )
-
-            st.markdown("### Cobertura por zonas")
-            tabla_zonas = resultado_tc20["zonas"].copy()
-            tabla_zonas["Indicador"] = tabla_zonas[
-                "Cobertura verde (%)"
-            ].apply(
-                lambda x: (
-                    "Baja" if x < umbral_tc20
-                    else "Media" if x < 30
-                    else "Alta"
-                )
-            )
-            st.dataframe(
-                tabla_zonas,
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            st.markdown("### Segmentos que conviene inspeccionar")
-            tabla_segmentos = resultado_tc20["segmentos"].copy()
-            tabla_segmentos["Revisión sugerida"] = tabla_segmentos[
-                "Cobertura verde (%)"
-            ].apply(
-                lambda x: "Revisar" if x < umbral_tc20
-                else "Sin alerta visual"
-            )
-            st.dataframe(
-                tabla_segmentos,
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            if st.button(
-                "Guardar resultado visual en esta sesión",
-                key="tc20_guardar_visual",
-            ):
-                st.session_state.tc20_resultados_visuales.append({
-                    "Fecha": _tc20_datetime.now().isoformat(
-                        timespec="seconds"
-                    ),
-                    "Parcela": parcela_tc20.strip(),
-                    "Imagen": imagen_tc20.name,
-                    "Cobertura verde (%)": cobertura_tc20,
-                    "Zonas con baja cobertura": int(
-                        (
-                            tabla_zonas["Cobertura verde (%)"]
-                            < umbral_tc20
-                        ).sum()
-                    ),
-                    "Segmentos para revisar": int(
-                        (
-                            tabla_segmentos["Cobertura verde (%)"]
-                            < umbral_tc20
-                        ).sum()
-                    ),
-                })
-                st.success(
-                    "Resultado guardado en la sesión actual. "
-                    "Puedes exportarlo desde la pestaña Exportar."
-                )
-
-        except Exception as exc:
-            st.error(f"No se pudo analizar la imagen: {exc}")
-
-
-# ------------------------------------------------------------
-# 5. CALCULADORA DE RIEGO
-# ------------------------------------------------------------
-
-with tab_riego:
-    st.subheader("Estimación diaria de riego")
-
-    st.caption(
-        "Ingresa valores locales de evapotranspiración, "
-        "coeficiente del cultivo y eficiencia del sistema."
-    )
-
-    with st.form("tc20_form_riego"):
-        col1, col2 = st.columns(2)
-
-        with col1:
-            et0 = st.number_input(
-                "ET₀ (mm/día)",
-                min_value=0.0,
-                max_value=20.0,
-                value=5.0,
-                step=0.1,
-            )
-            kc = st.number_input(
-                "Coeficiente Kc",
-                min_value=0.0,
-                max_value=2.0,
-                value=0.70,
-                step=0.05,
-            )
-            superficie = st.number_input(
-                "Superficie (m²)",
-                min_value=1.0,
-                value=10000.0,
-                step=500.0,
-            )
-
-        with col2:
-            lluvia = st.number_input(
-                "Lluvia efectiva (mm/día)",
-                min_value=0.0,
-                max_value=100.0,
-                value=0.0,
-                step=0.5,
-            )
-            eficiencia = st.number_input(
-                "Eficiencia del riego (%)",
-                min_value=1,
-                max_value=100,
-                value=90,
-                step=1,
-            )
-
-        calcular_riego = st.form_submit_button(
-            "Calcular requerimiento"
-        )
-
-    if calcular_riego:
-        necesidad_bruta = max(
-            0.0,
-            et0 * kc - lluvia
-        )
-
-        litros_dia = (
-            necesidad_bruta
-            * superficie
-            / (eficiencia / 100.0)
-        )
-
-        st.markdown("### Resultado estimado")
-
-        a, b, c = st.columns(3)
-        a.metric(
-            "Necesidad neta",
-            f"{necesidad_bruta:.2f} mm/día",
-        )
-        b.metric(
-            "Volumen diario",
-            f"{litros_dia:,.0f} L/día",
-        )
-        c.metric(
-            "Volumen diario",
-            f"{litros_dia / 1000:,.2f} m³/día",
-        )
-
-        st.caption(
-            "Estimación simplificada: ETc = ET₀ × Kc. "
-            "La lluvia efectiva se resta de la necesidad neta "
-            "y después se ajusta por la eficiencia indicada. "
-            "Valida los valores con las condiciones del suelo, "
-            "el estado fenológico y las recomendaciones agronómicas."
-        )
-
-
-# ------------------------------------------------------------
-# 6. OPTIMIZACIÓN GEOGRÁFICA DE RECORRIDOS
-# ------------------------------------------------------------
-
-with tab_rutas:
-    st.subheader("Orden sugerido para visitar puntos de inspección")
-
-    st.write(
-        "Pega un punto por línea con este formato: "
-        "`Nombre,Latitud,Longitud`."
-    )
-
-    st.code(
-        "Parcela A,25.12345,-100.12345\n"
-        "Surco 1,25.12400,-100.12200\n"
-        "Surco 2,25.12500,-100.12100",
-        language="text",
-    )
-
-    texto_puntos = st.text_area(
-        "Puntos GPS",
-        height=150,
-        key="tc20_puntos_ruta",
-        placeholder="Nombre,Latitud,Longitud",
-    )
-
-    if st.button("Calcular orden sugerido", key="tc20_calcular_ruta"):
-        puntos = []
-        errores = []
-
-        for numero, linea in enumerate(
-            texto_puntos.splitlines(), start=1
-        ):
-            if not linea.strip():
-                continue
-
-            partes = [p.strip() for p in linea.split(",")]
-
-            if len(partes) != 3:
-                errores.append(
-                    f"Línea {numero}: debe contener nombre, latitud y longitud."
-                )
-                continue
-
-            try:
-                nombre = partes[0]
-                lat = float(partes[1])
-                lon = float(partes[2])
-
-                if not (-90 <= lat <= 90):
-                    raise ValueError("Latitud fuera de rango.")
-                if not (-180 <= lon <= 180):
-                    raise ValueError("Longitud fuera de rango.")
-                if not nombre:
-                    nombre = f"Punto {numero}"
-
-                puntos.append({
-                    "Punto": nombre,
-                    "Latitud": lat,
-                    "Longitud": lon,
-                })
-
-            except ValueError:
-                errores.append(
-                    f"Línea {numero}: coordenadas no válidas."
-                )
-
-        for error in errores:
-            st.warning(error)
-
-        if len(puntos) < 2:
-            st.error(
-                "Introduce al menos dos puntos GPS válidos."
-            )
-        else:
-            ruta, distancia = _tc20_ordenar_ruta(puntos)
-            df_ruta = pd.DataFrame(ruta)
-            df_ruta.insert(
-                0, "Orden",
-                range(1, len(df_ruta) + 1)
-            )
-
-            st.markdown("### Orden recomendado")
-            st.dataframe(
-                df_ruta,
-                use_container_width=True,
-                hide_index=True,
-            )
-            st.metric(
-                "Distancia geográfica estimada",
-                f"{distancia:.2f} km",
-            )
-
-            coordenadas = [
-                f'{p["Latitud"]},{p["Longitud"]}'
-                for p in ruta
-            ]
-
-            if len(coordenadas) >= 2:
-                url_maps = (
-                    "https://www.google.com/maps/dir/"
-                    + "/".join(coordenadas)
-                )
-                st.link_button(
-                    "Abrir recorrido en Google Maps",
-                    url_maps,
-                )
-
-            st.caption(
-                "El orden se calcula por distancia en línea recta "
-                "mediante vecino más cercano. No equivale a una "
-                "ruta vial optimizada y puede necesitar ajustes "
-                "para caminos reales, accesos y pendientes."
-            )
-
-
-# ------------------------------------------------------------
-# 7. REGISTRO DE TRAZABILIDAD
-# ------------------------------------------------------------
-
-with tab_trazabilidad:
-    st.subheader("Registro de parcela, surco y planta")
-
-    with st.form("tc20_form_trazabilidad"):
-        parcela_tr = st.text_input(
-            "Parcela *",
-            key="tc20_tr_parcela",
-        )
-        surco_tr = st.text_input(
-            "Surco",
-            key="tc20_tr_surco",
-        )
-        planta_tr = st.text_input(
-            "Identificador de planta / QR",
-            key="tc20_tr_planta",
-        )
-        etapa_tr = st.selectbox(
-            "Etapa observada",
-            [
-                "Sin especificar",
-                "Brotación",
-                "Crecimiento vegetativo",
-                "Floración",
-                "Cuajado",
-                "Envero",
-                "Maduración",
-                "Cosecha",
-                "Reposo vegetativo",
-            ],
-            key="tc20_tr_etapa",
-        )
-        observaciones_tr = st.text_area(
-            "Observaciones de campo",
-            key="tc20_tr_observaciones",
-        )
-
-        registrar_tr = st.form_submit_button(
-            "Registrar observación"
-        )
-
-    if registrar_tr:
-        if not parcela_tr.strip():
-            st.error("El campo Parcela es obligatorio.")
-        else:
-            st.session_state.tc20_registros_trazabilidad.append({
-                "Fecha": _tc20_datetime.now().isoformat(
-                    timespec="seconds"
-                ),
-                "Parcela": parcela_tr.strip(),
-                "Surco": surco_tr.strip(),
-                "Planta_QR": planta_tr.strip(),
-                "Etapa": etapa_tr,
-                "Observaciones": observaciones_tr.strip(),
-            })
-            st.success(
-                "Observación agregada a los registros de esta sesión."
-            )
-
-    registros_tr = st.session_state.tc20_registros_trazabilidad
-
-    if registros_tr:
-        st.markdown("### Registros capturados")
-        st.dataframe(
-            pd.DataFrame(registros_tr),
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info(
-            "Todavía no hay registros de trazabilidad en esta sesión."
-        )
-
-
-# ------------------------------------------------------------
-# 8. EXPORTACIÓN DE RESULTADOS
-# ------------------------------------------------------------
-
-with tab_exportar:
-    st.subheader("Exportar información de los módulos")
-
-    resultados_visuales = st.session_state.tc20_resultados_visuales
-    registros_trazabilidad = (
-        st.session_state.tc20_registros_trazabilidad
-    )
-
-    col_a, col_b = st.columns(2)
-
-    with col_a:
-        st.markdown("**Análisis visual**")
-
-        if resultados_visuales:
-            df_visual = pd.DataFrame(resultados_visuales)
-            st.dataframe(
-                df_visual,
-                use_container_width=True,
-                hide_index=True,
-            )
-            st.download_button(
-                "Descargar análisis visual CSV",
-                data=df_visual.to_csv(
-                    index=False
-                ).encode("utf-8-sig"),
-                file_name="TerroCore_analisis_visual.csv",
-                mime="text/csv",
-                key="tc20_exportar_visual",
-            )
-        else:
-            st.caption("No hay resultados visuales guardados.")
-
-    with col_b:
-        st.markdown("**Trazabilidad**")
-
-        if registros_trazabilidad:
-            df_trazabilidad = pd.DataFrame(registros_trazabilidad)
-            st.dataframe(
-                df_trazabilidad,
-                use_container_width=True,
-                hide_index=True,
-            )
-            st.download_button(
-                "Descargar trazabilidad CSV",
-                data=df_trazabilidad.to_csv(
-                    index=False
-                ).encode("utf-8-sig"),
-                file_name="TerroCore_trazabilidad.csv",
-                mime="text/csv",
-                key="tc20_exportar_trazabilidad",
-            )
-        else:
-            st.caption("No hay registros de trazabilidad guardados.")
-
-    st.warning(
-        "Estos registros nuevos se mantienen en la sesión de Streamlit "
-        "y se pueden exportar. Este bloque no los escribe todavía en "
-        "Google Sheets ni en el historial actual de TerroCore. "
-        "La conexión persistente se debe agregar usando la estructura "
-        "real de tus hojas, sin crear filas duplicadas ni alterar "
-        "los análisis existentes."
-    )
-
-# ============================================================
-# FIN DEL CENTRO DE VITICULTURA DE PRECISIÓN
-# ============================================================
 
 
 # ============================================================
@@ -17512,3 +16777,693 @@ def render_seccion_video_v364():
 # ============================================================
 
 render_seccion_video_v364()
+
+
+# ============================================================================
+# TERROCORE — CENTRO DE INTEGRACIONES V1.0
+# Complemento aditivo: no sustituye el motor ni el historial actual.
+# ============================================================================
+from datetime import date as _tcx_date, timedelta as _tcx_timedelta
+
+_TCX_INTEGRATIONS_SHEET = "TerroCore_Integraciones"
+_TCX_INTEGRATIONS_HEADERS = ["RegistroID", "FechaUTC", "Modulo", "Parcela", "Surco", "Latitud", "Longitud", "DatosJSON", "Fuente"]
+
+
+def _tcx_secret(nombre, predeterminado=""):
+    try:
+        valor = st.secrets.get(nombre, predeterminado)
+        if valor not in (None, ""):
+            return str(valor).strip()
+    except Exception:
+        pass
+    return str(os.getenv(nombre, predeterminado) or "").strip()
+
+
+def _tcx_json_seguro(valor):
+    try:
+        return json.dumps(valor, ensure_ascii=False, default=str)
+    except Exception:
+        return json.dumps({"valor": str(valor)}, ensure_ascii=False)
+
+
+def _tcx_asegurar_hoja_integraciones(sheets, spreadsheet_id):
+    meta = sheets.spreadsheets().get(spreadsheetId=spreadsheet_id, fields="sheets.properties.title").execute()
+    nombres = [str(x.get("properties", {}).get("title", "")) for x in meta.get("sheets", [])]
+    if _TCX_INTEGRATIONS_SHEET not in nombres:
+        sheets.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": [{"addSheet": {"properties": {"title": _TCX_INTEGRATIONS_SHEET}}}]}).execute()
+    rango = f"'{_TCX_INTEGRATIONS_SHEET}'!A1:I1"
+    header = sheets.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=rango).execute().get("values", [])
+    if not header or not any(str(v).strip() for v in (header[0] if header else [])):
+        sheets.spreadsheets().values().update(spreadsheetId=spreadsheet_id, range=rango, valueInputOption="RAW", body={"values": [_TCX_INTEGRATIONS_HEADERS]}).execute()
+
+
+def _tcx_guardar_integracion(modulo, datos, fuente="TerroCore"):
+    registro = {
+        "RegistroID": secrets.token_hex(4).upper(),
+        "FechaUTC": datetime.now(timezone.utc).isoformat(),
+        "Modulo": str(modulo or "General"),
+        "Parcela": str((datos or {}).get("parcela", (datos or {}).get("Parcela", "")) or ""),
+        "Surco": str((datos or {}).get("surco", (datos or {}).get("Surco", "")) or ""),
+        "Latitud": str((datos or {}).get("latitud", (datos or {}).get("Latitud", "")) or ""),
+        "Longitud": str((datos or {}).get("longitud", (datos or {}).get("Longitud", "")) or ""),
+        "DatosJSON": _tcx_json_seguro(datos or {}),
+        "Fuente": str(fuente or "TerroCore"),
+    }
+    st.session_state.setdefault("_tcx_integraciones_registros", []).append(registro)
+    if historial_google_configurado():
+        _, sheets = obtener_google_clients()
+        sid = _secret_text("GSHEET_ID")
+        _tcx_asegurar_hoja_integraciones(sheets, sid)
+        sheets.spreadsheets().values().append(
+            spreadsheetId=sid, range=f"'{_TCX_INTEGRATIONS_SHEET}'!A:I",
+            valueInputOption="RAW", insertDataOption="INSERT_ROWS",
+            body={"values": [[registro[k] for k in _TCX_INTEGRATIONS_HEADERS]]},
+        ).execute()
+        return True, registro
+    return False, registro
+
+
+def _tcx_haversine_km(p1, p2):
+    radio = 6371.0088
+    lat1, lon1 = math.radians(float(p1["lat"])), math.radians(float(p1["lon"]))
+    lat2, lon2 = math.radians(float(p2["lat"])), math.radians(float(p2["lon"]))
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    return 2 * radio * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _tcx_parsear_puntos_ruta(texto):
+    puntos = []
+    for n, fila in enumerate(csv.reader(io.StringIO(str(texto or ""))), start=1):
+        fila = [str(x).strip() for x in fila]
+        if not fila or not any(fila):
+            continue
+        try:
+            if len(fila) >= 3:
+                nombre, lat, lon = fila[0] or f"Punto {n}", float(fila[1]), float(fila[2])
+            elif len(fila) == 2:
+                nombre, lat, lon = f"Punto {n}", float(fila[0]), float(fila[1])
+            else:
+                continue
+        except Exception:
+            continue
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            puntos.append({"nombre": nombre, "lat": lat, "lon": lon})
+    return puntos
+
+
+def _tcx_matriz_distancias_google(puntos, api_key):
+    if len(puntos) > 10:
+        raise ValueError("Este módulo limita la matriz de rutas a 10 puntos.")
+    waypoint = lambda p: {"waypoint": {"location": {"latLng": {"latitude": p["lat"], "longitude": p["lon"]}}}}
+    payload = {"origins": [waypoint(p) for p in puntos], "destinations": [waypoint(p) for p in puntos], "travelMode": "DRIVE", "routingPreference": "TRAFFIC_UNAWARE"}
+    resp = requests.post("https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix", headers={"Content-Type": "application/json", "X-Goog-Api-Key": api_key, "X-Goog-FieldMask": "originIndex,destinationIndex,distanceMeters,condition,status"}, json=payload, timeout=45)
+    if not resp.ok:
+        raise RuntimeError(f"Google Routes API HTTP {resp.status_code}: {resp.text[:500]}")
+    body = resp.json()
+    elementos = body if isinstance(body, list) else body.get("elements", [])
+    n = len(puntos)
+    matriz = [[float("inf") for _ in range(n)] for _ in range(n)]
+    for item in elementos:
+        try:
+            i, j = int(item["originIndex"]), int(item["destinationIndex"])
+            if item.get("distanceMeters") is not None:
+                matriz[i][j] = float(item["distanceMeters"]) / 1000.0
+        except Exception:
+            pass
+    return matriz
+
+
+def _tcx_ordenar_ruta(puntos, indice_inicio=0, matriz=None):
+    if not puntos:
+        return [], 0.0
+    actual = max(0, min(len(puntos) - 1, int(indice_inicio)))
+    restantes, orden, total = set(range(len(puntos))) - {actual}, [actual], 0.0
+    while restantes:
+        def distancia(j):
+            if matriz is not None and math.isfinite(matriz[actual][j]):
+                return matriz[actual][j]
+            return _tcx_haversine_km(puntos[actual], puntos[j])
+        siguiente = min(restantes, key=distancia)
+        total += distancia(siguiente)
+        orden.append(siguiente)
+        restantes.remove(siguiente)
+        actual = siguiente
+    return [puntos[i] for i in orden], total
+
+
+def _tcx_localname(tag):
+    return str(tag).split("}")[-1].split(":")[-1]
+
+
+def _tcx_kml_coords(texto):
+    salida = []
+    for parte in re.split(r"\s+", str(texto or "").strip()):
+        if not parte:
+            continue
+        trozos = parte.split(",")
+        if len(trozos) >= 2:
+            try:
+                salida.append([float(trozos[0]), float(trozos[1])])
+            except Exception:
+                pass
+    return salida
+
+
+def _tcx_importar_geoarchivo(nombre, contenido):
+    nombre_l = str(nombre or "").lower()
+    if nombre_l.endswith((".geojson", ".json")):
+        data = json.loads(contenido.decode("utf-8-sig"))
+        if data.get("type") == "FeatureCollection": return data
+        if data.get("type") == "Feature": return {"type": "FeatureCollection", "features": [data]}
+        if data.get("type") and data.get("coordinates") is not None:
+            return {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"name": nombre}, "geometry": data}]}
+        raise ValueError("El JSON no tiene una estructura GeoJSON reconocible.")
+    if nombre_l.endswith(".kmz"):
+        with zipfile.ZipFile(io.BytesIO(contenido)) as zf:
+            nombres = [x for x in zf.namelist() if x.lower().endswith(".kml")]
+            if not nombres: raise ValueError("El KMZ no contiene un KML.")
+            contenido, nombre_l = zf.read(nombres[0]), ".kml"
+    if nombre_l.endswith(".kml"):
+        import xml.etree.ElementTree as ET
+        root, features = ET.fromstring(contenido), []
+        for pm in root.iter():
+            if _tcx_localname(pm.tag) != "Placemark": continue
+            name = "Elemento geográfico"
+            for child in pm.iter():
+                if _tcx_localname(child.tag) == "name" and (child.text or "").strip():
+                    name = child.text.strip(); break
+            geom_node = geom_type = None
+            for child in pm.iter():
+                ln = _tcx_localname(child.tag)
+                if ln in ("Point", "LineString", "Polygon"):
+                    geom_node, geom_type = child, ln; break
+            if geom_node is None: continue
+            nodes = [x for x in geom_node.iter() if _tcx_localname(x.tag) == "coordinates"]
+            coords = _tcx_kml_coords(nodes[0].text if nodes else "")
+            if not coords: continue
+            geometry = {"type": "Point", "coordinates": coords[0]} if geom_type == "Point" else ({"type": "LineString", "coordinates": coords} if geom_type == "LineString" else {"type": "Polygon", "coordinates": [coords]})
+            features.append({"type": "Feature", "properties": {"name": name}, "geometry": geometry})
+        return {"type": "FeatureCollection", "features": features}
+    if nombre_l.endswith(".gpx"):
+        import xml.etree.ElementTree as ET
+        root, features = ET.fromstring(contenido), []
+        for node in root.iter():
+            ln = _tcx_localname(node.tag)
+            if ln not in ("wpt", "trkpt", "rtept"): continue
+            try: lat, lon = float(node.attrib["lat"]), float(node.attrib["lon"])
+            except Exception: continue
+            name = next(((x.text or "").strip() for x in node if _tcx_localname(x.tag) == "name"), ln)
+            features.append({"type": "Feature", "properties": {"name": name or ln, "tipo": ln}, "geometry": {"type": "Point", "coordinates": [lon, lat]}})
+        return {"type": "FeatureCollection", "features": features}
+    if nombre_l.endswith(".csv"):
+        df = pd.read_csv(io.BytesIO(contenido))
+        mapa = {re.sub(r"[^a-z]", "", str(c).lower()): c for c in df.columns}
+        lat_col = next((mapa[k] for k in ("lat", "latitude", "latitud", "latitudinicio", "iniciolat") if k in mapa), None)
+        lon_col = next((mapa[k] for k in ("lon", "lng", "longitude", "longitud", "longitudinicio", "iniciolon") if k in mapa), None)
+        if not lat_col or not lon_col: raise ValueError("El CSV debe incluir columnas Latitud/Latitude y Longitud/Longitude.")
+        name_col = next((mapa[k] for k in ("nombre", "name", "parcela", "surco", "id") if k in mapa), None)
+        features = []
+        for ix, row in df.iterrows():
+            try: lat, lon = float(row[lat_col]), float(row[lon_col])
+            except Exception: continue
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                props = {str(k): (None if pd.isna(v) else str(v)) for k, v in row.to_dict().items()}
+                props["name"] = str(row[name_col]) if name_col else f"Punto {ix + 1}"
+                features.append({"type": "Feature", "properties": props, "geometry": {"type": "Point", "coordinates": [lon, lat]}})
+        return {"type": "FeatureCollection", "features": features}
+    raise ValueError("Formato no compatible. Usa KML, KMZ, GeoJSON, GPX o CSV.")
+
+
+def _tcx_features_a_tabla(fc):
+    filas = []
+    for i, f in enumerate(fc.get("features", []), 1):
+        geom, props = f.get("geometry") or {}, f.get("properties") or {}
+        coords, lat, lon = geom.get("coordinates"), "", ""
+        if geom.get("type") == "Point" and isinstance(coords, (list, tuple)) and len(coords) >= 2: lon, lat = coords[0], coords[1]
+        filas.append({"N": i, "Nombre": props.get("name", props.get("Name", f"Elemento {i}")), "Tipo": geom.get("type", ""), "Latitud": lat, "Longitud": lon, "Propiedades": _tcx_json_seguro(props)})
+    return pd.DataFrame(filas)
+
+
+def _tcx_open_meteo(lat, lon):
+    resp = requests.get("https://api.open-meteo.com/v1/forecast", params={
+        "latitude": float(lat), "longitude": float(lon),
+        "current": "temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m",
+        "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,et0_fao_evapotranspiration",
+        "forecast_days": 7, "timezone": "auto",
+    }, timeout=30)
+    if not resp.ok: raise RuntimeError(f"Open-Meteo HTTP {resp.status_code}: {resp.text[:500]}")
+    return resp.json()
+
+
+def _tcx_sentinel_ndvi(bbox, fecha_inicio, fecha_fin):
+    client_id, client_secret = _tcx_secret("SENTINEL_HUB_CLIENT_ID"), _tcx_secret("SENTINEL_HUB_CLIENT_SECRET")
+    if not client_id or not client_secret: raise ValueError("Faltan SENTINEL_HUB_CLIENT_ID y SENTINEL_HUB_CLIENT_SECRET en Streamlit Secrets.")
+    auth = requests.post("https://services.sentinel-hub.com/oauth/token", data={"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret}, timeout=30)
+    if not auth.ok: raise RuntimeError(f"Sentinel Hub OAuth HTTP {auth.status_code}: {auth.text[:600]}")
+    token = auth.json().get("access_token")
+    if not token: raise RuntimeError("Sentinel Hub no devolvió access_token.")
+    inicio, fin = f"{fecha_inicio.isoformat()}T00:00:00Z", f"{fecha_fin.isoformat()}T23:59:59Z"
+    evalscript = '''//VERSION=3
+function setup() {
+  return {input:[{bands:["B04","B08","SCL","dataMask"]}],output:[{id:"ndvi",bands:1,sampleType:"FLOAT32"},{id:"dataMask",bands:1}]};
+}
+function evaluatePixel(s) {
+  var valido = s.dataMask !== 0 && [3,8,9,10,11].indexOf(s.SCL) < 0;
+  var den = s.B08 + s.B04;
+  var ndvi = (valido && den !== 0) ? (s.B08 - s.B04) / den : 0;
+  return {ndvi:[ndvi], dataMask:[valido ? 1 : 0]};
+}
+'''
+    body = {
+        "input": {"bounds": {"bbox": [float(x) for x in bbox], "properties": {"crs": "http://www.opengis.net/def/crs/EPSG/0/4326"}}, "data": [{"type": "sentinel-2-l2a", "dataFilter": {"timeRange": {"from": inicio, "to": fin}, "mosaickingOrder": "leastCC"}}]},
+        "aggregation": {"timeRange": {"from": inicio, "to": fin}, "aggregationInterval": {"of": "P1D"}, "resx": 10, "resy": 10, "evalscript": evalscript},
+        "calculations": {"ndvi": {"statistics": {"default": {"percentiles": {"k": [10, 25, 50, 75, 90]}}}}},
+    }
+    resp = requests.post("https://services.sentinel-hub.com/api/v1/statistics", headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, json=body, timeout=90)
+    if not resp.ok: raise RuntimeError(f"Sentinel Hub Statistics HTTP {resp.status_code}: {resp.text[:900]}")
+    return resp.json()
+
+
+def _tcx_extraer_medias(obj, ruta=""):
+    salida = []
+    if isinstance(obj, dict):
+        stats = obj.get("stats")
+        if isinstance(stats, dict) and stats.get("mean") is not None:
+            try: salida.append({"Ruta": ruta or "NDVI", "Media": float(stats["mean"]), "Mínimo": stats.get("min"), "Máximo": stats.get("max"), "Muestras": stats.get("sampleCount")})
+            except Exception: pass
+        for k, v in obj.items(): salida.extend(_tcx_extraer_medias(v, f"{ruta}.{k}" if ruta else str(k)))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj): salida.extend(_tcx_extraer_medias(v, f"{ruta}[{i}]"))
+    return salida
+
+
+def _tcx_gemini_vision(imagen_bytes, mime_type, api_key):
+    modelo = _tcx_secret("TERROCORE_GEMINI_MODEL", "gemini-2.5-flash")
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
+    prompt = ("Analiza esta fotografía de un viñedo para apoyo agronómico. Describe solo señales observables: cobertura, uniformidad, huecos, coloración y posibles zonas de estrés. No afirmes diagnóstico definitivo de enfermedad o deficiencia. Separa observaciones, hipótesis y verificaciones recomendadas en campo. Responde en español.")
+    body = {"contents": [{"parts": [{"text": prompt}, {"inlineData": {"mimeType": mime_type or "image/jpeg", "data": base64.b64encode(imagen_bytes).decode("ascii")}}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 900}}
+    resp = requests.post(endpoint, headers={"x-goog-api-key": api_key, "Content-Type": "application/json"}, json=body, timeout=90)
+    if not resp.ok: raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:700]}")
+    data = resp.json()
+    parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
+    texto = "\n".join(str(p.get("text", "")) for p in parts if p.get("text"))
+    if not texto: raise RuntimeError("Gemini no devolvió texto; revisa modelo y permisos de API.")
+    return texto
+
+
+def _tcx_render_integraciones():
+    st.markdown("---")
+    st.markdown("# 🌿 Centro de integraciones TerroCore")
+    st.caption("Módulos complementarios. Los registros nuevos usan una pestaña independiente, TerroCore_Integraciones; el historial actual no se modifica.")
+    tabs = st.tabs(["🔌 Conectores", "🌦️ Clima", "🛰️ Satélite NDVI", "🗺️ GPS y rutas", "🌍 GIS / mapas", "🌱 IA y vegetación", "💧 Riego", "📡 Sensores", "🏷️ QR / trazabilidad", "📤 Exportar"])
+
+    # 1. Estado de conectores
+    with tabs[0]:
+        st.subheader("Estado de las conexiones")
+        try: google_ok = bool(historial_google_configurado())
+        except Exception: google_ok = False
+        checks = [
+            {"Servicio": "Google Sheets / Drive", "Estado": "Configurado" if google_ok else "Faltan secretos de Google", "Tipo": "Persistencia"},
+            {"Servicio": "Open-Meteo", "Estado": "Disponible sin API key", "Tipo": "Clima"},
+            {"Servicio": "Sentinel Hub", "Estado": "Credenciales configuradas" if (_tcx_secret("SENTINEL_HUB_CLIENT_ID") and _tcx_secret("SENTINEL_HUB_CLIENT_SECRET")) else "Pendiente de credenciales", "Tipo": "Satélite / NDVI"},
+            {"Servicio": "Google Routes API", "Estado": "API key configurada" if (_tcx_secret("GOOGLE_MAPS_API_KEY") or _tcx_secret("GOOGLE_ROUTES_API_KEY")) else "Ruta geográfica; API opcional", "Tipo": "Distancias por carretera"},
+            {"Servicio": "Gemini Vision", "Estado": "API key configurada" if _tcx_secret("GEMINI_API_KEY") else "Pendiente de GEMINI_API_KEY", "Tipo": "IA visual"},
+            {"Servicio": "AppSheet API", "Estado": "Configurado" if (_tcx_secret("APPSHEET_APP_ID") and _tcx_secret("APPSHEET_ACCESS_KEY") and _tcx_secret("APPSHEET_TABLE_NAME")) else "Pendiente de credenciales/tabla", "Tipo": "Enviar registros"},
+            {"Servicio": "Sensores / MQTT", "Estado": "CSV disponible; MQTT requiere broker", "Tipo": "Telemetría"},
+            {"Servicio": "WhatsApp / SMS / correo", "Estado": "Requiere proveedor y credenciales", "Tipo": "Notificaciones"},
+        ]
+        st.dataframe(pd.DataFrame(checks), use_container_width=True, hide_index=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Probar acceso a Google Sheets", key="_tcx_test_google"):
+                try:
+                    if not historial_google_configurado(): raise RuntimeError("Revisa gcp_service_account, GSHEET_ID y GDRIVE_PARENT_FOLDER_ID en Secrets.")
+                    _, sh = obtener_google_clients()
+                    sh.spreadsheets().get(spreadsheetId=_secret_text("GSHEET_ID"), fields="spreadsheetId,properties.title").execute()
+                    st.success("Conexión con Google Sheets correcta.")
+                except Exception as exc: st.error(f"No se pudo verificar Google Sheets: {exc}")
+        with c2:
+            if st.button("Preparar pestaña de integraciones", key="_tcx_check_tab"):
+                try:
+                    if not historial_google_configurado(): raise RuntimeError("Faltan credenciales de Google.")
+                    _, sh = obtener_google_clients()
+                    _tcx_asegurar_hoja_integraciones(sh, _secret_text("GSHEET_ID"))
+                    st.success(f"La pestaña {_TCX_INTEGRATIONS_SHEET} está lista.")
+                except Exception as exc: st.warning(str(exc))
+        st.markdown("### Catálogo de proveedores por conectar")
+        proveedores = [
+            ("MAPP", "Producto/API exactos por confirmar"), ("Integrape / VineAudit / IntegrapePRO / Vure", "Confirmar producto y exportaciones"),
+            ("VineView", "Solicitar opciones autorizadas de entrega de datos"), ("Deep Planet / VineSignal", "Confirmar API, licencia y cobertura"),
+            ("Chouette", "Confirmar producto exacto"), ("eVineyard / vintrace Vineyard", "Confirmar API y datos disponibles"),
+            ("Fruition Sciences", "Confirmar acceso a datos fisiológicos"), ("AHA Viticulture", "Confirmar producto y acceso técnico"),
+            ("BLADESCAPE Airborne Services", "Importar mapas / ortomosaicos compatibles"), ("TerraNIS", "Confirmar API geoespacial"),
+            ("Terraview", "Confirmar endpoints y permisos"), ("Netsens / Vinesense", "Confirmar API de sensores"),
+            ("Pessl Instruments / METOS", "FieldClimate API con cuenta y credenciales"), ("MyEasyFarm / MyEasyViti", "Confirmar conectores y exportaciones"),
+            ("DigifarmZ", "Confirmar producto, API y formato"), ("Vidacycle", "Confirmar compatibilidad y exportaciones"),
+            ("Pollen Systems", "Confirmar API, licencias y productos"), ("vitiDron", "Importar imágenes/productos geográficos"),
+            ("Aurea Imaging", "Confirmar API y productos"), ("TracMap", "Confirmar API, permisos y compatibilidad"),
+            ("Pix4D / DroneDeploy / WebODM", "Procesamiento o importación de productos de dron"), ("Copernicus / Sentinel-2", "Imágenes satelitales vía servicios compatibles"),
+        ]
+        st.dataframe(pd.DataFrame(proveedores, columns=["Proveedor", "Siguiente paso técnico"]), use_container_width=True, hide_index=True)
+        st.info("El catálogo no significa que todos los proveedores tengan API pública. Solo se conectarán con documentación, permisos y credenciales válidas.")
+
+    # 2. Clima
+    with tabs[1]:
+        st.subheader("Clima y evapotranspiración")
+        st.caption("Open-Meteo funciona sin clave API. Las coordenadas iniciales son un ejemplo editable: cámbialas por las de tu parcela.")
+        c1, c2 = st.columns(2)
+        with c1: lat_clima = st.number_input("Latitud de parcela", -90.0, 90.0, 25.0, 0.0001, "%.6f", key="_tcx_weather_lat")
+        with c2: lon_clima = st.number_input("Longitud de parcela", -180.0, 180.0, -100.0, 0.0001, "%.6f", key="_tcx_weather_lon")
+        if st.button("Consultar clima de 7 días", key="_tcx_weather_run"):
+            try:
+                with st.spinner("Consultando Open-Meteo..."): clima = _tcx_open_meteo(lat_clima, lon_clima)
+                st.session_state["_tcx_weather_json"] = clima
+                diario = clima.get("daily", {}) or {}
+                dfc = pd.DataFrame({"Fecha": diario.get("time", []), "Tmin °C": diario.get("temperature_2m_min", []), "Tmax °C": diario.get("temperature_2m_max", []), "Lluvia mm": diario.get("precipitation_sum", []), "ET0 mm": diario.get("et0_fao_evapotranspiration", [])})
+                st.session_state["_tcx_weather_df"] = dfc
+                if len(dfc) and pd.notna(dfc.iloc[0].get("ET0 mm")): st.session_state["_tcx_last_et0"] = float(dfc.iloc[0]["ET0 mm"] or 0)
+                st.session_state["_tcx_weather_coords"] = {"latitud": lat_clima, "longitud": lon_clima}
+            except Exception as exc: st.error(f"No se pudo consultar el clima: {exc}")
+        clima = st.session_state.get("_tcx_weather_json")
+        dfc = st.session_state.get("_tcx_weather_df")
+        if clima:
+            actual = clima.get("current", {}) or {}
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Temperatura", f"{actual.get('temperature_2m', '—')} °C")
+            m2.metric("Humedad", f"{actual.get('relative_humidity_2m', '—')} %")
+            m3.metric("Precipitación", f"{actual.get('precipitation', '—')} mm")
+            m4.metric("Viento", f"{actual.get('wind_speed_10m', '—')} km/h")
+            if isinstance(dfc, pd.DataFrame) and not dfc.empty:
+                st.dataframe(dfc, use_container_width=True, hide_index=True)
+                st.line_chart(dfc.set_index("Fecha")[["Tmin °C", "Tmax °C"]])
+                st.download_button("Descargar pronóstico CSV", dfc.to_csv(index=False).encode("utf-8-sig"), "terrocore_clima.csv", "text/csv", key="_tcx_weather_csv")
+            if st.button("Guardar consulta de clima en Google Sheets", key="_tcx_weather_save"):
+                try:
+                    ok, _ = _tcx_guardar_integracion("Clima", {"latitud": lat_clima, "longitud": lon_clima, "actual": actual, "pronostico": dfc.to_dict("records") if isinstance(dfc, pd.DataFrame) else []}, "Open-Meteo")
+                    st.success("Consulta guardada en Google Sheets." if ok else "Consulta guardada en la sesión; configura Google Sheets para persistirla.")
+                except Exception as exc: st.error(f"No se pudo guardar: {exc}")
+
+    # 3. Sentinel Hub
+    with tabs[2]:
+        st.subheader("Estadísticas satelitales NDVI — Sentinel Hub")
+        st.caption("Coordenadas WGS84; longitud oeste negativa en México. Requiere cuenta Sentinel Hub con acceso a Statistical API.")
+        with st.form("_tcx_sentinel_form"):
+            a, b = st.columns(2)
+            with a:
+                lon_min = st.number_input("Longitud mínima", -180.0, 180.0, -100.1, 0.0001, "%.6f", key="_tcx_s_lonmin")
+                lat_min = st.number_input("Latitud mínima", -90.0, 90.0, 24.9, 0.0001, "%.6f", key="_tcx_s_latmin")
+            with b:
+                lon_max = st.number_input("Longitud máxima", -180.0, 180.0, -100.0, 0.0001, "%.6f", key="_tcx_s_lonmax")
+                lat_max = st.number_input("Latitud máxima", -90.0, 90.0, 25.0, 0.0001, "%.6f", key="_tcx_s_latmax")
+            f1, f2 = st.columns(2)
+            with f1: fecha_desde = st.date_input("Desde", value=_tcx_date.today() - _tcx_timedelta(days=20), key="_tcx_s_from")
+            with f2: fecha_hasta = st.date_input("Hasta", value=_tcx_date.today() - _tcx_timedelta(days=1), key="_tcx_s_to")
+            ejecutar_ndvi = st.form_submit_button("Consultar estadísticas NDVI")
+        if ejecutar_ndvi:
+            if lon_min >= lon_max or lat_min >= lat_max: st.error("Las coordenadas mínimas deben ser menores que las máximas.")
+            elif fecha_desde > fecha_hasta: st.error("La fecha inicial debe ser anterior o igual a la final.")
+            else:
+                try:
+                    with st.spinner("Solicitando estadísticas a Sentinel Hub..."): res_ndvi = _tcx_sentinel_ndvi([lon_min, lat_min, lon_max, lat_max], fecha_desde, fecha_hasta)
+                    st.session_state["_tcx_ndvi_result"] = res_ndvi
+                    st.session_state["_tcx_ndvi_bbox"] = [lon_min, lat_min, lon_max, lat_max]
+                    st.success("Respuesta recibida de Sentinel Hub.")
+                except Exception as exc: st.error(f"No se pudo consultar Sentinel Hub: {exc}")
+        res_ndvi = st.session_state.get("_tcx_ndvi_result")
+        if res_ndvi:
+            medias = _tcx_extraer_medias(res_ndvi)
+            if medias:
+                st.dataframe(pd.DataFrame(medias), use_container_width=True, hide_index=True)
+                vals = [x["Media"] for x in medias if isinstance(x.get("Media"), (int, float))]
+                if vals: st.metric("Media NDVI recibida", f"{np.nanmean(vals):.3f}")
+            with st.expander("Ver respuesta técnica"): st.json(res_ndvi)
+            st.download_button("Descargar respuesta NDVI JSON", _tcx_json_seguro(res_ndvi), "terrocore_sentinel_ndvi.json", "application/json", key="_tcx_ndvi_json_dl")
+            if st.button("Guardar NDVI en Google Sheets", key="_tcx_ndvi_save"):
+                try:
+                    ok, _ = _tcx_guardar_integracion("Satélite NDVI", {"bbox_wgs84": st.session_state.get("_tcx_ndvi_bbox", []), "resultado": res_ndvi}, "Sentinel Hub")
+                    st.success("Resultado guardado en Google Sheets." if ok else "Resultado guardado en la sesión.")
+                except Exception as exc: st.error(f"No se pudo guardar: {exc}")
+        else: st.info("Activa el módulo agregando SENTINEL_HUB_CLIENT_ID y SENTINEL_HUB_CLIENT_SECRET a Streamlit Secrets.")
+
+    # 4. GPS y rutas
+    with tabs[3]:
+        st.subheader("Orden de recorrido por coordenadas")
+        st.write("Un punto por línea: `Nombre,Latitud,Longitud`. También acepta `Latitud,Longitud`.")
+        ejemplo = "Parcela 1,25.0000,-100.0000\nSurco 1,25.0010,-100.0010\nSurco 2,25.0020,-100.0020"
+        txt_puntos = st.text_area("Puntos GPS", value=ejemplo, height=130, key="_tcx_route_points")
+        usar_google = st.checkbox("Usar Google Routes API si está configurada", True, key="_tcx_route_google")
+        if st.button("Calcular orden de recorrido", key="_tcx_route_calc"):
+            pts = _tcx_parsear_puntos_ruta(txt_puntos)
+            if len(pts) < 2: st.error("Ingresa por lo menos dos puntos válidos.")
+            else:
+                matriz, metodo = None, "distancia geográfica en línea recta"
+                key_maps = _tcx_secret("GOOGLE_MAPS_API_KEY") or _tcx_secret("GOOGLE_ROUTES_API_KEY")
+                if usar_google and key_maps:
+                    try: matriz, metodo = _tcx_matriz_distancias_google(pts, key_maps), "distancia por carretera de Google Routes API"
+                    except Exception as exc: st.warning(f"Google Routes no respondió; se usará distancia geográfica. {exc}")
+                orden, km = _tcx_ordenar_ruta(pts, 0, matriz)
+                st.session_state["_tcx_route_result"] = {"puntos": orden, "km": km, "tipo": metodo}
+        ruta = st.session_state.get("_tcx_route_result")
+        if ruta:
+            dfr = pd.DataFrame([{"Orden": i + 1, "Punto": p["nombre"], "Latitud": p["lat"], "Longitud": p["lon"]} for i, p in enumerate(ruta["puntos"])])
+            st.dataframe(dfr, use_container_width=True, hide_index=True)
+            st.metric("Distancia estimada de los tramos", f"{ruta['km']:.2f} km", help=ruta["tipo"])
+            pp = ruta["puntos"]
+            if len(pp) == 1: url_maps = f"https://www.google.com/maps/search/?api=1&query={pp[0]['lat']},{pp[0]['lon']}"
+            else:
+                url_maps = f"https://www.google.com/maps/dir/?api=1&origin={pp[0]['lat']},{pp[0]['lon']}&destination={pp[-1]['lat']},{pp[-1]['lon']}&travelmode=driving"
+                if len(pp) > 2:
+                    from urllib.parse import quote
+                    url_maps += "&waypoints=" + quote("|".join(f"{p['lat']},{p['lon']}" for p in pp[1:-1]), safe=",|")
+            st.markdown(f"[🧭 Abrir recorrido en Google Maps]({url_maps})")
+            st.download_button("Descargar ruta CSV", dfr.to_csv(index=False).encode("utf-8-sig"), "terrocore_ruta.csv", "text/csv", key="_tcx_route_csv")
+            if st.button("Guardar ruta en Google Sheets", key="_tcx_route_save"):
+                try:
+                    ok, _ = _tcx_guardar_integracion("Ruta GPS", {"puntos": ruta["puntos"], "distancia_km": ruta["km"], "metodo": ruta["tipo"]}, "TerroCore / Google Routes si aplica")
+                    st.success("Ruta guardada en Google Sheets." if ok else "Ruta guardada solo en la sesión.")
+                except Exception as exc: st.error(f"No se pudo guardar la ruta: {exc}")
+        st.caption("La ruta usa vecino más cercano; no garantiza el óptimo global. Para flotas, horarios o restricciones complejas se necesita un optimizador dedicado.")
+
+    # 5. GIS / mapas
+    with tabs[4]:
+        st.subheader("Importar parcelas, surcos y puntos")
+        archivo_geo = st.file_uploader("Sube KML, KMZ, GeoJSON, GPX o CSV con coordenadas", type=["kml", "kmz", "geojson", "json", "gpx", "csv"], key="_tcx_geo_upload")
+        if archivo_geo is not None:
+            try:
+                geo = _tcx_importar_geoarchivo(archivo_geo.name, archivo_geo.getvalue())
+                st.session_state["_tcx_geojson"] = geo
+                st.success(f"Se importaron {len(geo.get('features', []))} elementos.")
+            except Exception as exc: st.error(f"No se pudo leer el archivo geográfico: {exc}")
+        geo = st.session_state.get("_tcx_geojson")
+        if geo:
+            dfg = _tcx_features_a_tabla(geo)
+            st.dataframe(dfg, use_container_width=True, hide_index=True)
+            pts_map = []
+            for f in geo.get("features", []):
+                g, c = f.get("geometry") or {}, (f.get("geometry") or {}).get("coordinates")
+                if g.get("type") == "Point" and isinstance(c, (list, tuple)) and len(c) >= 2: pts_map.append({"lat": c[1], "lon": c[0]})
+            if pts_map: st.map(pd.DataFrame(pts_map))
+            st.download_button("Descargar GeoJSON normalizado", _tcx_json_seguro(geo), "terrocore_mapa.geojson", "application/geo+json", key="_tcx_geo_json_dl")
+            st.download_button("Descargar tabla CSV", dfg.to_csv(index=False).encode("utf-8-sig"), "terrocore_elementos_gis.csv", "text/csv", key="_tcx_geo_csv_dl")
+            if st.button("Guardar resumen GIS en Google Sheets", key="_tcx_geo_save"):
+                try:
+                    ok, _ = _tcx_guardar_integracion("Importación GIS", {"archivo": getattr(archivo_geo, "name", "archivo importado"), "elementos": len(geo.get("features", [])), "tipos": dfg["Tipo"].value_counts().to_dict() if not dfg.empty else {}}, "Importación de archivo")
+                    st.success("Resumen guardado en Google Sheets." if ok else "Resumen guardado en la sesión.")
+                except Exception as exc: st.error(f"No se pudo guardar: {exc}")
+        st.info("Los polígonos y líneas se conservan al exportar GeoJSON. El mapa rápido muestra puntos; para editar límites con precisión, utiliza QGIS o una capa cartográfica especializada.")
+
+    # 6. Visión computacional / Gemini
+    with tabs[5]:
+        st.subheader("Cobertura vegetal y análisis visual asistido")
+        foto = st.file_uploader("Sube una fotografía del viñedo", type=["jpg", "jpeg", "png", "webp"], key="_tcx_veg_image")
+        if foto is not None:
+            foto_bytes = foto.getvalue()
+            try:
+                pil = Image.open(io.BytesIO(foto_bytes)).convert("RGB")
+                rgb = np.array(pil)
+                hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+                mask = cv2.inRange(hsv, np.array([25, 35, 30], dtype=np.uint8), np.array([100, 255, 255], dtype=np.uint8))
+                pct = float(np.count_nonzero(mask)) * 100.0 / float(mask.size or 1)
+                overlay = rgb.copy()
+                sel = mask > 0
+                overlay[sel] = (0.35 * overlay[sel] + 0.65 * np.array([35, 220, 70])).astype(np.uint8)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Cobertura verde estimada", f"{pct:.1f}%")
+                c2.metric("Ancho", f"{pil.width} px")
+                c3.metric("Alto", f"{pil.height} px")
+                v1, v2, v3 = st.columns(3)
+                with v1: st.image(pil, caption="Imagen original", use_container_width=True)
+                with v2: st.image(mask, caption="Máscara de vegetación", use_container_width=True)
+                with v3: st.image(overlay, caption="Píxeles clasificados como verdes", use_container_width=True)
+                celdas, h, w = [], mask.shape[0], mask.shape[1]
+                for fila in range(3):
+                    for col in range(3):
+                        y1, y2, x1, x2 = int(fila*h/3), int((fila+1)*h/3), int(col*w/3), int((col+1)*w/3)
+                        rec = mask[y1:y2, x1:x2]
+                        val = float(np.count_nonzero(rec)) * 100.0 / float(rec.size or 1)
+                        celdas.append({"Zona": f"Fila {fila+1} / Columna {col+1}", "Cobertura verde %": round(val, 2)})
+                dfz = pd.DataFrame(celdas)
+                st.markdown("#### Cobertura por zonas (3 × 3)")
+                st.dataframe(dfz, use_container_width=True, hide_index=True)
+                st.session_state["_tcx_vegetation_result"] = {"cobertura_verde_pct": round(pct, 2), "zonas": celdas, "nombre_archivo": foto.name}
+                st.download_button("Descargar resultado CSV", dfz.to_csv(index=False).encode("utf-8-sig"), "terrocore_cobertura_vegetal.csv", "text/csv", key="_tcx_veg_csv")
+                if st.button("Guardar cobertura en Google Sheets", key="_tcx_veg_save"):
+                    try:
+                        ok, _ = _tcx_guardar_integracion("Cobertura vegetal", st.session_state["_tcx_vegetation_result"], "OpenCV HSV")
+                        st.success("Cobertura guardada en Google Sheets." if ok else "Cobertura guardada en la sesión.")
+                    except Exception as exc: st.error(f"No se pudo guardar: {exc}")
+                if _tcx_secret("GEMINI_API_KEY"):
+                    if st.button("Solicitar observaciones con Gemini Vision", key="_tcx_gemini_run"):
+                        try:
+                            with st.spinner("Analizando la fotografía con Gemini..."):
+                                st.session_state["_tcx_gemini_result"] = _tcx_gemini_vision(foto_bytes, foto.type or "image/jpeg", _tcx_secret("GEMINI_API_KEY"))
+                        except Exception as exc: st.error(f"Gemini no pudo analizar la imagen: {exc}")
+                else: st.caption("Para activar el análisis generativo, agrega GEMINI_API_KEY a Streamlit Secrets. La cobertura OpenCV funciona sin esa clave.")
+            except Exception as exc: st.error(f"No se pudo procesar la fotografía: {exc}")
+        res_ia = st.session_state.get("_tcx_gemini_result")
+        if res_ia:
+            st.markdown("#### Observaciones de IA (verificar en campo)")
+            st.markdown(res_ia)
+            if st.button("Guardar observaciones de IA en Google Sheets", key="_tcx_gemini_save"):
+                try:
+                    ok, _ = _tcx_guardar_integracion("IA visual", {"observaciones": res_ia}, "Gemini Vision")
+                    st.success("Observaciones guardadas en Google Sheets." if ok else "Observaciones guardadas en la sesión.")
+                except Exception as exc: st.error(f"No se pudo guardar: {exc}")
+        st.caption("La cobertura HSV es una estimación por color; puede confundirse con maleza, sombras u otros objetos verdes. No es NDVI satelital ni diagnóstico agronómico validado.")
+
+    # 7. Riego
+    with tabs[6]:
+        st.subheader("Calculadora de riego")
+        st.caption("Lámina neta = max(0, ET0 × Kc − lluvia × fracción efectiva). Lámina aplicada = lámina neta / eficiencia.")
+        et0_def = float(st.session_state.get("_tcx_last_et0", 4.0) or 4.0)
+        with st.form("_tcx_irrigation_form"):
+            a, b, c = st.columns(3)
+            with a:
+                et0 = st.number_input("ET0 (mm/día)", 0.0, 20.0, min(20.0, et0_def), 0.1, key="_tcx_ir_et0")
+                kc = st.number_input("Kc del cultivo", 0.0, 2.0, 0.75, 0.05, key="_tcx_ir_kc")
+            with b:
+                lluvia = st.number_input("Lluvia (mm/día)", 0.0, 300.0, 0.0, 0.5, key="_tcx_ir_rain")
+                frac_lluvia = st.slider("Fracción de lluvia efectiva", 0.0, 1.0, 0.8, 0.05, key="_tcx_ir_rain_eff")
+            with c:
+                eficiencia = st.slider("Eficiencia del sistema", 0.1, 1.0, 0.9, 0.05, key="_tcx_ir_eff")
+                area_ha = st.number_input("Superficie (hectáreas)", 0.0, 100000.0, 1.0, 0.1, key="_tcx_ir_area")
+            parcela_ir = st.text_input("Nombre de parcela", key="_tcx_ir_parcela")
+            calcular = st.form_submit_button("Calcular necesidad estimada")
+        if calcular:
+            demanda, lluvia_util = et0 * kc, lluvia * frac_lluvia
+            neta = max(0.0, demanda - lluvia_util)
+            aplicada = neta / max(0.1, eficiencia)
+            litros = aplicada * area_ha * 10000.0
+            st.session_state["_tcx_irrigation_result"] = {"parcela": parcela_ir, "ET0_mm_dia": et0, "Kc": kc, "lluvia_mm": lluvia, "lluvia_efectiva_mm": lluvia_util, "lamina_neta_mm": neta, "lamina_aplicada_mm": aplicada, "superficie_ha": area_ha, "litros_estimados_dia": litros, "eficiencia": eficiencia}
+        rr = st.session_state.get("_tcx_irrigation_result")
+        if rr:
+            a, b, c = st.columns(3)
+            a.metric("Lámina neta", f"{rr['lamina_neta_mm']:.2f} mm/día")
+            b.metric("Lámina aplicada", f"{rr['lamina_aplicada_mm']:.2f} mm/día")
+            c.metric("Volumen estimado", f"{rr['litros_estimados_dia']:,.0f} L/día")
+            st.warning("Estimación de apoyo: valida Kc, eficiencia y humedad del suelo con datos de campo. No activa válvulas automáticamente.")
+            if st.button("Guardar cálculo de riego en Google Sheets", key="_tcx_irrigation_save"):
+                try:
+                    ok, _ = _tcx_guardar_integracion("Cálculo de riego", rr, "Calculadora TerroCore")
+                    st.success("Cálculo guardado en Google Sheets." if ok else "Cálculo guardado en la sesión.")
+                except Exception as exc: st.error(f"No se pudo guardar: {exc}")
+
+    # 8. Sensores
+    with tabs[7]:
+        st.subheader("Importar lecturas de sensores")
+        st.write("Carga CSV exportado por una estación meteorológica, sensor de suelo, registrador IoT o plataforma compatible.")
+        sensor_file = st.file_uploader("Archivo CSV de sensores", type=["csv"], key="_tcx_sensor_csv_upload")
+        if sensor_file is not None:
+            try:
+                st.session_state["_tcx_sensor_df"] = pd.read_csv(io.BytesIO(sensor_file.getvalue()))
+                st.session_state["_tcx_sensor_name"] = sensor_file.name
+            except Exception as exc: st.error(f"No se pudo leer el CSV: {exc}")
+        dfs = st.session_state.get("_tcx_sensor_df")
+        if isinstance(dfs, pd.DataFrame):
+            st.dataframe(dfs.head(500), use_container_width=True, hide_index=True)
+            numericas = [c for c in dfs.columns if pd.api.types.is_numeric_dtype(dfs[c])]
+            if numericas:
+                cols = st.multiselect("Variables numéricas para graficar", numericas, default=numericas[:min(3, len(numericas))], key="_tcx_sensor_plot_cols")
+                if cols: st.line_chart(dfs[cols])
+            st.download_button("Descargar CSV procesado", dfs.to_csv(index=False).encode("utf-8-sig"), "terrocore_sensores.csv", "text/csv", key="_tcx_sensor_download")
+            if st.button("Guardar resumen de sensores en Google Sheets", key="_tcx_sensor_save"):
+                try:
+                    datos = {"archivo": st.session_state.get("_tcx_sensor_name", "sensores.csv"), "filas": int(len(dfs)), "columnas": [str(x) for x in dfs.columns], "muestra": dfs.head(20).astype(object).where(pd.notna(dfs.head(20)), None).to_dict("records")}
+                    ok, _ = _tcx_guardar_integracion("Sensores", datos, "Importación CSV")
+                    st.success("Resumen guardado en Google Sheets." if ok else "Resumen guardado en la sesión.")
+                except Exception as exc: st.error(f"No se pudo guardar: {exc}")
+        st.caption("La importación CSV está operativa. MQTT/HTTP en tiempo real depende del sensor, broker, credenciales y documentación de su API.")
+
+    # 9. Trazabilidad / QR / AppSheet
+    with tabs[8]:
+        st.subheader("Trazabilidad de parcela, surco y planta")
+        with st.form("_tcx_trace_form", clear_on_submit=False):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                parcela = st.text_input("Parcela", key="_tcx_trace_parcela")
+                surco = st.text_input("Surco", key="_tcx_trace_surco")
+                qr_planta = st.text_input("QR / ID de planta", key="_tcx_trace_qr")
+            with c2:
+                etapa = st.selectbox("Etapa fenológica", ["No especificada", "Brotación", "Floración", "Cuajado", "Envero", "Maduración", "Cosecha", "Reposo", "Otra"], key="_tcx_trace_stage")
+                actividad = st.selectbox("Actividad", ["Inspección", "Riego", "Poda", "Tratamiento", "Muestreo Brix", "Cosecha", "Mantenimiento", "Otra"], key="_tcx_trace_activity")
+                brix = st.number_input("Brix (si aplica)", 0.0, 50.0, 0.0, 0.1, key="_tcx_trace_brix")
+            with c3:
+                lat = st.number_input("Latitud (opcional)", -90.0, 90.0, 0.0, 0.0001, "%.6f", key="_tcx_trace_lat")
+                lon = st.number_input("Longitud (opcional)", -180.0, 180.0, 0.0, 0.0001, "%.6f", key="_tcx_trace_lon")
+                responsable = st.text_input("Responsable (opcional)", key="_tcx_trace_user")
+            observaciones = st.text_area("Observaciones", key="_tcx_trace_notes", height=100)
+            guardar_traza = st.form_submit_button("Guardar registro de trazabilidad")
+        if guardar_traza:
+            datos_traza = {"parcela": parcela, "surco": surco, "qr_planta": qr_planta, "etapa_fenologica": etapa, "actividad": actividad, "brix": brix if brix > 0 else None, "latitud": lat if lat != 0 else "", "longitud": lon if lon != 0 else "", "responsable": responsable, "observaciones": observaciones, "fecha_local": datetime.now().isoformat(timespec="seconds")}
+            try:
+                ok, registro = _tcx_guardar_integracion("Trazabilidad QR", datos_traza, "Formulario TerroCore")
+                st.session_state["_tcx_last_trace"] = {"registro": registro, "datos": datos_traza}
+                st.success("Registro guardado en Google Sheets." if ok else "Registro guardado en la sesión; configura Google Sheets para persistirlo.")
+            except Exception as exc: st.error(f"No se pudo guardar el registro: {exc}")
+        ultimo = st.session_state.get("_tcx_last_trace")
+        if ultimo:
+            st.markdown("#### Último registro")
+            st.json(ultimo["datos"])
+            app_id, app_key, app_table = _tcx_secret("APPSHEET_APP_ID"), _tcx_secret("APPSHEET_ACCESS_KEY"), _tcx_secret("APPSHEET_TABLE_NAME")
+            if app_id and app_key and app_table:
+                if st.button("Enviar último registro a AppSheet", key="_tcx_send_appsheet"):
+                    try:
+                        d = ultimo["datos"]
+                        fila = {"RegistroID": ultimo["registro"].get("RegistroID", secrets.token_hex(4).upper()), "FechaUTC": ultimo["registro"].get("FechaUTC", datetime.now(timezone.utc).isoformat()), "Parcela": d.get("parcela", ""), "Surco": d.get("surco", ""), "QR": d.get("qr_planta", ""), "Etapa": d.get("etapa_fenologica", ""), "Actividad": d.get("actividad", ""), "Brix": d.get("brix", ""), "Latitud": d.get("latitud", ""), "Longitud": d.get("longitud", ""), "Responsable": d.get("responsable", ""), "Observaciones": d.get("observaciones", "")}
+                        url = f"https://api.appsheet.com/api/v2/apps/{app_id}/tables/{app_table}/Action"
+                        resp = requests.post(url, headers={"ApplicationAccessKey": app_key, "Content-Type": "application/json"}, json={"Action": "Add", "Properties": {"Locale": "es-MX", "Timezone": "America/Monterrey"}, "Rows": [fila]}, timeout=45)
+                        if not resp.ok: raise RuntimeError(f"AppSheet HTTP {resp.status_code}: {resp.text[:700]}")
+                        st.success("AppSheet aceptó la solicitud.")
+                        with st.expander("Respuesta de AppSheet"): st.code(resp.text[:4000])
+                    except Exception as exc: st.error(f"No se pudo enviar a AppSheet. Verifica nombres de columnas y permisos: {exc}")
+            else: st.caption("Para habilitar AppSheet, configura APPSHEET_APP_ID, APPSHEET_ACCESS_KEY y APPSHEET_TABLE_NAME. La tabla debe tener columnas compatibles con los campos enviados.")
+
+    # 10. Exportación de registros de la sesión
+    with tabs[9]:
+        st.subheader("Exportar datos recopilados por los módulos")
+        registros = st.session_state.get("_tcx_integraciones_registros", []) or []
+        if registros:
+            dfr = pd.DataFrame(registros)
+            st.dataframe(dfr, use_container_width=True, hide_index=True)
+            st.download_button("Descargar registros CSV", dfr.to_csv(index=False).encode("utf-8-sig"), "terrocore_integraciones_sesion.csv", "text/csv", key="_tcx_export_session_csv")
+            st.download_button("Descargar registros JSON", _tcx_json_seguro(registros), "terrocore_integraciones_sesion.json", "application/json", key="_tcx_export_session_json")
+        else: st.info("Todavía no hay registros guardados en esta sesión. Ejecuta un módulo y pulsa Guardar para generar exportaciones.")
+        st.markdown("### Ejemplo de Streamlit Secrets")
+        st.code('''GSHEET_ID = "ID_DE_TU_GOOGLE_SHEET"
+GDRIVE_PARENT_FOLDER_ID = "ID_CARPETA_DRIVE"
+GEMINI_API_KEY = "TU_CLAVE_GEMINI"
+SENTINEL_HUB_CLIENT_ID = "TU_CLIENT_ID"
+SENTINEL_HUB_CLIENT_SECRET = "TU_CLIENT_SECRET"
+GOOGLE_MAPS_API_KEY = "TU_API_KEY_ROUTES"
+APPSHEET_APP_ID = "ID_APP"
+APPSHEET_ACCESS_KEY = "ACCESS_KEY"
+APPSHEET_TABLE_NAME = "TrazabilidadTerroCore"''', language="toml")
+        st.caption("Guarda las claves en Streamlit Secrets o variables de entorno, nunca en código público. Algunas APIs pueden generar cargos.")
+
+
+# Renderizar después de los módulos originales.
+try:
+    _tcx_render_integraciones()
+except Exception as _tcx_render_error:
+    st.error(f"El Centro de Integraciones tuvo un error y no pudo mostrarse: {_tcx_render_error}")
