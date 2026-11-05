@@ -1,8 +1,7 @@
 """Motor OpenCV V2 de TerraCore, separado de la interfaz Streamlit.
 
-Las funciones de inventario, salud visual y polígonos se conservan del
-archivo app_surcos_VIDEO_V10.py. La interfaz y la persistencia se gestionan
-por separado en la integración AppSheet.
+Este archivo conserva las funciones de inventario, estado visual y polígonos
+del archivo app_surcos_VIDEO_V10.py. No importa ni ejecuta la interfaz.
 """
 import io
 import math
@@ -17,7 +16,7 @@ from scipy.signal import find_peaks
 
 
 def tr(es, fr):
-    """El servicio usa español como idioma base para las etiquetas."""
+    """El servicio API utiliza español como idioma base para las etiquetas."""
     return es
 
 
@@ -99,31 +98,1359 @@ def mascara_verde(bgr):
 
     return mask
 
+
+# ============================================================
+# DIFERENCIA ANGULAR
+# ============================================================
+
 def diferencia_angular_rad(
     a,
     b
+):
+    d = abs(
+        float(a) -
+        float(b)
+    ) % np.pi
+
+    return min(
+        d,
+        np.pi - d
+    )
+
+def diferencia_angular_rad(
+    a,
+    b
+):
+    d = abs(
+        float(a) -
+        float(b)
+    ) % np.pi
+
+    return min(
+        d,
+        np.pi - d
+    )
 
 def campo_orientacion_local(
     bgr
+):
+    """
+    Devuelve:
+    - vegetación
+    - dirección LOCAL del surco en cada píxel
+    - coherencia de la dirección
+    - respuesta visual del surco
+    - energía de textura
+    """
+    green = mascara_verde(
+        bgr
+    ).astype(np.float32)
+
+    gray = cv2.cvtColor(
+        bgr,
+        cv2.COLOR_BGR2GRAY
+    ).astype(np.float32) / 255.0
+
+    smooth = cv2.GaussianBlur(
+        gray,
+        (0, 0),
+        1.0
+    )
+
+    gx = cv2.Sobel(
+        smooth,
+        cv2.CV_32F,
+        1,
+        0,
+        ksize=3
+    )
+
+    gy = cv2.Sobel(
+        smooth,
+        cv2.CV_32F,
+        0,
+        1,
+        ksize=3
+    )
+
+    Jxx = cv2.GaussianBlur(
+        gx * gx,
+        (0, 0),
+        3.0
+    )
+
+    Jyy = cv2.GaussianBlur(
+        gy * gy,
+        (0, 0),
+        3.0
+    )
+
+    Jxy = cv2.GaussianBlur(
+        gx * gy,
+        (0, 0),
+        3.0
+    )
+
+    coherence = (
+        np.sqrt(
+            (Jxx - Jyy) ** 2 +
+            4.0 * Jxy ** 2
+        )
+        /
+        (
+            Jxx +
+            Jyy +
+            1e-8
+        )
+    )
+
+    # Dirección del gradiente.
+    gradient_angle = (
+        0.5 *
+        np.arctan2(
+            2.0 * Jxy,
+            Jxx - Jyy
+        )
+    )
+
+    # La dirección del SURCO es perpendicular al gradiente.
+    theta = (
+        gradient_angle +
+        np.pi / 2.0
+    ) % np.pi
+
+    # --------------------------------------------------------
+    # RESPUESTA VISUAL
+    # --------------------------------------------------------
+    green_blur = cv2.GaussianBlur(
+        green,
+        (0, 0),
+        1.7
+    )
+
+    local_background = cv2.GaussianBlur(
+        gray,
+        (0, 0),
+        5.0
+    )
+
+    darkness = np.maximum(
+        local_background -
+        gray,
+        0.0
+    )
+
+    p99 = float(
+        np.percentile(
+            darkness,
+            99
+        )
+    )
+
+    if p99 > 1e-6:
+        darkness = np.clip(
+            darkness / p99,
+            0.0,
+            1.0
+        )
+    else:
+        darkness[:] = 0.0
+
+    response = (
+        (
+            0.62 *
+            green_blur
+            +
+            0.38 *
+            darkness
+        )
+        *
+        (
+            0.35 +
+            0.65 *
+            coherence
+        )
+    )
+
+    response = cv2.GaussianBlur(
+        response.astype(np.float32),
+        (0, 0),
+        0.8
+    )
+
+    energy = (
+        Jxx +
+        Jyy
+    )
+
+    return (
+        green,
+        theta.astype(np.float32),
+        coherence.astype(np.float32),
+        response.astype(np.float32),
+        energy.astype(np.float32)
+    )
 
 def detectar_componentes_vinedo(
     bgr,
     tile=32
+):
+    """
+    Divide la imagen en pequeñas celdas.
+
+    Una celda se considera viñedo cuando tiene:
+    - vegetación,
+    - textura lineal,
+    - una orientación local clara.
+
+    Las celdas se conectan solo cuando sus direcciones son
+    compatibles. Así no se impone una sola dirección a toda
+    la fotografía.
+    """
+    (
+        green,
+        theta,
+        coherence,
+        response,
+        energy
+    ) = campo_orientacion_local(
+        bgr
+    )
+
+    h, w = green.shape
+
+    ny = (
+        h +
+        tile -
+        1
+    ) // tile
+
+    nx = (
+        w +
+        tile -
+        1
+    ) // tile
+
+    valid = np.zeros(
+        (ny, nx),
+        dtype=np.uint8
+    )
+
+    tile_angle = np.zeros(
+        (ny, nx),
+        dtype=np.float32
+    )
+
+    tile_weight = np.zeros(
+        (ny, nx),
+        dtype=np.float32
+    )
+
+    for iy in range(ny):
+        for ix in range(nx):
+
+            y0 = iy * tile
+            y1 = min(
+                h,
+                (iy + 1) * tile
+            )
+
+            x0 = ix * tile
+            x1 = min(
+                w,
+                (ix + 1) * tile
+            )
+
+            c = coherence[
+                y0:y1,
+                x0:x1
+            ]
+
+            th = theta[
+                y0:y1,
+                x0:x1
+            ]
+
+            g = green[
+                y0:y1,
+                x0:x1
+            ]
+
+            e = energy[
+                y0:y1,
+                x0:x1
+            ]
+
+            green_fraction = float(
+                np.mean(
+                    g > 0
+                )
+            )
+
+            coherence_mean = float(
+                np.mean(c)
+            )
+
+            energy_mean = float(
+                np.mean(e)
+            )
+
+            # Promedio angular correcto para direcciones de 0..180°.
+            weights = (
+                np.maximum(
+                    c - 0.20,
+                    0.0
+                )
+                *
+                (
+                    0.30 +
+                    0.70 * g
+                )
+            )
+
+            z = np.sum(
+                weights *
+                np.exp(
+                    1j *
+                    2.0 *
+                    th
+                )
+            )
+
+            if abs(z) > 1e-7:
+                local_angle = (
+                    np.angle(z) /
+                    2.0
+                ) % np.pi
+            else:
+                local_angle = np.pi / 2.0
+
+            tile_angle[
+                iy,
+                ix
+            ] = local_angle
+
+            tile_weight[
+                iy,
+                ix
+            ] = (
+                coherence_mean *
+                (
+                    0.20 +
+                    green_fraction
+                )
+            )
+
+            if (
+                coherence_mean > 0.34
+                and
+                energy_mean > 0.00018
+                and
+                green_fraction > 0.018
+            ):
+                valid[
+                    iy,
+                    ix
+                ] = 1
+
+    # --------------------------------------------------------
+    # UNION-FIND:
+    # conectar solo celdas vecinas de orientación parecida.
+    # Se usan 4 vecinos para que un camino tenga más facilidad
+    # de separar dos parcelas.
+    # --------------------------------------------------------
+    parent = np.arange(
+        ny * nx,
+        dtype=np.int32
+    )
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[
+                parent[a]
+            ]
+            a = parent[a]
+
+        return int(a)
+
+    def union(a, b):
+        ra = find(a)
+        rb = find(b)
+
+        if ra != rb:
+            parent[rb] = ra
+
+    for iy in range(ny):
+        for ix in range(nx):
+
+            if valid[
+                iy,
+                ix
+            ] == 0:
+                continue
+
+            current = (
+                iy * nx +
+                ix
+            )
+
+            for dy, dx in [
+                (1, 0),
+                (0, 1)
+            ]:
+                jy = iy + dy
+                jx = ix + dx
+
+                if not (
+                    0 <= jy < ny
+                    and
+                    0 <= jx < nx
+                ):
+                    continue
+
+                if valid[
+                    jy,
+                    jx
+                ] == 0:
+                    continue
+
+                if (
+                    diferencia_angular_rad(
+                        tile_angle[
+                            iy,
+                            ix
+                        ],
+                        tile_angle[
+                            jy,
+                            jx
+                        ]
+                    )
+                    <=
+                    np.deg2rad(
+                        22.0
+                    )
+                ):
+                    union(
+                        current,
+                        jy * nx + jx
+                    )
+
+    groups = {}
+
+    for iy in range(ny):
+        for ix in range(nx):
+
+            if valid[
+                iy,
+                ix
+            ] == 0:
+                continue
+
+            root = find(
+                iy * nx + ix
+            )
+
+            groups.setdefault(
+                root,
+                []
+            ).append(
+                (
+                    iy,
+                    ix
+                )
+            )
+
+    components = []
+
+    minimum_tiles = max(
+        8,
+        int(
+            ny *
+            nx *
+            0.020
+        )
+    )
+
+    for cells in groups.values():
+
+        if len(cells) < minimum_tiles:
+            continue
+
+        component_mask = np.zeros(
+            (h, w),
+            dtype=np.uint8
+        )
+
+        angles = []
+        weights = []
+
+        for iy, ix in cells:
+
+            y0 = iy * tile
+            y1 = min(
+                h,
+                (iy + 1) * tile
+            )
+
+            x0 = ix * tile
+            x1 = min(
+                w,
+                (ix + 1) * tile
+            )
+
+            component_mask[
+                y0:y1,
+                x0:x1
+            ] = 255
+
+            angles.append(
+                float(
+                    tile_angle[
+                        iy,
+                        ix
+                    ]
+                )
+            )
+
+            weights.append(
+                float(
+                    tile_weight[
+                        iy,
+                        ix
+                    ]
+                )
+            )
+
+        angles = np.asarray(
+            angles,
+            dtype=np.float64
+        )
+
+        weights = np.asarray(
+            weights,
+            dtype=np.float64
+        )
+
+        z = np.sum(
+            weights *
+            np.exp(
+                1j *
+                2.0 *
+                angles
+            )
+        )
+
+        if abs(z) > 1e-7:
+            mean_angle = (
+                np.angle(z) /
+                2.0
+            ) % np.pi
+        else:
+            mean_angle = float(
+                np.median(
+                    angles
+                )
+            )
+
+        ys, xs = np.where(
+            component_mask > 0
+        )
+
+        if len(xs) == 0:
+            continue
+
+        components.append({
+            "mask": component_mask,
+            "angle": float(
+                mean_angle
+            ),
+            "bbox": (
+                int(xs.min()),
+                int(ys.min()),
+                int(xs.max()) + 1,
+                int(ys.max()) + 1
+            ),
+            "tiles": int(
+                len(cells)
+            )
+        })
+
+    components.sort(
+        key=lambda c:
+        c["tiles"],
+        reverse=True
+    )
+
+    return (
+        green,
+        theta,
+        coherence,
+        response,
+        components,
+        ny,
+        nx
+    )
 
 def estimar_espaciado_local(
     profile
+):
+    """
+    Estima la distancia REAL entre hileras.
+
+    Evita el error frecuente de tomar como separación la mitad
+    del espaciamiento verdadero (bordes izquierdo/derecho de una
+    misma hilera), que era una de las causas del sobreconteo.
+    """
+    p = np.asarray(
+        profile,
+        dtype=np.float64
+    )
+
+    if len(p) < 20:
+        return None
+
+    p = gaussian_filter1d(
+        p,
+        sigma=1.0
+    )
+
+    trend = gaussian_filter1d(
+        p,
+        sigma=max(
+            4.0,
+            len(p) / 35.0
+        )
+    )
+
+    p = p - trend
+    p -= np.mean(p)
+
+    if np.std(p) < 1e-7:
+        return None
+
+    ac = np.correlate(
+        p,
+        p,
+        mode="full"
+    )
+
+    ac = ac[len(p) - 1:]
+
+    minimum = 6
+    maximum = min(
+        48,
+        len(ac) - 1
+    )
+
+    if maximum <= minimum:
+        return None
+
+    segment = ac[
+        minimum:
+        maximum + 1
+    ]
+
+    peaks, _ = find_peaks(
+        segment,
+        distance=2
+    )
+
+    if len(peaks) == 0:
+        lag = minimum + int(
+            np.argmax(segment)
+        )
+    else:
+        lags = minimum + peaks
+        values = segment[peaks]
+
+        # Pico de autocorrelación más fuerte.
+        best_idx = int(
+            np.argmax(values)
+        )
+        lag = int(lags[best_idx])
+        best_value = float(values[best_idx])
+
+        # Si el pico dominante es demasiado corto, comprobar 2x.
+        # Los bordes de una misma hilera pueden crear un falso periodo
+        # de aproximadamente la mitad del espaciamiento real.
+        if lag <= 12:
+            target = lag * 2
+            near = np.where(
+                np.abs(lags - target) <= 2
+            )[0]
+
+            if len(near):
+                near_best = int(
+                    near[
+                        np.argmax(
+                            values[near]
+                        )
+                    ]
+                )
+
+                if float(values[near_best]) >= best_value * 0.68:
+                    lag = int(
+                        lags[near_best]
+                    )
+
+    return float(
+        np.clip(
+            lag,
+            8.0,
+            45.0
+        )
+    )
 
 def calcular_rejilla_global_surcos(
     green_mask,
     components
+):
+    """
+    Construye una sola rejilla transversal para toda la imagen.
+
+    Esto evita contar dos o tres veces la misma hilera cuando el
+    detector divide el viñedo en varios componentes por vigor,
+    huecos secos o cambios de iluminación.
+    """
+    if not components:
+        return None
+
+    h, w = green_mask.shape
+
+    angles = []
+    weights = []
+
+    for component in components:
+        angles.append(
+            float(component["angle"])
+        )
+        weights.append(
+            max(
+                1.0,
+                float(component.get("tiles", 1))
+            )
+        )
+
+    angles = np.asarray(
+        angles,
+        dtype=np.float64
+    )
+    weights = np.asarray(
+        weights,
+        dtype=np.float64
+    )
+
+    z = np.sum(
+        weights
+        *
+        np.exp(
+            1j * 2.0 * angles
+        )
+    )
+
+    if abs(z) < 1e-8:
+        mean_angle = float(
+            angles[0]
+        )
+    else:
+        mean_angle = float(
+            (np.angle(z) / 2.0) % np.pi
+        )
+
+    angle_deg = float(
+        np.rad2deg(mean_angle)
+    )
+
+    # Después de rotar, las hileras quedan aproximadamente verticales.
+    rotation = 90.0 - angle_deg
+
+    M = cv2.getRotationMatrix2D(
+        (w / 2.0, h / 2.0),
+        rotation,
+        1.0
+    )
+
+    rotated = cv2.warpAffine(
+        (green_mask > 0).astype(np.uint8) * 255,
+        M,
+        (w, h),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT
+    )
+
+    # Ignorar bordes extremos, donde suelen aparecer edificios/árboles.
+    ya = int(h * 0.06)
+    yb = int(h * 0.94)
+
+    zone = (
+        rotated[ya:yb] > 0
+    ).astype(np.float32)
+
+    if zone.size == 0:
+        return None
+
+    profile = np.mean(
+        zone,
+        axis=0
+    )
+
+    profile = gaussian_filter1d(
+        profile,
+        sigma=1.0
+    )
+
+    trend = gaussian_filter1d(
+        profile,
+        sigma=max(
+            7.0,
+            w / 55.0
+        )
+    )
+
+    signal = profile - trend
+
+    spacing = estimar_espaciado_local(
+        signal
+    )
+
+    if spacing is None:
+        return None
+
+    # Para el conteo final no permitimos picos a media hilera.
+    min_distance = max(
+        6,
+        int(
+            round(
+                spacing * 0.90
+            )
+        )
+    )
+
+    prominence = max(
+        0.004,
+        float(
+            np.max(signal) - np.median(signal)
+        ) * 0.13
+    )
+
+    peaks, props = find_peaks(
+        signal,
+        distance=min_distance,
+        prominence=prominence
+    )
+
+    if len(peaks) < 4:
+        return None
+
+    # Quitar picos muy débiles respecto al perfil de vegetación.
+    profile_floor = float(
+        np.percentile(
+            profile,
+            32
+        )
+    )
+
+    profile_span = max(
+        1e-6,
+        float(
+            np.percentile(profile, 88)
+            -
+            profile_floor
+        )
+    )
+
+    keep = []
+
+    for p in peaks:
+        strength = (
+            float(profile[p])
+            -
+            profile_floor
+        ) / profile_span
+
+        if strength >= 0.10:
+            keep.append(
+                int(p)
+            )
+
+    peaks = np.asarray(
+        keep,
+        dtype=np.int32
+    )
+
+    if len(peaks) < 4:
+        return None
+
+    return {
+        "angle": mean_angle,
+        "angle_deg": angle_deg,
+        "M": M,
+        "peaks": peaks,
+        "spacing": float(spacing)
+    }
 
 def asignar_track_a_rejilla(
     points,
     grid
+):
+    """
+    Devuelve el índice de la hilera global más cercana al track.
+    Si el track está entre hileras, devuelve None.
+    """
+    if grid is None or len(points) == 0:
+        return None
+
+    middle = np.asarray(
+        points[len(points) // 2],
+        dtype=np.float32
+    )
+
+    aug = np.array(
+        [middle[0], middle[1], 1.0],
+        dtype=np.float32
+    )
+
+    rotated_point = aug @ grid["M"].T
+    lateral_x = float(
+        rotated_point[0]
+    )
+
+    peaks = grid["peaks"].astype(
+        np.float32
+    )
+
+    nearest = int(
+        np.argmin(
+            np.abs(peaks - lateral_x)
+        )
+    )
+
+    distance = abs(
+        float(peaks[nearest])
+        -
+        lateral_x
+    )
+
+    if distance > max(
+        3.0,
+        grid["spacing"] * 0.46
+    ):
+        return None
+
+    return nearest
 
 def semillas_componente(
     component,
     response
+):
+    """
+    La orientación media se usa SOLO para colocar una semilla
+    inicial en cada surco.
+
+    Después de eso, la línea deja de depender del ángulo medio
+    y sigue la orientación LOCAL.
+    """
+    h, w = response.shape
+
+    x0, y0, x1, y1 = component[
+        "bbox"
+    ]
+
+    pad = 16
+
+    xa = max(
+        0,
+        x0 - pad
+    )
+
+    xb = min(
+        w,
+        x1 + pad
+    )
+
+    ya = max(
+        0,
+        y0 - pad
+    )
+
+    yb = min(
+        h,
+        y1 + pad
+    )
+
+    crop_response = response[
+        ya:yb,
+        xa:xb
+    ]
+
+    crop_mask = (
+        component[
+            "mask"
+        ][
+            ya:yb,
+            xa:xb
+        ] > 0
+    ).astype(np.uint8)
+
+    ch, cw = crop_response.shape
+
+    if (
+        ch < 20
+        or
+        cw < 20
+    ):
+        return (
+            [],
+            None
+        )
+
+    angle_deg = np.rad2deg(
+        component[
+            "angle"
+        ]
+    )
+
+    rotation = (
+        90.0 -
+        angle_deg
+    )
+
+    M = cv2.getRotationMatrix2D(
+        (
+            cw / 2.0,
+            ch / 2.0
+        ),
+        rotation,
+        1.0
+    )
+
+    Minv = cv2.invertAffineTransform(
+        M
+    )
+
+    rotated_response = cv2.warpAffine(
+        crop_response,
+        M,
+        (cw, ch),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT
+    )
+
+    rotated_mask = cv2.warpAffine(
+        crop_mask,
+        M,
+        (cw, ch),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT
+    )
+
+    ys, xs = np.where(
+        rotated_mask > 0
+    )
+
+    if len(xs) < 100:
+        return (
+            [],
+            None
+        )
+
+    rx0 = int(
+        xs.min()
+    )
+
+    rx1 = int(
+        xs.max()
+    ) + 1
+
+    ry0 = int(
+        ys.min()
+    )
+
+    ry1 = int(
+        ys.max()
+    ) + 1
+
+    profiles = []
+
+    # Varias franjas:
+    # así una zona seca no borra el surco del perfil.
+    for frac in np.linspace(
+        0.20,
+        0.80,
+        5
+    ):
+
+        yc = int(
+            ry0 +
+            frac *
+            (
+                ry1 -
+                ry0
+            )
+        )
+
+        band_height = max(
+            8,
+            int(
+                (
+                    ry1 -
+                    ry0
+                ) *
+                0.12
+            )
+        )
+
+        a = max(
+            ry0,
+            yc -
+            band_height // 2
+        )
+
+        b = min(
+            ry1,
+            yc +
+            band_height // 2
+        )
+
+        if b <= a:
+            continue
+
+        local_mask = (
+            rotated_mask[
+                a:b,
+                rx0:rx1
+            ] > 0
+        ).astype(np.float32)
+
+        denominator = np.maximum(
+            local_mask.sum(
+                axis=0
+            ),
+            1.0
+        )
+
+        profile = (
+            rotated_response[
+                a:b,
+                rx0:rx1
+            ]
+            *
+            local_mask
+        ).sum(
+            axis=0
+        ) / denominator
+
+        profiles.append(
+            gaussian_filter1d(
+                profile,
+                sigma=1.0
+            )
+        )
+
+    if not profiles:
+        return (
+            [],
+            None
+        )
+
+    stacked = np.vstack(
+        profiles
+    )
+
+    profile = np.percentile(
+        stacked,
+        70,
+        axis=0
+    )
+
+    spacing = estimar_espaciado_local(
+        profile
+    )
+
+    if spacing is None:
+        return (
+            [],
+            None
+        )
+
+    peaks, _ = find_peaks(
+        profile,
+        distance=max(
+            4,
+            int(
+                spacing *
+                0.55
+            )
+        ),
+        prominence=max(
+            0.008,
+            float(
+                profile.max()
+            ) *
+            0.040
+        ),
+        height=max(
+            0.015,
+            float(
+                profile.max()
+            ) *
+            0.080
+        )
+    )
+
+    if len(peaks) < 3:
+        return (
+            [],
+            spacing
+        )
+
+    # --------------------------------------------------------
+    # Retícula regular.
+    # Esto ayuda a no perder una hilera seca.
+    # --------------------------------------------------------
+    mods = np.mod(
+        peaks.astype(
+            np.float32
+        ),
+        spacing
+    )
+
+    z = np.mean(
+        np.exp(
+            1j *
+            2.0 *
+            np.pi *
+            mods /
+            spacing
+        )
+    )
+
+    phase = (
+        (
+            np.angle(z)
+            %
+            (
+                2.0 *
+                np.pi
+            )
+        )
+        *
+        spacing
+        /
+        (
+            2.0 *
+            np.pi
+        )
+    )
+
+    candidates = np.arange(
+        phase,
+        len(profile),
+        spacing
+    )
+
+    seeds = []
+
+    for candidate in candidates:
+
+        xr = float(
+            candidate +
+            rx0
+        )
+
+        xi = int(
+            round(
+                xr
+            )
+        )
+
+        if not (
+            0 <= xi < cw
+        ):
+            continue
+
+        a = max(
+            0,
+            xi - 2
+        )
+
+        b = min(
+            cw,
+            xi + 3
+        )
+
+        yy = np.where(
+            np.any(
+                rotated_mask[
+                    :,
+                    a:b
+                ] > 0,
+                axis=1
+            )
+        )[0]
+
+        if len(yy) < 8:
+            continue
+
+        # Usar el segmento continuo más largo.
+        breaks = np.where(
+            np.diff(
+                yy
+            ) > 1
+        )[0]
+
+        segments = np.split(
+            yy,
+            breaks + 1
+        )
+
+        segment = max(
+            segments,
+            key=len
+        )
+
+        if len(segment) < 8:
+            continue
+
+        yr = float(
+            np.median(
+                segment
+            )
+        )
+
+        point_rotated = np.array(
+            [
+                xr,
+                yr,
+                1.0
+            ],
+            dtype=np.float32
+        )
+
+        point_crop = (
+            point_rotated @
+            Minv.T
+        )
+
+        seeds.append(
+            (
+                float(
+                    point_crop[0] +
+                    xa
+                ),
+                float(
+                    point_crop[1] +
+                    ya
+                )
+            )
+        )
+
+    return (
+        seeds,
+        float(
+            spacing
+        )
+    )
 
 def trazar_direccion(
     seed,
@@ -135,6 +1462,345 @@ def trazar_direccion(
     green,
     spacing,
     occupancy
+):
+    """
+    Sigue una sola dirección desde la semilla.
+
+    Mejora importante:
+    - penaliza saltos laterales grandes;
+    - conserva una banda alrededor del centro del surco;
+    - no deja que la línea cruce fácilmente a la hilera vecina.
+    """
+    h, w = response.shape
+
+    support = cv2.erode(
+        (
+            component[
+                "mask"
+            ] > 0
+        ).astype(np.uint8),
+        np.ones(
+            (5, 5),
+            np.uint8
+        ),
+        iterations=1
+    )
+
+    point = np.asarray(
+        seed,
+        dtype=np.float64
+    )
+
+    direction = np.asarray(
+        initial_direction,
+        dtype=np.float64
+    )
+
+    direction /= (
+        np.linalg.norm(
+            direction
+        ) +
+        1e-9
+    )
+
+    initial_direction = direction.copy()
+    initial_perpendicular = np.array(
+        [
+            -initial_direction[1],
+            initial_direction[0]
+        ],
+        dtype=np.float64
+    )
+    seed_point = point.copy()
+
+    points = [
+        point.copy()
+    ]
+
+    green_scores = [
+        0.0
+    ]
+
+    weak_steps = 0
+    step_length = 3.5
+    search_radius = max(
+        2,
+        int(
+            spacing *
+            0.16
+        )
+    )
+    max_lateral_drift = max(
+        3.0,
+        float(spacing) * 0.42
+    )
+
+    maximum_steps = max(
+        120,
+        int(
+            2.2 *
+            max(
+                h,
+                w
+            ) /
+            step_length
+        )
+    )
+
+    for _ in range(
+        maximum_steps
+    ):
+
+        xi = int(
+            round(
+                point[0]
+            )
+        )
+        yi = int(
+            round(
+                point[1]
+            )
+        )
+
+        if not (
+            1 <= xi < w - 1
+            and
+            1 <= yi < h - 1
+        ):
+            break
+
+        local_theta = float(
+            theta[
+                yi,
+                xi
+            ]
+        )
+
+        local_vector = np.array(
+            [
+                np.cos(
+                    local_theta
+                ),
+                np.sin(
+                    local_theta
+                )
+            ],
+            dtype=np.float64
+        )
+
+        if (
+            np.dot(
+                local_vector,
+                direction
+            ) < 0
+        ):
+            local_vector *= -1.0
+
+        local_coherence = float(
+            coherence[
+                yi,
+                xi
+            ]
+        )
+
+        dot_value = float(
+            np.clip(
+                np.dot(
+                    local_vector,
+                    direction
+                ),
+                -1.0,
+                1.0
+            )
+        )
+        angle_change = float(
+            np.arccos(
+                dot_value
+            )
+        )
+
+        if (
+            local_coherence > 0.30
+            and
+            angle_change <
+            np.deg2rad(
+                28.0
+            )
+        ):
+            direction = (
+                0.84 *
+                direction
+                +
+                0.16 *
+                local_vector
+            )
+            direction /= (
+                np.linalg.norm(
+                    direction
+                ) +
+                1e-9
+            )
+
+        predicted = (
+            point +
+            direction *
+            step_length
+        )
+
+        perpendicular = np.array(
+            [
+                -direction[1],
+                direction[0]
+            ],
+            dtype=np.float64
+        )
+
+        best_point = None
+        best_score = -1e9
+        best_response = 0.0
+
+        for offset in np.linspace(
+            -search_radius,
+            search_radius,
+            (
+                search_radius * 2 + 1
+            )
+        ):
+            candidate = (
+                predicted +
+                perpendicular *
+                offset
+            )
+
+            cx = int(
+                round(
+                    candidate[0]
+                )
+            )
+            cy = int(
+                round(
+                    candidate[1]
+                )
+            )
+
+            if not (
+                0 <= cx < w and
+                0 <= cy < h
+            ):
+                continue
+            if support[cy, cx] == 0:
+                continue
+
+            visual = float(response[cy, cx])
+            coherent = float(coherence[cy, cx])
+            local_green = float(green[cy, cx])
+
+            candidate_theta = float(theta[cy, cx])
+            angle_penalty = diferencia_angular_rad(
+                candidate_theta,
+                float(np.arctan2(direction[1], direction[0]) % np.pi)
+            )
+
+            lateral_from_seed = abs(
+                float(
+                    np.dot(
+                        candidate - seed_point,
+                        initial_perpendicular
+                    )
+                )
+            )
+
+            # Castigar zonas ya ocupadas y saltos a la hilera vecina.
+            score = (
+                1.15 * visual
+                + 0.16 * coherent
+                + 0.05 * local_green
+                - 0.030 * abs(float(offset))
+                - 0.30 * angle_penalty
+                - 0.085 * max(0.0, lateral_from_seed - max_lateral_drift)
+            )
+
+            if occupancy[cy, cx] > 0:
+                score -= 0.50
+
+            # Si el punto se aleja demasiado del eje original,
+            # descartar casi por completo.
+            if lateral_from_seed > max_lateral_drift + spacing * 0.22:
+                score -= 0.90
+
+            # Verificación de cresta local: el centro del surco debe ser
+            # mejor que sus laterales cercanos, si no puede ser otra hilera.
+            side1 = candidate + perpendicular * max(1.5, spacing * 0.22)
+            side2 = candidate - perpendicular * max(1.5, spacing * 0.22)
+            s_ok = True
+            side_penalty = 0.0
+            for side in (side1, side2):
+                sx = int(round(side[0]))
+                sy = int(round(side[1]))
+                if 0 <= sx < w and 0 <= sy < h:
+                    sv = float(response[sy, sx])
+                    if sv > visual + 0.03:
+                        side_penalty += 0.24
+                else:
+                    s_ok = False
+            score -= side_penalty
+
+            if score > best_score:
+                best_score = score
+                best_point = candidate
+                best_response = visual
+
+        if best_point is None:
+            break
+
+        if best_response < 0.050:
+            weak_steps += 1
+            best_point = predicted
+            bx = int(round(best_point[0]))
+            by = int(round(best_point[1]))
+            if not (
+                0 <= bx < w and
+                0 <= by < h and
+                support[by, bx] > 0
+            ):
+                break
+        else:
+            weak_steps = max(0, weak_steps - 1)
+
+        if weak_steps > 8:
+            break
+
+        movement = best_point - point
+        movement_norm = float(np.linalg.norm(movement))
+        if movement_norm > 1e-6:
+            movement /= movement_norm
+            if np.dot(movement, direction) > 0.82:
+                direction = (
+                    0.88 * direction +
+                    0.12 * movement
+                )
+                direction /= (
+                    np.linalg.norm(direction) + 1e-9
+                )
+
+        point = best_point
+        points.append(point.copy())
+
+        px = int(round(point[0]))
+        py = int(round(point[1]))
+        y0 = max(0, py - 4)
+        y1 = min(h, py + 5)
+        x0 = max(0, px - 4)
+        x1 = min(w, px + 5)
+        patch = green[y0:y1, x0:x1]
+        green_scores.append(
+            float(np.mean(patch > 0)) if patch.size else 0.0
+        )
+
+    return (
+        np.asarray(points, dtype=np.float32),
+        np.asarray(green_scores, dtype=np.float32)
+    )
 
 def trazar_surco_local(
     seed,
@@ -145,13 +1811,749 @@ def trazar_surco_local(
     green,
     spacing,
     occupancy
+):
+    h, w = response.shape
+
+    sx = int(
+        np.clip(
+            round(
+                seed[0]
+            ),
+            0,
+            w - 1
+        )
+    )
+
+    sy = int(
+        np.clip(
+            round(
+                seed[1]
+            ),
+            0,
+            h - 1
+        )
+    )
+
+    local_theta = float(
+        theta[
+            sy,
+            sx
+        ]
+    )
+
+    # Si la orientación local de la semilla es poco clara,
+    # usar la orientación media SOLO para arrancar.
+    if (
+        float(
+            coherence[
+                sy,
+                sx
+            ]
+        ) < 0.22
+        or
+        diferencia_angular_rad(
+            local_theta,
+            component[
+                "angle"
+            ]
+        )
+        >
+        np.deg2rad(
+            40
+        )
+    ):
+        local_theta = float(
+            component[
+                "angle"
+            ]
+        )
+
+    direction = np.array(
+        [
+            np.cos(
+                local_theta
+            ),
+            np.sin(
+                local_theta
+            )
+        ],
+        dtype=np.float64
+    )
+
+    forward, forward_green = trazar_direccion(
+        seed,
+        direction,
+        component,
+        response,
+        theta,
+        coherence,
+        green,
+        spacing,
+        occupancy
+    )
+
+    backward, backward_green = trazar_direccion(
+        seed,
+        -direction,
+        component,
+        response,
+        theta,
+        coherence,
+        green,
+        spacing,
+        occupancy
+    )
+
+    if len(backward) > 1:
+        points = np.vstack(
+            [
+                backward[
+                    :0:-1
+                ],
+                forward
+            ]
+        )
+
+        green_scores = np.concatenate(
+            [
+                backward_green[
+                    :0:-1
+                ],
+                forward_green
+            ]
+        )
+    else:
+        points = forward
+        green_scores = forward_green
+
+    return (
+        points,
+        green_scores
+    )
 
 def estados_color(
     green_scores
+):
+    values = np.asarray(
+        green_scores,
+        dtype=np.float32
+    )
+
+    positive = values[
+        values > 0.005
+    ]
+
+    if len(positive) >= 5:
+        threshold = float(
+            np.clip(
+                np.percentile(
+                    positive,
+                    32
+                ) *
+                0.65,
+                0.025,
+                0.12
+            )
+        )
+    else:
+        threshold = 0.045
+
+    state = (
+        values >=
+        threshold
+    )
+
+    # Suavizar cambios aislados.
+    if len(state) >= 5:
+        original = state.copy()
+
+        for i in range(
+            2,
+            len(state) - 2
+        ):
+            state[i] = (
+                np.sum(
+                    original[
+                        i - 2:
+                        i + 3
+                    ]
+                ) >= 3
+            )
+
+    return state
 
 def analizar(
     pil_img,
     exclusion_mask=None
+):
+    original = cv2.cvtColor(
+        np.asarray(
+            pil_img.convert(
+                "RGB"
+            )
+        ),
+        cv2.COLOR_RGB2BGR
+    )
+
+    h, w = original.shape[:2]
+
+    # --------------------------------------------------------
+    # Paso 3: IA puede bloquear techo/camino/construcción.
+    # La detección se ejecuta sobre una copia neutralizada,
+    # pero el resultado final se dibuja sobre la foto original.
+    # --------------------------------------------------------
+    analysis_image = original.copy()
+
+    if exclusion_mask is not None:
+        if exclusion_mask.shape[:2] != (h, w):
+            exclusion_mask = cv2.resize(
+                exclusion_mask,
+                (w, h),
+                interpolation=cv2.INTER_NEAREST
+            )
+
+        exclusion_mask = (
+            exclusion_mask > 0
+        ).astype(np.uint8) * 255
+
+        # Gris neutro: no genera vegetación falsa y evita bordes fuertes.
+        analysis_image[
+            exclusion_mask > 0
+        ] = (128, 128, 128)
+
+    (
+        green,
+        theta,
+        coherence,
+        response,
+        components,
+        ny,
+        nx
+    ) = detectar_componentes_vinedo(
+        analysis_image,
+        tile=max(
+            24,
+            int(
+                min(
+                    h,
+                    w
+                ) /
+                18
+            )
+        )
+    )
+
+    if not components:
+        raise RuntimeError(
+            "No se encontró una zona con patrón claro de surcos."
+        )
+
+    # --------------------------------------------------------
+    # Evitar escenas donde solo hay una franja pequeña de viñedo.
+    # Esto reduce líneas falsas sobre jardines, edificios o caminos.
+    # --------------------------------------------------------
+    total_component_tiles = sum(
+        component[
+            "tiles"
+        ]
+        for component in components
+    )
+
+    tile_coverage = (
+        total_component_tiles /
+        max(
+            ny * nx,
+            1
+        )
+    )
+
+    if tile_coverage < 0.16:
+        raise RuntimeError(
+            "La imagen no contiene suficiente superficie de viñedo "
+            "para hacer un trazado confiable."
+        )
+
+    # Rejilla global: una posición transversal = una hilera real.
+    global_grid = calcular_rejilla_global_surcos(
+        green,
+        components
+    )
+
+    used_grid_ids = set()
+
+    final = original.copy()
+
+    occupancy = np.zeros(
+        (h, w),
+        dtype=np.uint8
+    )
+
+    all_tracks = []
+    # Datos técnicos de cada trayectoria para Inventario.
+    # No cambia el resultado visual de Salud; solo expone la geometría
+    # necesaria para calcular slots ocupados/vacíos por separado.
+    all_track_records = []
+
+    total_green = 0
+    total_red = 0
+
+    accepted_components = 0
+
+    component_angles = []
+
+    # Procesar primero los bloques más grandes.
+    for component in components:
+
+        seeds, spacing = semillas_componente(
+            component,
+            response
+        )
+
+        if (
+            spacing is None
+            or
+            len(seeds) < 4
+        ):
+            continue
+
+        accepted_components += 1
+
+        component_angles.append(
+            np.rad2deg(
+                component[
+                    "angle"
+                ]
+            )
+        )
+
+        for seed in seeds:
+
+            points, green_scores = trazar_surco_local(
+                seed,
+                component,
+                response,
+                theta,
+                coherence,
+                green,
+                spacing,
+                occupancy
+            )
+
+            if len(points) < 8:
+                continue
+
+            # Descartar semillas que caen sobre un surco ya trazado.
+            occupied_hits = 0
+            for px_test, py_test in np.rint(points[::max(1, len(points)//12)]).astype(np.int32):
+                if 0 <= px_test < w and 0 <= py_test < h and occupancy[py_test, px_test] > 0:
+                    occupied_hits += 1
+            if occupied_hits >= 2:
+                continue
+
+            # ------------------------------------------------
+            # Conservar incluso surcos parciales.
+            # La semilla ya proviene del patrón repetitivo.
+            # ------------------------------------------------
+            line_length = float(
+                np.sum(
+                    np.linalg.norm(
+                        np.diff(
+                            points,
+                            axis=0
+                        ),
+                        axis=1
+                    )
+                )
+            )
+
+            if line_length < max(
+                24.0,
+                spacing * 2.5
+            ):
+                continue
+
+            # Exigir una trayectoria suficientemente larga para evitar
+            # ramas, copas de árboles y fragmentos pequeños.
+            if line_length < max(
+                45.0,
+                spacing * 4.0,
+                min(h, w) * 0.075
+            ):
+                continue
+
+            # Si OpenAI marcó zonas a excluir, al menos 70% del track
+            # debe quedar dentro del viñedo permitido.
+            if exclusion_mask is not None:
+                sample = np.rint(
+                    points
+                ).astype(np.int32)
+
+                valid_samples = 0
+                total_samples = 0
+
+                for sx, sy in sample[::max(1, len(sample)//30)]:
+                    if 0 <= sx < w and 0 <= sy < h:
+                        total_samples += 1
+                        if exclusion_mask[sy, sx] == 0:
+                            valid_samples += 1
+
+                if total_samples > 0:
+                    valid_fraction = valid_samples / total_samples
+                    if valid_fraction < 0.70:
+                        continue
+
+            # Asociar el fragmento a UNA hilera global.
+            grid_id = asignar_track_a_rejilla(
+                points,
+                global_grid
+            )
+
+            if global_grid is not None and grid_id is None:
+                continue
+
+            states = estados_color(
+                green_scores
+            )
+
+            if grid_id is not None:
+                track_index = int(grid_id) + 1
+            else:
+                track_index = len(all_tracks) + 1
+
+            # Dibujar segmentos uno por uno.
+            for j in range(
+                len(points) - 1
+            ):
+
+                p1 = points[j]
+                p2 = points[j + 1]
+
+                if not (
+                    np.all(
+                        np.isfinite(
+                            p1
+                        )
+                    )
+                    and
+                    np.all(
+                        np.isfinite(
+                            p2
+                        )
+                    )
+                ):
+                    continue
+
+                x1 = int(
+                    np.clip(
+                        round(
+                            p1[0]
+                        ),
+                        0,
+                        w - 1
+                    )
+                )
+
+                y1 = int(
+                    np.clip(
+                        round(
+                            p1[1]
+                        ),
+                        0,
+                        h - 1
+                    )
+                )
+
+                x2 = int(
+                    np.clip(
+                        round(
+                            p2[0]
+                        ),
+                        0,
+                        w - 1
+                    )
+                )
+
+                y2 = int(
+                    np.clip(
+                        round(
+                            p2[1]
+                        ),
+                        0,
+                        h - 1
+                    )
+                )
+
+                # No dibujar dentro de zonas excluidas por IA.
+                if exclusion_mask is not None:
+                    mid_x = int(round((x1 + x2) / 2.0))
+                    mid_y = int(round((y1 + y2) / 2.0))
+
+                    if (
+                        exclusion_mask[y1, x1] > 0
+                        or
+                        exclusion_mask[y2, x2] > 0
+                        or
+                        exclusion_mask[mid_y, mid_x] > 0
+                    ):
+                        continue
+
+                green_segment = bool(
+                    states[
+                        min(
+                            j,
+                            len(
+                                states
+                            ) - 1
+                        )
+                    ]
+                    or
+                    states[
+                        min(
+                            j + 1,
+                            len(
+                                states
+                            ) - 1
+                        )
+                    ]
+                )
+
+                if green_segment:
+                    color = (
+                        0,
+                        240,
+                        0
+                    )
+                    total_green += 1
+                else:
+                    color = (
+                        0,
+                        0,
+                        255
+                    )
+                    total_red += 1
+
+                cv2.line(
+                    final,
+                    (
+                        x1,
+                        y1
+                    ),
+                    (
+                        x2,
+                        y2
+                    ),
+                    color,
+                    2,
+                    cv2.LINE_AA
+                )
+
+            # Numeración en la parte media para no amontonar arriba.
+            middle = points[
+                len(
+                    points
+                ) // 2
+            ]
+
+            mx = int(
+                np.clip(
+                    round(
+                        middle[0]
+                    ),
+                    0,
+                    w - 1
+                )
+            )
+
+            my = int(
+                np.clip(
+                    round(
+                        middle[1]
+                    ),
+                    0,
+                    h - 1
+                )
+            )
+
+            # Si el centro cae en techo/camino, buscar otro punto del surco.
+            if (
+                exclusion_mask is not None
+                and
+                exclusion_mask[my, mx] > 0
+            ):
+                safe_label = None
+
+                for candidate in points:
+                    cx = int(np.clip(round(candidate[0]), 0, w - 1))
+                    cy = int(np.clip(round(candidate[1]), 0, h - 1))
+
+                    if exclusion_mask[cy, cx] == 0:
+                        safe_label = (cx, cy)
+                        break
+
+                if safe_label is not None:
+                    mx, my = safe_label
+
+            if (
+                exclusion_mask is None
+                or
+                exclusion_mask[my, mx] == 0
+            ):
+                cv2.putText(
+                final,
+                str(
+                    track_index
+                ),
+                (
+                    mx + 4,
+                    my - 4
+                ),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (
+                        255,
+                        255,
+                        255
+                    ),
+                    2,
+                    cv2.LINE_AA
+                )
+
+                cv2.putText(
+                    final,
+                    str(
+                        track_index
+                    ),
+                    (
+                        mx + 4,
+                        my - 4
+                    ),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (
+                        10,
+                        10,
+                        10
+                    ),
+                    1,
+                    cv2.LINE_AA
+                )
+
+            # ------------------------------------------------
+            # Marcar ocupación DESPUÉS de terminar el surco.
+            # Esto evita que los siguientes se peguen al mismo.
+            # ------------------------------------------------
+            track_pixels = np.rint(
+                points
+            ).astype(
+                np.int32
+            )
+
+            occupancy_line = np.zeros(
+                (h, w),
+                dtype=np.uint8
+            )
+
+            cv2.polylines(
+                occupancy_line,
+                [
+                    track_pixels
+                ],
+                False,
+                255,
+                max(
+                    2,
+                    int(
+                        spacing *
+                        0.58
+                    )
+                ),
+                cv2.LINE_AA
+            )
+
+            occupancy = np.maximum(
+                occupancy,
+                occupancy_line
+            )
+
+            all_tracks.append(
+                points
+            )
+
+            all_track_records.append({
+                "track_index": int(track_index),
+                "grid_id": int(grid_id) if grid_id is not None else None,
+                "points": np.asarray(points, dtype=np.float32),
+                "green_scores": np.asarray(green_scores, dtype=np.float32),
+                "states": np.asarray(states, dtype=bool),
+                "spacing": float(spacing),
+                "line_length": float(line_length),
+            })
+
+            if grid_id is not None:
+                used_grid_ids.add(
+                    int(grid_id)
+                )
+
+    if (
+        accepted_components == 0
+        or
+        len(all_tracks) < 4
+    ):
+        raise RuntimeError(
+            "Se encontró vegetación, pero no un patrón repetitivo "
+            "de surcos suficientemente claro."
+        )
+
+    total = (
+        total_green +
+        total_red
+    )
+
+    green_pct = (
+        100.0 *
+        total_green /
+        total
+        if total
+        else 0.0
+    )
+
+    red_pct = (
+        100.0 -
+        green_pct
+        if total
+        else 0.0
+    )
+
+    # Solo dato informativo:
+    # promedio de orientaciones de componentes.
+    mean_angle = float(
+        np.mean(
+            component_angles
+        )
+    ) if component_angles else 0.0
+
+    return {
+        "image": cv2.cvtColor(
+            final,
+            cv2.COLOR_BGR2RGB
+        ),
+        "count": int(
+            len(used_grid_ids)
+            if global_grid is not None and len(used_grid_ids) > 0
+            else len(all_tracks)
+        ),
+        "green_pct": float(
+            green_pct
+        ),
+        "red_pct": float(
+            red_pct
+        ),
+        "angle": mean_angle,
+        # Campos técnicos usados exclusivamente por Inventario.
+        "tracks": all_track_records,
+        "green_mask": (green > 0).astype(np.uint8) * 255,
+        "response_map": response.astype(np.float32),
+    }
 
 def _tc_polyline_distances(points):
     pts = np.asarray(points, dtype=np.float32)
@@ -525,6 +2927,189 @@ def _ocv2_inverse_affine_point(Minv, x, y):
     p = np.asarray([float(x), float(y), 1.0], dtype=np.float32)
     q = Minv @ p
     return np.asarray([float(q[0]), float(q[1])], dtype=np.float32)
+
+
+def _ocv2_detect_straight_rows(pil):
+    """Detecta la rejilla transversal y crea una línea recta por hilera.
+
+    La decisión de qué hilera existe sale del perfil global del viñedo, no de
+    una polilínea que pueda desviarse y brincar a la hilera vecina.
+    """
+    bgr = cv2.cvtColor(np.asarray(pil.convert("RGB")), cv2.COLOR_RGB2BGR)
+    h, w = bgr.shape[:2]
+
+    (
+        green,
+        theta,
+        coherence,
+        response,
+        components,
+        ny,
+        nx,
+    ) = detectar_componentes_vinedo(
+        bgr,
+        tile=max(24, int(min(h, w) / 18)),
+    )
+
+    if not components:
+        raise RuntimeError("OpenCV no encontró una zona clara con patrón de viñedo.")
+
+    grid = calcular_rejilla_global_surcos(green, components)
+    if grid is None or len(grid.get("peaks", [])) < 4:
+        # Respaldo con el detector V12 existente y ajuste recto robusto.
+        base = analizar(pil, exclusion_mask=None)
+        tracks = list(base.get("tracks", []) or [])
+        rows = []
+        by_idx = {}
+        for t in tracks:
+            idx = int(t.get("track_index", len(by_idx) + 1))
+            old = by_idx.get(idx)
+            if old is None or float(t.get("line_length", 0.0) or 0.0) > float(old.get("line_length", 0.0) or 0.0):
+                by_idx[idx] = t
+
+        for idx in sorted(by_idx):
+            t = by_idx[idx]
+            pts = np.asarray(t.get("points", []), dtype=np.float32).reshape(-1, 2)
+            if len(pts) < 5:
+                continue
+            line = cv2.fitLine(pts.reshape(-1, 1, 2), cv2.DIST_HUBER, 0, 0.01, 0.01)
+            vx, vy, x0, y0 = [float(v) for v in line.flatten()]
+            d = np.asarray([vx, vy], dtype=np.float32)
+            dn = float(np.linalg.norm(d))
+            if dn < 1e-6:
+                continue
+            d /= dn
+            c = np.asarray([x0, y0], dtype=np.float32)
+            nvec = np.asarray([-d[1], d[0]], dtype=np.float32)
+            residual = np.dot(pts - c, nvec)
+            med = float(np.median(residual))
+            mad = float(np.median(np.abs(residual - med))) + 1e-6
+            spacing = float(t.get("spacing", 18.0) or 18.0)
+            corridor = max(3.0, min(spacing * 0.38, 2.6 * mad + 2.5))
+            keep = np.abs(residual - med) <= corridor
+            if int(np.sum(keep)) >= max(5, int(len(pts) * 0.45)):
+                pts2 = pts[keep]
+                line = cv2.fitLine(pts2.reshape(-1, 1, 2), cv2.DIST_HUBER, 0, 0.01, 0.01)
+                vx, vy, x0, y0 = [float(v) for v in line.flatten()]
+                d = np.asarray([vx, vy], dtype=np.float32)
+                d /= max(1e-6, float(np.linalg.norm(d)))
+                c = np.asarray([x0, y0], dtype=np.float32)
+                pts = pts2
+            ref = np.asarray(t.get("points", [])[-1], dtype=np.float32) - np.asarray(t.get("points", [])[0], dtype=np.float32)
+            if float(np.dot(d, ref)) < 0:
+                d = -d
+            proj = np.dot(pts - c, d)
+            lo = float(np.percentile(proj, 1.0))
+            hi = float(np.percentile(proj, 99.0))
+            if hi <= lo:
+                continue
+            p0 = c + d * lo
+            p1 = c + d * hi
+            p0[0] = np.clip(p0[0], 0, w - 1); p0[1] = np.clip(p0[1], 0, h - 1)
+            p1[0] = np.clip(p1[0], 0, w - 1); p1[1] = np.clip(p1[1], 0, h - 1)
+            if float(np.linalg.norm(p1 - p0)) < min(h, w) * 0.08:
+                continue
+            rows.append({
+                "id": len(rows) + 1,
+                "confidence": 0.66,
+                "points_norm": _ocv2_norm_points_from_px([p0, p1], w, h, n=6),
+                "slot_count": 0,
+                "vacant_indices": [],
+                "row_spacing_px": spacing,
+            })
+        rows = _tg_sort_rows(rows)
+        return {
+            "pil": pil,
+            "rows": rows,
+            "response_map": np.asarray(base.get("response_map"), dtype=np.float32),
+            "green_mask": np.asarray(base.get("green_mask"), dtype=np.uint8),
+            "row_spacing_px": float(np.median([r.get("row_spacing_px", 18.0) for r in rows])) if rows else 18.0,
+            "angle_deg": float(base.get("angle", 0.0) or 0.0),
+        }
+
+    M = np.asarray(grid["M"], dtype=np.float32)
+    Minv = cv2.invertAffineTransform(M)
+    spacing = float(grid.get("spacing", 18.0) or 18.0)
+    peaks = _ocv2_regularize_peaks(grid.get("peaks", []), spacing, w)
+
+    rot_green = cv2.warpAffine(
+        (green > 0).astype(np.uint8),
+        M,
+        (w, h),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+    )
+
+    # Soporte vertical general del viñedo. Sirve como respaldo para hileras secas.
+    global_y_score = gaussian_filter1d(np.mean(rot_green.astype(np.float32), axis=1), sigma=2.0)
+    global_ys = np.where(global_y_score > max(0.004, float(np.percentile(global_y_score, 45)) * 0.22))[0]
+    if len(global_ys) >= 10:
+        common_y0 = int(np.percentile(global_ys, 1.0))
+        common_y1 = int(np.percentile(global_ys, 99.0))
+    else:
+        common_y0 = int(h * 0.05)
+        common_y1 = int(h * 0.95)
+
+    rows = []
+    band_half = max(2, int(round(spacing * 0.24)))
+
+    for x in peaks:
+        xi = int(round(x))
+        xa = max(0, xi - band_half)
+        xb = min(w, xi + band_half + 1)
+        if xb <= xa:
+            continue
+
+        col = np.mean(rot_green[:, xa:xb].astype(np.float32), axis=1)
+        col = gaussian_filter1d(col, sigma=2.2)
+        thr = max(0.010, float(np.percentile(col, 68)) * 0.24)
+        ys = np.where(col > thr)[0]
+
+        if len(ys) >= 8 and (ys[-1] - ys[0]) >= h * 0.30:
+            y0 = int(np.percentile(ys, 1.5))
+            y1 = int(np.percentile(ys, 98.5))
+        else:
+            y0, y1 = common_y0, common_y1
+
+        # Evitar cabeceras extremas, pero permitir surcos que llegan cerca del borde.
+        y0 = int(np.clip(y0, 0, h - 2))
+        y1 = int(np.clip(y1, y0 + 1, h - 1))
+
+        p0 = _ocv2_inverse_affine_point(Minv, x, y0)
+        p1 = _ocv2_inverse_affine_point(Minv, x, y1)
+        p0[0] = np.clip(p0[0], 0, w - 1); p0[1] = np.clip(p0[1], 0, h - 1)
+        p1[0] = np.clip(p1[0], 0, w - 1); p1[1] = np.clip(p1[1], 0, h - 1)
+
+        length = float(np.linalg.norm(p1 - p0))
+        if length < min(h, w) * 0.18:
+            continue
+
+        support = float(np.mean(col[y0:y1 + 1])) if y1 > y0 else 0.0
+        confidence = float(np.clip(0.58 + min(0.32, support * 2.2), 0.45, 0.92))
+        rows.append({
+            "id": len(rows) + 1,
+            "confidence": confidence,
+            "points_norm": _ocv2_norm_points_from_px([p0, p1], w, h, n=6),
+            "slot_count": 0,
+            "vacant_indices": [],
+            "row_spacing_px": spacing,
+        })
+
+    rows = _tg_sort_rows(rows)
+    for i, r in enumerate(rows, 1):
+        r["id"] = i
+
+    if len(rows) < 4:
+        raise RuntimeError("OpenCV detectó muy pocos surcos rectos para un Inventario confiable.")
+
+    return {
+        "pil": pil,
+        "rows": rows,
+        "response_map": np.asarray(response, dtype=np.float32),
+        "green_mask": (green > 0).astype(np.uint8) * 255,
+        "row_spacing_px": spacing,
+        "angle_deg": float(grid.get("angle_deg", 0.0) or 0.0),
+    }
 
 def _ocv2_detect_straight_rows(pil):
     """Detecta la rejilla transversal y crea una línea recta por hilera.
