@@ -21,6 +21,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # En PR se prueba el commit real de la rama, no el merge ref sintético.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify backend source files
+        run: |
+          test -f backend_api.py
+          test -f appsheet_integration.py
+          test -f terracore_engine.py
+          echo "Los tres módulos del backend están presentes."
 
       - name: Set up Python
         uses: actions/setup-python@v5
