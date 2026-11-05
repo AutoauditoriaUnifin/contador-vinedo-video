@@ -46,6 +46,11 @@ REQUEST_HEADERS = [
     "ParcelaNombre",
     "Idioma",
     "Fotos",
+    "Foto01",
+    "Foto02",
+    "Foto03",
+    "Foto04",
+    "Foto05",
     "SurcoID",
     "Estado",
     "FechaInicio",
@@ -419,6 +424,17 @@ def _parse_image_list(value: Any) -> list[str]:
     return result
 
 
+def _photo_paths(row: dict[str, Any]) -> list[str]:
+    """Acepta EnumList Fotos o hasta cinco columnas Image individuales."""
+    paths = _parse_image_list(row.get(_normalize_header("Fotos"), ""))
+    for number in range(1, 6):
+        value = row.get(_normalize_header(f"Foto{number:02d}"), "")
+        for path in _parse_image_list(value):
+            if path not in paths:
+                paths.append(path)
+    return paths
+
+
 def _safe_name(value: Any) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
     text = text.encode("ascii", "ignore").decode("ascii")
@@ -757,11 +773,8 @@ def _append_analysis_results(
     note = _tc_quitar_nombre_motor_del_analisis(
         backend_result.get("nota_diagnostico", "")
     )
-    regions = _build_regions(uploaded, backend_result, rows, _analysis_id_for_request(
-        sheets, request_id, photo_index
-    ))
-
     historial_id = _analysis_id_for_request(sheets, request_id, photo_index)
+    regions = _build_regions(uploaded, backend_result, rows, historial_id)
     now = _now_iso()
     parcel_safe = _safe_name(parcela_name or parcela_id or "Parcela")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -1193,7 +1206,7 @@ def appsheet_submit_analysis(
                 "mensaje": "La solicitud ya está en proceso.",
             }
 
-        photo_paths = _parse_image_list(row.get(_normalize_header("Fotos"), ""))
+        photo_paths = _photo_paths(row)
         if not photo_paths:
             raise HTTPException(
                 status_code=400,
