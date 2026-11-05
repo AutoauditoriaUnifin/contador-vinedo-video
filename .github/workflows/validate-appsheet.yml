@@ -10,6 +10,7 @@ on:
       - "terracore_engine.py"
       - "run_appsheet_job.py"
       - "requirements_backend.txt"
+      - "requirements_worker.txt"
       - "Dockerfile"
       - "APPSHEET_FREE_SETUP.md"
       - "apps_script/**"
@@ -35,6 +36,7 @@ jobs:
           test -f appsheet_integration.py
           test -f terracore_engine.py
           test -f run_appsheet_job.py
+          test -f requirements_worker.txt
           test -f apps_script/Code.gs
           test -f apps_script/appsscript.json
           test -f .github/workflows/process-appsheet-analysis.yml
