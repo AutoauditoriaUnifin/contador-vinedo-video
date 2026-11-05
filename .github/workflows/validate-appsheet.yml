@@ -8,9 +8,13 @@ on:
       - "backend_api.py"
       - "appsheet_integration.py"
       - "terracore_engine.py"
+      - "run_appsheet_job.py"
       - "requirements_backend.txt"
       - "Dockerfile"
+      - "APPSHEET_FREE_SETUP.md"
+      - "apps_script/**"
       - ".github/workflows/validate-appsheet.yml"
+      - ".github/workflows/process-appsheet-analysis.yml"
   pull_request:
     branches:
       - main
@@ -25,12 +29,20 @@ jobs:
           # En PR se prueba el commit real de la rama, no el merge ref sintético.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Verify backend source files
+      - name: Verify backend and Apps Script files
         run: |
           test -f backend_api.py
           test -f appsheet_integration.py
           test -f terracore_engine.py
-          echo "Los tres módulos del backend están presentes."
+          test -f run_appsheet_job.py
+          test -f apps_script/Code.gs
+          test -f apps_script/appsscript.json
+          test -f .github/workflows/process-appsheet-analysis.yml
+          test -f APPSHEET_FREE_SETUP.md
+          echo "Los archivos de la integración gratuita están presentes."
+
+      - name: Check Apps Script JavaScript syntax
+        run: node --check < apps_script/Code.gs
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -44,7 +56,7 @@ jobs:
 
       - name: Compile Python modules
         run: |
-          python -m compileall -q backend_api.py appsheet_integration.py terracore_engine.py
+          python -m compileall -q backend_api.py appsheet_integration.py terracore_engine.py run_appsheet_job.py
 
       - name: Import API and verify AppSheet routes
         env:
@@ -58,6 +70,7 @@ jobs:
         run: |
           python - <<'PY'
           import backend_api
+          from appsheet_integration import REQUEST_HEADERS
 
           # FastAPI reciente puede incluir routers como objetos internos
           # sin atributo .path; OpenAPI expone las rutas públicas finales.
@@ -70,5 +83,9 @@ jobs:
           }
           missing = required - paths
           assert not missing, f"Faltan rutas: {sorted(missing)}"
-          print("API importada; rutas AppSheet verificadas.")
+
+          required_columns = {"Video", "Video simulación "}
+          missing_columns = required_columns - set(REQUEST_HEADERS)
+          assert not missing_columns, f"Faltan columnas de video: {sorted(missing_columns)}"
+          print("API, rutas AppSheet y columnas de video verificadas.")
           PY
