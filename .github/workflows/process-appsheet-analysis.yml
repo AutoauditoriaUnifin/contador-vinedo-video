@@ -1,0 +1,49 @@
+name: Process TerraCore AppSheet analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: "SolicitudID de la pestaña SolicitudesAnalisis"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terracore-appsheet-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+jobs:
+  process:
+    name: Process request
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements_backend.txt
+
+      - name: Install TerraCore engine
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_backend.txt
+
+      - name: Process AppSheet request
+        env:
+          REQUEST_ID: ${{ inputs.request_id }}
+          APPS_SCRIPT_WEBAPP_URL: ${{ secrets.APPS_SCRIPT_WEBAPP_URL }}
+          APPS_SCRIPT_SHARED_SECRET: ${{ secrets.APPS_SCRIPT_SHARED_SECRET }}
+          APPSHEET_API_TOKEN: ${{ secrets.APPS_SCRIPT_SHARED_SECRET }}
+          GSHEET_ID: ${{ secrets.GSHEET_ID }}
+          GDRIVE_PARENT_FOLDER_ID: ${{ secrets.GDRIVE_PARENT_FOLDER_ID }}
+          APPSHEET_DRIVE_ROOT_ID: ${{ secrets.APPSHEET_DRIVE_ROOT_ID }}
+        run: python run_appsheet_job.py
