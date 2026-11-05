@@ -1,9 +1,9 @@
 """Integración de TerraCore con AppSheet.
 
-AppSheet crea una solicitud en SolicitudesAnalisis y llama al endpoint
-/appsheet/analysis/submit. El endpoint encola un trabajo en Cloud Tasks.
-El worker procesa las imágenes con el motor OpenCV extraído de Streamlit
-y guarda los resultados en el mismo Google Sheets y Drive.
+El worker puede ejecutarse desde GitHub Actions sin servidor permanente.
+Google Apps Script entrega un token OAuth temporal para acceder al mismo
+Google Sheets y Drive; el motor OpenCV se reutiliza sin abrir Streamlit.
+El endpoint FastAPI/Cloud Tasks se conserva como vía heredada opcional.
 """
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def _verify_token(
     if not expected:
         raise HTTPException(
             status_code=503,
-            detail="Falta configurar el secreto APPSHEET_API_TOKEN en Cloud Run.",
+            detail="Falta configurar el secreto APPSHEET_API_TOKEN.",
         )
 
     bearer = ""
@@ -138,22 +138,35 @@ def _google_clients():
     if not DRIVE_ROOT_ID:
         raise RuntimeError("Falta la variable GDRIVE_PARENT_FOLDER_ID.")
 
-    raw = os.getenv("GCP_SERVICE_ACCOUNT_JSON", "").strip()
-    if raw:
-        try:
-            info = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("GCP_SERVICE_ACCOUNT_JSON no contiene JSON válido.") from exc
-        from google.oauth2 import service_account
+    # Modo gratuito: Apps Script entrega un OAuth access token temporal
+    # del propietario del archivo. Se usa solo en memoria durante este job.
+    access_token = os.getenv("GOOGLE_OAUTH_ACCESS_TOKEN", "").strip()
+    if access_token:
+        from google.oauth2.credentials import Credentials
 
-        credentials = service_account.Credentials.from_service_account_info(
-            info,
+        credentials = Credentials(
+            token=access_token,
             scopes=SCOPES,
         )
     else:
-        import google.auth
+        raw = os.getenv("GCP_SERVICE_ACCOUNT_JSON", "").strip()
+        if raw:
+            try:
+                info = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    "GCP_SERVICE_ACCOUNT_JSON no contiene JSON válido."
+                ) from exc
+            from google.oauth2 import service_account
 
-        credentials, _ = google.auth.default(scopes=SCOPES)
+            credentials = service_account.Credentials.from_service_account_info(
+                info,
+                scopes=SCOPES,
+            )
+        else:
+            import google.auth
+
+            credentials, _ = google.auth.default(scopes=SCOPES)
 
     drive = build(
         "drive",
