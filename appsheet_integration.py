@@ -777,8 +777,8 @@ def _append_analysis_results(
     regions = _build_regions(uploaded, backend_result, rows, historial_id)
     now = _now_iso()
     parcel_safe = _safe_name(parcela_name or parcela_id or "Parcela")
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    base_name = f"{parcel_safe}_{stamp}_{historial_id}_F{photo_index:02d}"
+    request_safe = _safe_name(request_id)
+    base_name = f"{parcel_safe}_{request_safe}_{historial_id}_F{photo_index:02d}"
 
     extension = PurePosixPath(source_name.replace("\\", "/")).suffix.lower()
     if extension not in (".jpg", ".jpeg", ".png", ".webp"):
@@ -1210,7 +1210,7 @@ def appsheet_submit_analysis(
         if not photo_paths:
             raise HTTPException(
                 status_code=400,
-                detail="Agrega al menos una fotografía en la columna Fotos.",
+                detail="Agrega una fotografía en Foto01–Foto05 o en Fotos.",
             )
 
         task_name = _enqueue_analysis_task(request_id)
@@ -1265,7 +1265,21 @@ def appsheet_process_analysis(
             raise ValueError("No hay fotografías registradas en la solicitud.")
 
         parcela_id = str(row.get(_normalize_header("ParcelaID"), "") or "").strip()
+        if not parcela_id:
+            raise ValueError("Selecciona una parcela en la columna ParcelaID.")
+
         parcela_name = str(row.get(_normalize_header("ParcelaNombre"), "") or "").strip()
+        if not parcela_name:
+            _, parcel_row, _ = _find_row_by_key(
+                sheets, "Parcelas", "ID", parcela_id
+            )
+            if parcel_row:
+                parcela_name = str(
+                    parcel_row.get(_normalize_header("NombreParcela"), "") or ""
+                ).strip()
+        if not parcela_name:
+            parcela_name = parcela_id
+
         idioma = str(row.get(_normalize_header("Idioma"), "ES") or "ES").strip().upper()
         idioma = "FR" if idioma == "FR" else "ES"
         fecha_captura = str(row.get(_normalize_header("FechaSolicitud"), "") or "").strip()
