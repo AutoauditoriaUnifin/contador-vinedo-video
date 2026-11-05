@@ -58,7 +58,10 @@ jobs:
         run: |
           python - <<'PY'
           import backend_api
-          paths = {route.path for route in backend_api.app.routes}
+
+          # FastAPI reciente puede incluir routers como objetos internos
+          # sin atributo .path; OpenAPI expone las rutas públicas finales.
+          paths = set(backend_api.app.openapi().get("paths", {}))
           required = {
               "/appsheet/health",
               "/appsheet/setup",
