@@ -30,7 +30,7 @@ La API crea la pestaña `SolicitudesAnalisis` en el mismo archivo indicado por `
 |---|---|---|
 | SolicitudID | Text | Key; Initial value: `UNIQUEID()` |
 | FechaSolicitud | DateTime | Initial value: `NOW()` |
-| ParcelaID | Ref | Referencia a `Parcelas`; columna Key: `ID` |
+| ParcelaID | Ref | Obligatorio; referencia a `Parcelas`; columna Key: `ID` |
 | ParcelaNombre | Text | App formula: `[ParcelaID].[NombreParcela]` |
 | Idioma | Enum | Valores ES, FR; Initial value: `"ES"` |
 | Foto01 | Image | Primera fotografía |
@@ -70,13 +70,32 @@ Secreto obligatorio:
 
 ## 4. Permisos de Google
 
-Usa una cuenta de servicio dedicada para Cloud Run, por ejemplo:
+Usa una cuenta de servicio dedicada para Cloud Run. Desde Cloud Shell o la terminal con `gcloud`:
 
-`terracore-api@TU_PROJECT_ID.iam.gserviceaccount.com`
+```bash
+gcloud iam service-accounts create terracore-api \
+  --display-name="TerraCore AppSheet API"
 
-Dale el rol de proyecto:
+gcloud projects add-iam-policy-binding TU_PROJECT_ID \
+  --member="serviceAccount:terracore-api@TU_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/cloudtasks.enqueuer"
+```
 
-- `roles/cloudtasks.enqueuer`
+Crea el secreto del token (genera un valor aleatorio y guárdalo fuera del repositorio):
+
+```bash
+openssl rand -hex 32 | gcloud secrets create APPSHEET_API_TOKEN --data-file=-
+```
+
+Si el secreto ya existe, agrega una nueva versión con `gcloud secrets versions add`.
+
+Autoriza a la cuenta de servicio para leer ese secreto:
+
+```bash
+gcloud secrets add-iam-policy-binding APPSHEET_API_TOKEN \
+  --member="serviceAccount:terracore-api@TU_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+```
 
 Comparte con esa cuenta de servicio, como Editor:
 
@@ -84,7 +103,7 @@ Comparte con esa cuenta de servicio, como Editor:
 - La carpeta raíz de Drive configurada en `GDRIVE_PARENT_FOLDER_ID`.
 - La carpeta de archivos de AppSheet, si es distinta.
 
-No hace falta hacer públicos los archivos de Drive. La cuenta de servicio debe poder leer las fotos que AppSheet sube y escribir los resultados.
+No hace falta hacer públicos los archivos de Drive. La cuenta de servicio debe poder leer las fotos que AppSheet sube y escribir los resultados. No pegues el token ni las credenciales en GitHub o en este chat.
 
 ## 5. Cloud Tasks
 
