@@ -1260,7 +1260,7 @@ def appsheet_process_analysis(
                 "mensaje": "La solicitud ya estaba terminada.",
             }
 
-        photo_paths = _parse_image_list(row.get(_normalize_header("Fotos"), ""))
+        photo_paths = _photo_paths(row)
         if not photo_paths:
             raise ValueError("No hay fotografías registradas en la solicitud.")
 
