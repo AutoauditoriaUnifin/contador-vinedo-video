@@ -1,0 +1,10 @@
+# Dependencias mínimas para ejecutar el motor desde GitHub Actions.
+# No requiere OpenAI, Uvicorn, Cloud Tasks ni una cuenta de servicio.
+fastapi==0.142.0
+Pillow==12.3.0
+numpy==2.5.3
+scipy==1.18.1
+pandas==3.0.6
+opencv-python-headless==5.0.0.93
+google-api-python-client==2.200.0
+google-auth==2.59.0
