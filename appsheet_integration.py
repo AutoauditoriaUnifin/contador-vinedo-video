@@ -51,6 +51,8 @@ REQUEST_HEADERS = [
     "Foto03",
     "Foto04",
     "Foto05",
+    "Video",
+    "Video simulación ",
     "SurcoID",
     "Estado",
     "FechaInicio",
@@ -1093,6 +1095,68 @@ def _append_analysis_results(
     }
 
 
+def _save_video_evidence(
+    sheets,
+    request_id: str,
+    history_ids: list[str],
+    parcela_name: str,
+    idioma: str,
+    video_path: str,
+    simulation_video_path: str,
+) -> int:
+    """Asocia los videos ya cargados por AppSheet con cada historial generado.
+
+    AppSheet almacena los archivos en la carpeta de la aplicación de Drive.
+    Aquí guardamos sus rutas en HistorialTerroCore y Evidencias1 sin volver
+    a descargar ni duplicar archivos de video pesados.
+    """
+    video_path = str(video_path or "").strip()
+    simulation_video_path = str(simulation_video_path or "").strip()
+    if not video_path and not simulation_video_path:
+        return 0
+
+    saved = 0
+    for historial_id in history_ids:
+        history_row, _, _ = _find_row_by_key(
+            sheets,
+            HISTORIAL_SHEET,
+            "ID",
+            historial_id,
+        )
+        if history_row:
+            _update_row_fields(
+                sheets,
+                HISTORIAL_SHEET,
+                history_row,
+                {
+                    "Video": video_path,
+                    "Video simulación": simulation_video_path,
+                },
+            )
+
+        evidence_id = _deterministic_id(
+            f"{request_id}|video-evidencia|{historial_id}"
+        )
+        _append_row_once(
+            sheets,
+            "Evidencias1",
+            {
+                "UNIQUEID": evidence_id,
+                "NOMBRE": parcela_name,
+                "DESCRIPCION": f"Videos de solicitud AppSheet {request_id}",
+                "Video": video_path,
+                "Video simulación ": simulation_video_path,
+                "Idioma ": idioma,
+                "HistorialID": historial_id,
+            },
+            "UNIQUEID",
+            evidence_id,
+        )
+        saved += 1
+
+    return saved
+
+
 def _enqueue_analysis_task(request_id: str) -> str:
     from google.cloud import tasks_v2
 
@@ -1345,6 +1409,18 @@ def appsheet_process_analysis(
                 },
             )
 
+        video_evidence_rows = _save_video_evidence(
+            sheets=sheets,
+            request_id=request_id,
+            history_ids=history_ids,
+            parcela_name=parcela_name,
+            idioma=idioma,
+            video_path=str(row.get(_normalize_header("Video"), "") or "").strip(),
+            simulation_video_path=str(
+                row.get(_normalize_header("Video simulación"), "") or ""
+            ).strip(),
+        )
+
         _update_row_fields(
             sheets,
             REQUEST_SHEET,
@@ -1365,6 +1441,7 @@ def appsheet_process_analysis(
             "request_id": request_id,
             "historial_ids": history_ids,
             "total_fotos": len(history_ids),
+            "filas_evidencia_video": video_evidence_rows,
             "resultados": summaries,
         }
 
