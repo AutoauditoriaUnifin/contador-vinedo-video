@@ -11,8 +11,8 @@ on:
       - "run_appsheet_job.py"
       - "requirements_backend.txt"
       - "requirements_worker.txt"
-      - "Dockerfile"
       - "APPSHEET_FREE_SETUP.md"
+      - "APPSHEET_SETUP.md"
       - "apps_script/**"
       - ".github/workflows/validate-appsheet.yml"
       - ".github/workflows/process-appsheet-analysis.yml"
@@ -41,6 +41,7 @@ jobs:
           test -f apps_script/appsscript.json
           test -f .github/workflows/process-appsheet-analysis.yml
           test -f APPSHEET_FREE_SETUP.md
+          test -f APPSHEET_SETUP.md
           echo "Los archivos de la integración gratuita están presentes."
 
       - name: Check Apps Script JavaScript syntax
