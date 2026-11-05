@@ -1,0 +1,56 @@
+name: Validate TerraCore AppSheet backend
+
+on:
+  push:
+    branches:
+      - integracion-appsheet
+    paths:
+      - "backend_api.py"
+      - "appsheet_integration.py"
+      - "terracore_engine.py"
+      - "requirements_backend.txt"
+      - "Dockerfile"
+      - ".github/workflows/validate-appsheet.yml"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_backend.txt
+
+      - name: Compile Python modules
+        run: |
+          python -m compileall -q backend_api.py appsheet_integration.py terracore_engine.py
+
+      - name: Import API and verify AppSheet routes
+        env:
+          GSHEET_ID: test-sheet-id
+          GDRIVE_PARENT_FOLDER_ID: test-drive-folder-id
+        run: |
+          python - <<'PY'
+          import backend_api
+          paths = {route.path for route in backend_api.app.routes}
+          required = {
+              "/appsheet/health",
+              "/appsheet/setup",
+              "/appsheet/analysis/submit",
+              "/appsheet/analysis/process",
+          }
+          missing = required - paths
+          assert not missing, f"Faltan rutas: {sorted(missing)}"
+          print("API importada; rutas AppSheet verificadas.")
+          PY
