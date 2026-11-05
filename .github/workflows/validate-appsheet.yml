@@ -40,6 +40,11 @@ jobs:
         env:
           GSHEET_ID: test-sheet-id
           GDRIVE_PARENT_FOLDER_ID: test-drive-folder-id
+          OPENAI_API_KEY: ""
+          GCP_SERVICE_ACCOUNT_JSON: ""
+          APPSHEET_API_TOKEN: ""
+          CLOUD_TASKS_PROJECT: ""
+          CLOUD_RUN_SERVICE_URL: ""
         run: |
           python - <<'PY'
           import backend_api
