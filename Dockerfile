@@ -22,4 +22,4 @@ COPY backend_api.py appsheet_integration.py terracore_engine.py ./
 RUN mkdir -p /app/uploads /app/outputs
 
 EXPOSE 8080
-CMD ["sh", "-c", "uvicorn backend_api:app --host 0.0.0.0 --port \${PORT:-8080}"]
+CMD ["uvicorn", "backend_api:app", "--host", "0.0.0.0", "--port", "8080"]
