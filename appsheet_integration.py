@@ -379,6 +379,115 @@ def _find_row_by_key(
     return None, None, headers
 
 
+def _append_rows_once(
+    sheets,
+    sheet_name: str,
+    records: list[dict[str, Any]],
+    key_header: str,
+) -> list[int]:
+    """Agrega varios registros en una sola escritura y evita duplicados por clave."""
+    if not records:
+        return []
+
+    required_headers = []
+    for record in records:
+        for header in record:
+            if header not in required_headers:
+                required_headers.append(header)
+
+    headers = _ensure_sheet_and_headers(
+        sheets,
+        sheet_name,
+        required_headers,
+    )
+    _, existing_rows = _read_sheet(sheets, sheet_name)
+    key = _normalize_header(key_header)
+    index_map = {
+        _normalize_header(header): index
+        for index, header in enumerate(headers)
+        if str(header or "").strip()
+    }
+    key_index = index_map.get(key)
+    if key_index is None:
+        raise RuntimeError(
+            f"No existe la columna clave '{key_header}' en '{sheet_name}'."
+        )
+
+    existing_positions = {}
+    for physical_row, row in enumerate(existing_rows, start=2):
+        value = row[key_index] if key_index < len(row) else ""
+        value = str(value or "").strip()
+        if value:
+            existing_positions.setdefault(value, physical_row)
+
+    pending_rows = []
+    pending_positions = {}
+    pending_record_indices = {}
+    result_positions = [0] * len(records)
+
+    for record_index, values in enumerate(records):
+        key_value = str(values.get(key_header, "") or "").strip()
+        if key_value and key_value in existing_positions:
+            result_positions[record_index] = existing_positions[key_value]
+            continue
+
+        dedupe_key = key_value or f"__sin_clave_{record_index}"
+        if dedupe_key in pending_positions:
+            pending_record_indices[dedupe_key].append(record_index)
+            continue
+
+        row = [""] * len(headers)
+        for name, value in values.items():
+            column_index = index_map.get(_normalize_header(name))
+            if column_index is not None:
+                row[column_index] = value
+
+        pending_positions[dedupe_key] = len(pending_rows)
+        pending_record_indices[dedupe_key] = [record_index]
+        pending_rows.append(row)
+
+    if not pending_rows:
+        return result_positions
+
+    last_col = _column_letter(max(0, len(headers) - 1))
+    response = _execute_sheets_request(
+        sheets.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{_quote_sheet(sheet_name)}!A:{last_col}",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": pending_rows},
+        )
+    )
+
+    updated_range = response.get("updates", {}).get("updatedRange", "")
+    match = re.search(r"![A-Z]+(\d+)", updated_range)
+    entry = _sheet_cache_entry(sheets, sheet_name)
+
+    if match:
+        first_physical_row = int(match.group(1))
+        for dedupe_key, pending_index in pending_positions.items():
+            physical_row = first_physical_row + pending_index
+            for record_index in pending_record_indices[dedupe_key]:
+                result_positions[record_index] = physical_row
+
+            cache_index = physical_row - 2
+            if cache_index >= 0:
+                while len(entry["rows"]) < cache_index:
+                    entry["rows"].append([])
+                row = pending_rows[pending_index]
+                if cache_index == len(entry["rows"]):
+                    entry["rows"].append(row)
+                else:
+                    entry["rows"][cache_index] = row
+
+        entry["loaded"] = True
+    else:
+        entry["loaded"] = False
+
+    return result_positions
+
+
 def _append_row_once(
     sheets,
     sheet_name: str,
@@ -386,60 +495,16 @@ def _append_row_once(
     key_header: str,
     key_value: str,
 ) -> int:
-    headers = _ensure_sheet_and_headers(
+    """Compatibilidad para registros individuales."""
+    record = dict(values)
+    record[key_header] = key_value
+    positions = _append_rows_once(
         sheets,
         sheet_name,
-        list(values.keys()),
-    )
-    existing_row, _, headers = _find_row_by_key(
-        sheets,
-        sheet_name,
+        [record],
         key_header,
-        key_value,
     )
-    if existing_row:
-        return existing_row
-
-    index_map = {
-        _normalize_header(header): index
-        for index, header in enumerate(headers)
-        if str(header or "").strip()
-    }
-    row = [""] * len(headers)
-    for name, value in values.items():
-        index = index_map.get(_normalize_header(name))
-        if index is not None:
-            row[index] = value
-
-    last_col = _column_letter(max(0, len(headers) - 1))
-    result = sheets.spreadsheets().values().append(
-        spreadsheetId=SPREADSHEET_ID,
-        range=f"{_quote_sheet(sheet_name)}!A:{last_col}",
-        valueInputOption="RAW",
-        insertDataOption="INSERT_ROWS",
-        body={"values": [row]},
-    ).execute()
-
-    updated_range = result.get("updates", {}).get("updatedRange", "")
-    match = re.search(r"![A-Z]+(\d+)", updated_range)
-    entry = _sheet_cache_entry(sheets, sheet_name)
-    if match:
-        physical_row = int(match.group(1))
-        cache_index = physical_row - 2
-        if cache_index >= 0:
-            while len(entry["rows"]) < cache_index:
-                entry["rows"].append([])
-            if cache_index == len(entry["rows"]):
-                entry["rows"].append(row)
-            else:
-                entry["rows"][cache_index] = row
-        entry["loaded"] = True
-        return physical_row
-
-    # Si Google devuelve un rango inesperado, invalidamos la caché para no
-    # trabajar con filas desactualizadas en la siguiente operación.
-    entry["loaded"] = False
-    return 0
+    return positions[0] if positions else 0
 
 
 def _update_row_fields(
@@ -470,10 +535,12 @@ def _update_row_fields(
         indexed_values.append((index, value))
 
     if updates:
-        sheets.spreadsheets().values().batchUpdate(
-            spreadsheetId=SPREADSHEET_ID,
-            body={"valueInputOption": "RAW", "data": updates},
-        ).execute()
+        _execute_sheets_request(
+            sheets.spreadsheets().values().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID,
+                body={"valueInputOption": "RAW", "data": updates},
+            )
+        )
 
         entry = _sheet_cache_entry(sheets, sheet_name)
         cache_index = physical_row - 2
