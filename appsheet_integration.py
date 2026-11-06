@@ -2001,6 +2001,71 @@ def appsheet_submit_analysis(
 
 
 
+def _validate_original_inventory(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Valida la salida del detector original sin imponer un número esperado de surcos."""
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("El motor original no detectó surcos para validar.")
+
+    ids = []
+    total_slots = 0
+    total_vacant = 0
+    warnings = []
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            raise RuntimeError(f"Surco {index}: el registro del motor no es válido.")
+        row_id = _safe_int(row.get("id", 0), 0)
+        if row_id <= 0:
+            raise RuntimeError(f"Surco {index}: falta un identificador válido.")
+        ids.append(row_id)
+
+        points = row.get("points_norm", []) or []
+        if len(points) < 2:
+            raise RuntimeError(f"Surco {row_id:02d}: faltan los dos extremos de la línea.")
+        for point in points:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                raise RuntimeError(f"Surco {row_id:02d}: geometría incompleta.")
+            x = _safe_float(point[0], float("nan"))
+            y = _safe_float(point[1], float("nan"))
+            if not np.isfinite(x) or not np.isfinite(y) or not (0.0 <= x <= 1000.0 and 0.0 <= y <= 1000.0):
+                raise RuntimeError(f"Surco {row_id:02d}: coordenadas fuera del rango normalizado.")
+
+        slots = _safe_int(row.get("slot_count", 0), 0)
+        if slots < 2:
+            raise RuntimeError(f"Surco {row_id:02d}: el motor no generó suficientes posiciones.")
+        vacant = _tg_clean_indices(row.get("vacant_indices", []), slots)
+        if len(vacant) != len(set(vacant)) or any(v < 1 or v > slots for v in vacant):
+            raise RuntimeError(f"Surco {row_id:02d}: índices de posiciones vacías inválidos.")
+
+        row_conf = _safe_float(row.get("confidence", 0.0), 0.0)
+        slot_conf = _safe_float(row.get("slot_confidence", 0.0), 0.0)
+        if not (np.isfinite(row_conf) and 0.0 <= row_conf <= 1.0):
+            raise RuntimeError(f"Surco {row_id:02d}: confianza de línea inválida.")
+        if not (np.isfinite(slot_conf) and 0.0 <= slot_conf <= 1.0):
+            raise RuntimeError(f"Surco {row_id:02d}: confianza de posiciones inválida.")
+        if row_conf < 0.35:
+            warnings.append(f"Surco {row_id:02d}: soporte visual de línea bajo ({row_conf * 100:.1f}%).")
+        if slot_conf < 0.35:
+            warnings.append(f"Surco {row_id:02d}: confianza de posiciones baja ({slot_conf * 100:.1f}%).")
+
+        total_slots += slots
+        total_vacant += len(vacant)
+
+    if len(ids) != len(set(ids)):
+        raise RuntimeError("El motor original devolvió identificadores de surco duplicados.")
+    if sorted(ids) != list(range(1, len(ids) + 1)):
+        warnings.append("La numeración de surcos no es consecutiva; se conserva la detección original.")
+
+    return {
+        "valido": True,
+        "surcos": len(rows),
+        "slots": total_slots,
+        "ocupados": max(0, total_slots - total_vacant),
+        "vacios": total_vacant,
+        "advertencias": warnings,
+        "metodo": "validacion_estructural_automatica_motor_original",
+    }
+
+
 def _process_inventory_stage(
     drive,
     sheets,
@@ -2012,7 +2077,7 @@ def _process_inventory_stage(
     idioma: str,
     fecha_captura: str,
 ) -> dict[str, Any]:
-    """Fase 1: ejecuta el inventario original y lo deja editable en AppSheet."""
+    """Fase 1: ejecuta y valida automáticamente el inventario del motor original."""
     os.environ["TERRACORE_LANGUAGE"] = (
         "FR" if str(idioma or "ES").strip().upper() == "FR" else "ES"
     )
@@ -2029,8 +2094,7 @@ def _process_inventory_stage(
             # MISMA función de inventario que utiliza Streamlit.
             inventory = _ocv2_inventory_from_file(uploaded)
             rows = inventory.get("rows", []) or []
-            if not rows:
-                raise RuntimeError("OpenCV no generó surcos para esta fotografía.")
+            validation = _validate_original_inventory(rows)
 
             historial_id = _analysis_id_for_request(sheets, request_id, photo_index)
             inventory_name = (
@@ -2065,27 +2129,17 @@ def _process_inventory_stage(
                     )
                 )
 
-            total_slots = sum(
-                int(item.get("slot_count", 0) or 0) for item in rows
-            )
-            vacant_slots = sum(
-                len(
-                    _tg_clean_indices(
-                        item.get("vacant_indices", []),
-                        int(item.get("slot_count", 0) or 0),
-                    )
-                )
-                for item in rows
-            )
+            total_slots = validation["slots"]
+            vacant_slots = validation["vacios"]
             photo_summaries.append(
                 {
                     "foto_index": photo_index,
                     "foto": source_name,
                     "ruta": source_path,
                     "analisis_id": historial_id,
-                    "surcos": len(rows),
+                    "surcos": validation["surcos"],
                     "slots": total_slots,
-                    "ocupados": max(0, total_slots - vacant_slots),
+                    "ocupados": validation["ocupados"],
                     "vacios": vacant_slots,
                     "confianza_inventario": round(
                         float(inventory.get("confidence", 0.0) or 0.0) * 100.0,
@@ -2093,6 +2147,7 @@ def _process_inventory_stage(
                     ),
                     "imagen_inventario": inventory_path,
                     "estado": "Validado automáticamente",
+                    "validacion_automatica": validation,
                 }
             )
         except Exception as exc:
@@ -2328,16 +2383,10 @@ def appsheet_process_analysis(
             "",
         )
         validation_text = str(validation_value or "").strip().casefold()
-        existing_inventory_records = (
-            _inventory_records_for_request(sheets, request_id)
-            if current_status in ("pendientevalidacion", "pendiente de validacion")
-            else []
-        )
         inventory_validated = (
             _truthy(validation_value)
             or validation_text in ("validado", "validada")
             or current_status in ("validado", "validada")
-            or bool(existing_inventory_records)
         )
 
         if current_status in ("completado", "completed"):
