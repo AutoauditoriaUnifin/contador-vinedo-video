@@ -2147,6 +2147,8 @@ def _process_inventory_stage(
                         float(inventory.get("confidence", 0.0) or 0.0) * 100.0,
                         2,
                     ),
+                    # Diagnóstico para demostrar qué archivo exacto recibió AppSheet.
+                    "diagnostico_imagen": inventory.get("debug", {}) or {},
                     "imagen_inventario": inventory_path,
                     "estado": "Pendiente de validación",
                     "validacion_automatica": validation,
