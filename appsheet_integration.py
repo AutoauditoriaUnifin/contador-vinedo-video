@@ -2191,27 +2191,25 @@ def _process_inventory_stage(
         REQUEST_SHEET,
         row_number,
         {
-            "Estado": "PendienteValidacion",
+            "Estado": "InventarioGenerado",
             "FechaInventario": now,
             "FechaValidacionInventario": "",
             "FechaFin": "",
             "TotalFotos": len(photo_summaries),
             "ResumenInventario": _json_dumps(inventory_summary),
-            "ValidacionInventario": "Pendiente",
+            "ValidacionInventario": "Automático",
             "Error": "",
         },
     )
 
     return {
         "ok": True,
-        "status": "PendienteValidacion",
+        "status": "InventarioGenerado",
         "request_id": request_id,
         "total_fotos": len(photo_summaries),
         "total_surcos": len(inventory_records),
         "inventario": inventory_summary,
-        "mensaje": (
-            "Inventario generado. Revisa y corrige los registros de InventarioSurcos en AppSheet y después confirma la validación."
-        ),
+        "mensaje": "Inventario calculado automáticamente con el motor TerraCore.",
     }
 
 
@@ -2479,33 +2477,10 @@ def appsheet_process_analysis(
             row.get(_normalize_header("SurcoID"), "") or ""
         ).strip()
 
-        if inventory_validated:
-            _update_row_fields(
-                sheets,
-                REQUEST_SHEET,
-                row_number,
-                {
-                    "Estado": "ProcesandoSalud",
-                    "FechaValidacionInventario": _now_iso(),
-                    "FechaInicioSalud": _now_iso(),
-                    "FechaFin": "",
-                    "Error": "",
-                },
-            )
-            return _process_health_stage(
-                drive=drive,
-                sheets=sheets,
-                request_id=request_id,
-                row_number=row_number,
-                row=row,
-                photo_paths=photo_paths,
-                parcela_id=parcela_id,
-                parcela_name=parcela_name,
-                idioma=idioma,
-                fecha_captura=fecha_captura,
-                surco_id=surco_id,
-            )
-
+        # Flujo automático de una sola ejecución:
+        # 1) Ejecuta el mismo Inventario que Streamlit para cada fotografía.
+        # 2) Lee la geometría original recién calculada desde InventarioSurcos.
+        # 3) Ejecuta Salud inmediatamente, sin esperar edición ni confirmación manual.
         _update_row_fields(
             sheets,
             REQUEST_SHEET,
@@ -2513,8 +2488,9 @@ def appsheet_process_analysis(
             {
                 "Estado": "ProcesandoInventario",
                 "FechaInicio": _now_iso(),
+                "FechaInicioSalud": "",
                 "FechaFin": "",
-                "ValidacionInventario": "Pendiente",
+                "ValidacionInventario": "Automático",
                 "Error": "",
             },
         )
@@ -2532,9 +2508,32 @@ def appsheet_process_analysis(
         if not inventory_result.get("ok"):
             raise RuntimeError("No se pudo generar el Inventario automático.")
 
-        # El segundo Bot solo debe dispararse después de que el usuario
-        # confirme ValidacionInventario = "Validado" en AppSheet.
-        return inventory_result
+        _update_row_fields(
+            sheets,
+            REQUEST_SHEET,
+            row_number,
+            {
+                "Estado": "ProcesandoSalud",
+                "FechaInicioSalud": _now_iso(),
+                "FechaFin": "",
+                "Error": "",
+            },
+        )
+        result = _process_health_stage(
+            drive=drive,
+            sheets=sheets,
+            request_id=request_id,
+            row_number=row_number,
+            row=row,
+            photo_paths=photo_paths,
+            parcela_id=parcela_id,
+            parcela_name=parcela_name,
+            idioma=idioma,
+            fecha_captura=fecha_captura,
+            surco_id=surco_id,
+        )
+        result["inventario"] = inventory_result.get("inventario", {})
+        return result
 
     except HTTPException:
         raise
