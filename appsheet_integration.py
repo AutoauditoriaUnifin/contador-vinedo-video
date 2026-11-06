@@ -185,7 +185,28 @@ def _google_clients():
     return drive, sheets, SPREADSHEET_ID
 
 
+def _sheets_cache(sheets) -> dict[str, Any]:
+    """Caché por cliente de Sheets; vive solo durante una ejecución del worker."""
+    cache = getattr(sheets, "_terracore_cache", None)
+    if not isinstance(cache, dict):
+        cache = {"metadata": None, "sheets": {}}
+        setattr(sheets, "_terracore_cache", cache)
+    return cache
+
+
+def _sheet_cache_entry(sheets, sheet_name: str) -> dict[str, Any]:
+    cache = _sheets_cache(sheets)
+    return cache["sheets"].setdefault(
+        sheet_name,
+        {"loaded": False, "headers": [], "rows": []},
+    )
+
+
 def _sheet_metadata(sheets) -> dict[str, dict[str, Any]]:
+    cache = _sheets_cache(sheets)
+    if cache.get("metadata") is not None:
+        return cache["metadata"]
+
     response = sheets.spreadsheets().get(
         spreadsheetId=SPREADSHEET_ID,
         fields="sheets.properties(sheetId,title,gridProperties(rowCount,columnCount))",
@@ -194,10 +215,29 @@ def _sheet_metadata(sheets) -> dict[str, dict[str, Any]]:
     for item in response.get("sheets", []):
         props = item.get("properties", {})
         result[str(props.get("title", ""))] = props
+    cache["metadata"] = result
     return result
 
 
+def _read_sheet(sheets, sheet_name: str) -> tuple[list[str], list[list[Any]]]:
+    """Lee una pestaña una sola vez por ejecución y reutiliza el resultado."""
+    entry = _sheet_cache_entry(sheets, sheet_name)
+    if not entry["loaded"]:
+        response = sheets.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{_quote_sheet(sheet_name)}!A:AZ",
+            valueRenderOption="FORMATTED_VALUE",
+        ).execute()
+        values = response.get("values", []) or []
+        entry["headers"] = list(values[0]) if values else []
+        entry["rows"] = [list(row) for row in values[1:]] if values else []
+        entry["loaded"] = True
+
+    return list(entry["headers"]), [list(row) for row in entry["rows"]]
+
+
 def _ensure_sheet_and_headers(sheets, sheet_name: str, required_headers: list[str]) -> list[str]:
+    """Prepara la pestaña usando la caché para evitar lecturas repetidas."""
     metadata = _sheet_metadata(sheets)
     if sheet_name not in metadata:
         sheets.spreadsheets().batchUpdate(
@@ -218,14 +258,12 @@ def _ensure_sheet_and_headers(sheets, sheet_name: str, required_headers: list[st
                 ]
             },
         ).execute()
+        _sheets_cache(sheets)["metadata"] = None
         metadata = _sheet_metadata(sheets)
 
     props = metadata[sheet_name]
-    response = sheets.spreadsheets().values().get(
-        spreadsheetId=SPREADSHEET_ID,
-        range=f"{_quote_sheet(sheet_name)}!1:1",
-    ).execute()
-    headers = list((response.get("values") or [[]])[0])
+    headers, _ = _read_sheet(sheets, sheet_name)
+    entry = _sheet_cache_entry(sheets, sheet_name)
 
     if not any(str(x or "").strip() for x in headers):
         headers = list(required_headers)
@@ -235,6 +273,9 @@ def _ensure_sheet_and_headers(sheets, sheet_name: str, required_headers: list[st
             valueInputOption="RAW",
             body={"values": [headers]},
         ).execute()
+        entry["headers"] = list(headers)
+        entry["rows"] = []
+        entry["loaded"] = True
         return headers
 
     existing = {_normalize_header(x) for x in headers if str(x or "").strip()}
@@ -242,7 +283,8 @@ def _ensure_sheet_and_headers(sheets, sheet_name: str, required_headers: list[st
     if missing:
         start_index = len(headers)
         required_columns = start_index + len(missing)
-        current_columns = int(props.get("gridProperties", {}).get("columnCount", 26))
+        grid = props.setdefault("gridProperties", {})
+        current_columns = int(grid.get("columnCount", 26))
         if required_columns > current_columns:
             sheets.spreadsheets().batchUpdate(
                 spreadsheetId=SPREADSHEET_ID,
@@ -258,6 +300,7 @@ def _ensure_sheet_and_headers(sheets, sheet_name: str, required_headers: list[st
                     ]
                 },
             ).execute()
+            grid["columnCount"] = required_columns
 
         updates = []
         for offset, header in enumerate(missing):
@@ -273,21 +316,9 @@ def _ensure_sheet_and_headers(sheets, sheet_name: str, required_headers: list[st
             body={"valueInputOption": "RAW", "data": updates},
         ).execute()
         headers.extend(missing)
+        entry["headers"] = list(headers)
 
     return headers
-
-
-def _read_sheet(sheets, sheet_name: str) -> tuple[list[str], list[list[Any]]]:
-    response = sheets.spreadsheets().values().get(
-        spreadsheetId=SPREADSHEET_ID,
-        range=f"{_quote_sheet(sheet_name)}!A:AZ",
-        valueRenderOption="FORMATTED_VALUE",
-    ).execute()
-    values = response.get("values", []) or []
-    if not values:
-        return [], []
-    return list(values[0]), values[1:]
-
 
 def _row_as_dict(headers: list[str], row: list[Any]) -> dict[str, Any]:
     result = {}
@@ -358,11 +389,26 @@ def _append_row_once(
         body={"values": [row]},
     ).execute()
 
-    updated_range = (
-        result.get("updates", {}).get("updatedRange", "")
-    )
-    match = re.search(r"![A-Z]+(\d+)", updated_range)
-    return int(match.group(1)) if match else 0
+    updated_range = result.get("updates", {}).get("updatedRange", "")
+    match = re.search(r"![A-Z]+(\\d+)", updated_range)
+    entry = _sheet_cache_entry(sheets, sheet_name)
+    if match:
+        physical_row = int(match.group(1))
+        cache_index = physical_row - 2
+        if cache_index >= 0:
+            while len(entry["rows"]) < cache_index:
+                entry["rows"].append([])
+            if cache_index == len(entry["rows"]):
+                entry["rows"].append(row)
+            else:
+                entry["rows"][cache_index] = row
+        entry["loaded"] = True
+        return physical_row
+
+    # Si Google devuelve un rango inesperado, invalidamos la caché para no
+    # trabajar con filas desactualizadas en la siguiente operación.
+    entry["loaded"] = False
+    return 0
 
 
 def _update_row_fields(
@@ -378,6 +424,7 @@ def _update_row_fields(
         if str(header or "").strip()
     }
     updates = []
+    indexed_values = []
     for name, value in values.items():
         index = index_map.get(_normalize_header(name))
         if index is None:
@@ -389,12 +436,24 @@ def _update_row_fields(
                 "values": [[value]],
             }
         )
+        indexed_values.append((index, value))
+
     if updates:
         sheets.spreadsheets().values().batchUpdate(
             spreadsheetId=SPREADSHEET_ID,
             body={"valueInputOption": "RAW", "data": updates},
         ).execute()
 
+        entry = _sheet_cache_entry(sheets, sheet_name)
+        cache_index = physical_row - 2
+        if cache_index >= 0:
+            while len(entry["rows"]) <= cache_index:
+                entry["rows"].append([])
+            cached_row = entry["rows"][cache_index]
+            for index, value in indexed_values:
+                while len(cached_row) <= index:
+                    cached_row.append("")
+                cached_row[index] = value
 
 def _request_row(sheets, request_id: str) -> tuple[int, dict[str, Any]]:
     headers, rows = _read_sheet(sheets, REQUEST_SHEET)
