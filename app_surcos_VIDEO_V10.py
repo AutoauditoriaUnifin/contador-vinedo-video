@@ -9911,45 +9911,63 @@ def _tg_poligonos_automaticos(uploaded_image, backend_result, uploaded_name):
 
 
 def _tg_guardar_regiones_y_zonas(registro, backend_result, uploaded_image, uploaded_name):
-    regiones, _ = _tg_poligonos_automaticos(uploaded_image, backend_result, uploaded_name)
+    """
+    Guarda únicamente RegionesCriticas.
+
+    Conserva la detección visual y los polígonos de afectación,
+    pero evita duplicar esos mismos registros en ZonasDañadas.
+    """
+    regiones, _ = _tg_poligonos_automaticos(
+        uploaded_image, backend_result, uploaded_name
+    )
     if not regiones:
         return
 
     nivel = registro.get("nivel_visual", "")
-    conf = round(float(backend_result.get("confidence", 0.0) or 0.0) * 100.0, 2)
+    conf = round(
+        float(backend_result.get("confidence", 0.0) or 0.0) * 100.0,
+        2
+    )
     fecha = registro.get("fecha", "")
-    area_parcela_m2 = float(st.session_state.get("tc_area_parcela_m2", 0.0) or 0.0)
+    area_parcela_m2 = float(
+        st.session_state.get("tc_area_parcela_m2", 0.0) or 0.0
+    )
     aid = registro.get("id", "")
     pid = registro.get("parcela_id", "")
     rows_crit = []
-    rows_zonas = []
 
     for i, reg in enumerate(regiones, 1):
-        region_id = str(reg.get("region_id") or _tc_id8_nuevo()).strip()
-        zona_id = _tc_id8_nuevo()
-        poly_json = json.dumps({"space": "image_px", "points": reg["points"]}, ensure_ascii=False)
+        region_id = str(
+            reg.get("region_id") or _tc_id8_nuevo()
+        ).strip()
+        poly_json = json.dumps(
+            {"space": "image_px", "points": reg["points"]},
+            ensure_ascii=False
+        )
         tramo = f"Slots {reg['primer_slot']}-{reg['ultimo_slot']}"
-        area_m2 = (area_parcela_m2 * float(reg["area_visual_pct"]) / 100.0) if area_parcela_m2 > 0 else 0.0
+        area_m2 = (
+            area_parcela_m2 * float(reg["area_visual_pct"]) / 100.0
+            if area_parcela_m2 > 0 else 0.0
+        )
+
         rows_crit.append([
             region_id, aid, pid,
-            tr(f"Región crítica {i}", f"Région critique {i}"), poly_json,
+            tr(f"Región crítica {i}", f"Région critique {i}"),
+            poly_json,
             reg["surco"], reg["surco"], tramo,
-            round(reg["area_visual_pct"], 4), round(area_m2, 3), nivel,
+            round(reg["area_visual_pct"], 4),
+            round(area_m2, 3),
+            nivel,
             tr("Tramo seco, débil o vacío", "Section sèche, faible ou vide"),
-            conf, _tc_guardar_valor_appsheet("Pendiente"), fecha,
-            registro.get("idioma", _tc_idioma_actual()),
-        ])
-        rows_zonas.append([
-            zona_id, aid, pid,
-            tr(f"Zona dañada {i}", f"Zone affectée {i}"), poly_json,
-            round(area_m2, 3), nivel, str(reg["surco"]),
-            _tc_guardar_valor_appsheet("Pendiente"), fecha,
+            conf,
+            _tc_guardar_valor_appsheet("Pendiente"),
+            fecha,
             registro.get("idioma", _tc_idioma_actual()),
         ])
 
+    # Única escritura geométrica: RegionesCriticas.
+    # ZonasDañadas deja de recibir filas duplicadas.
     _tg_append_rows("RegionesCriticas", rows_crit, 16)
-    _tg_append_rows("ZonasDañadas", rows_zonas, 11)
-
 
 def _tg_guardar_validacion_muestreo(registro, uploaded_name):
     fuente = str(st.session_state.get("tc_inventario_fuente", "") or "")
@@ -9992,7 +10010,7 @@ def _tg_guardar_tablas_relacionales(registro, backend_result, uploaded_image):
         ("InventarioSurcos", lambda: _tg_guardar_inventario_surcos(registro, uploaded_image.name)),
         ("Evidencias", lambda: _tg_guardar_evidencias(registro)),
         ("NotaDiagnostico", lambda: _tg_guardar_nota_diagnostico(registro)),
-        ("RegionesCriticas/ZonasDañadas", lambda: _tg_guardar_regiones_y_zonas(registro, backend_result, uploaded_image, uploaded_image.name)),
+        ("RegionesCriticas", lambda: _tg_guardar_regiones_y_zonas(registro, backend_result, uploaded_image, uploaded_image.name)),
         ("ValidacionMuestreo", lambda: _tg_guardar_validacion_muestreo(registro, uploaded_image.name)),
     ]
     for nombre, fn in tareas:
