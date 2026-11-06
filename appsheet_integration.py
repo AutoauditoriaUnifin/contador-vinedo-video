@@ -844,13 +844,14 @@ def _apply_inventory_record_edits(record: dict[str, Any]) -> dict[str, Any]:
     )
     endpoint_values = [_record_value(record, name, "") for name in endpoint_names]
     endpoint_present = [str(value or "").strip() != "" for value in endpoint_values]
-    if any(endpoint_present) and not all(endpoint_present):
-        raise ValueError(
-            f"Surco {row_id:02d}: completa las cuatro coordenadas para mover o girar la línea."
-        )
 
     original_start = [float(original_points[0][0]), float(original_points[0][1])]
     original_end = [float(original_points[-1][0]), float(original_points[-1][1])]
+
+    # Las cuatro coordenadas son campos opcionales de edición manual en AppSheet.
+    # Si el formulario/hoja contiene solo una parte (por ejemplo, un valor residual
+    # o una edición incompleta), no debe detener Salud: se conserva la geometría
+    # automática original. La posición manual solo se aplica cuando llegan las 4.
     if all(endpoint_present):
         start_x, start_y, end_x, end_y = [
             _safe_float(value, 0.0) for value in endpoint_values
