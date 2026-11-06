@@ -41,7 +41,91 @@ jobs:
           python - <<'PY'
           import os
           import terracore_engine
+          import appsheet_integration as integration
           from appsheet_integration import appsheet_process_analysis
+
+          class FakeRequest:
+              def __init__(self, result):
+                  self.result = result
+
+              def execute(self):
+                  return self.result
+
+          class FakeValues:
+              def __init__(self):
+                  self.append_calls = 0
+                  self.appended_rows = []
+
+              def get(self, **kwargs):
+                  return FakeRequest({"values": [["ZonaID", "AnalisisID", "NombreZona"]]})
+
+              def append(self, **kwargs):
+                  self.append_calls += 1
+                  self.appended_rows = kwargs["body"]["values"]
+                  first = 2
+                  last = first + len(self.appended_rows) - 1
+                  return FakeRequest({
+                      "updates": {
+                          "updatedRange": f"'ZonasDañadas'!A{first}:C{last}"
+                      }
+                  })
+
+          class FakeSpreadsheetResource:
+              def __init__(self):
+                  self.fake_values = FakeValues()
+
+              def get(self, **kwargs):
+                  return FakeRequest({
+                      "sheets": [{
+                          "properties": {
+                              "title": "ZonasDañadas",
+                              "sheetId": 1,
+                              "gridProperties": {"rowCount": 1000, "columnCount": 26},
+                          }
+                      }]
+                  })
+
+              def values(self):
+                  return self.fake_values
+
+          class FakeSheets:
+              def __init__(self):
+                  self.resource = FakeSpreadsheetResource()
+
+              def spreadsheets(self):
+                  return self.resource
+
+          fake_sheets = FakeSheets()
+          old_spreadsheet_id = integration.SPREADSHEET_ID
+          integration.SPREADSHEET_ID = "test-spreadsheet"
+          try:
+              zone_records = [
+                  {
+                      "ZonaID": f"zona-{index}",
+                      "AnalisisID": "analisis-prueba",
+                      "NombreZona": f"Zona dañada {index}",
+                  }
+                  for index in range(100)
+              ]
+              first_result = integration._append_rows_once(
+                  fake_sheets,
+                  "ZonasDañadas",
+                  zone_records,
+                  "ZonaID",
+              )
+              second_result = integration._append_rows_once(
+                  fake_sheets,
+                  "ZonasDañadas",
+                  zone_records,
+                  "ZonaID",
+              )
+              assert fake_sheets.resource.fake_values.append_calls == 1
+              assert len(fake_sheets.resource.fake_values.appended_rows) == 100
+              assert first_result == list(range(2, 102))
+              assert second_result == first_result
+          finally:
+              integration.SPREADSHEET_ID = old_spreadsheet_id
+
 
           required = [
               "_ocv2_analyze_health",
@@ -68,4 +152,5 @@ jobs:
           assert callable(appsheet_process_analysis)
           print("OK: motor TerraCore e integración AppSheet importan correctamente.")
           print("OK: funciones requeridas y selección ES/FR verificadas.")
+          print("OK: 100 zonas se guardan en una sola escritura y no se duplican.")
           PY
