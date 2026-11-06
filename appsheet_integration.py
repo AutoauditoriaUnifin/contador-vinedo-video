@@ -931,6 +931,8 @@ def _inventory_rows_for_photo(records: list[dict[str, Any]]) -> list[dict[str, A
         raise ValueError("El Inventario contiene números de surco duplicados para una fotografía.")
     if not rows:
         raise ValueError("No hay surcos de Inventario para esta fotografía.")
+    # Revalidar la geometría completa ya editada antes de ejecutar Salud.
+    _validate_original_inventory(rows)
     return rows
 
 
@@ -2077,7 +2079,7 @@ def _process_inventory_stage(
     idioma: str,
     fecha_captura: str,
 ) -> dict[str, Any]:
-    """Fase 1: ejecuta y valida automáticamente el inventario del motor original."""
+    """Fase 1: genera el Inventario original y lo deja pendiente de revisión en AppSheet."""
     os.environ["TERRACORE_LANGUAGE"] = (
         "FR" if str(idioma or "ES").strip().upper() == "FR" else "ES"
     )
@@ -2125,7 +2127,7 @@ def _process_inventory_stage(
                         inventory_path=inventory_path,
                         row=inventory_row,
                         idioma=idioma,
-                        estado="Validado",
+                        estado="Pendiente",
                     )
                 )
 
@@ -2146,7 +2148,7 @@ def _process_inventory_stage(
                         2,
                     ),
                     "imagen_inventario": inventory_path,
-                    "estado": "Validado automáticamente",
+                    "estado": "Pendiente de validación",
                     "validacion_automatica": validation,
                 }
             )
@@ -2178,8 +2180,10 @@ def _process_inventory_stage(
         "fotos": photo_summaries,
         "errores": errors,
         "instrucciones": (
-            "Inventario procesado automáticamente. El motor continúa con Salud "
-            "utilizando los surcos y posiciones detectados."
+            "Revisa los surcos de cada fotografía en InventarioSurcos. "
+            "Corrige Slots, Ocupados, Vacios, VaciosIndices y, si hace falta, "
+            "las cuatro coordenadas de los extremos. Confirma solo cuando "
+            "Slots = Ocupados + Vacios en todos los surcos."
         ),
     }
     _update_row_fields(
@@ -2187,26 +2191,26 @@ def _process_inventory_stage(
         REQUEST_SHEET,
         row_number,
         {
-            "Estado": "ProcesandoSalud",
+            "Estado": "PendienteValidacion",
             "FechaInventario": now,
-            "FechaValidacionInventario": now,
+            "FechaValidacionInventario": "",
             "FechaFin": "",
             "TotalFotos": len(photo_summaries),
             "ResumenInventario": _json_dumps(inventory_summary),
-            "ValidacionInventario": "Validado",
+            "ValidacionInventario": "Pendiente",
             "Error": "",
         },
     )
 
     return {
         "ok": True,
-        "status": "InventarioValidadoAutomaticamente",
+        "status": "PendienteValidacion",
         "request_id": request_id,
         "total_fotos": len(photo_summaries),
         "total_surcos": len(inventory_records),
         "inventario": inventory_summary,
         "mensaje": (
-            "Inventario generado y validado automáticamente. Continúa con el análisis de Salud."
+            "Inventario generado. Revisa y corrige los registros de InventarioSurcos en AppSheet y después confirma la validación."
         ),
     }
 
@@ -2224,7 +2228,7 @@ def _process_health_stage(
     fecha_captura: str,
     surco_id: str,
 ) -> dict[str, Any]:
-    """Fase 2: analiza Salud con el Inventario generado automáticamente."""
+    """Fase 2: analiza Salud únicamente con el Inventario editado y confirmado."""
     os.environ["TERRACORE_LANGUAGE"] = (
         "FR" if str(idioma or "ES").strip().upper() == "FR" else "ES"
     )
@@ -2237,6 +2241,15 @@ def _process_health_stage(
         )
         if photo_index > 0:
             records_by_photo.setdefault(photo_index, []).append(record)
+
+    expected_photo_indices = set(range(1, len(photo_paths) + 1))
+    received_photo_indices = set(records_by_photo)
+    missing_photo_indices = sorted(expected_photo_indices - received_photo_indices)
+    if missing_photo_indices:
+        raise RuntimeError(
+            "Falta Inventario validado para fotografía(s): "
+            + ", ".join(str(index) for index in missing_photo_indices)
+        )
 
     history_ids = _parse_image_list(
         row.get(_normalize_header("HistorialIDs"), "")
@@ -2312,9 +2325,9 @@ def _process_health_stage(
         except Exception as exc:
             errors.append(f"{source_name}: {exc}")
 
-    if not summaries:
+    if errors or len(summaries) != len(photo_paths):
         raise RuntimeError(
-            "No se pudo completar el análisis de Salud con el Inventario generado. "
+            "No se completó Salud para todas las fotografías. "
             + " | ".join(errors)
         )
 
@@ -2499,34 +2512,9 @@ def appsheet_process_analysis(
         if not inventory_result.get("ok"):
             raise RuntimeError("No se pudo generar el Inventario automático.")
 
-        # Continuación automática: no requiere botón ni confirmación en AppSheet.
-        _update_row_fields(
-            sheets,
-            REQUEST_SHEET,
-            row_number,
-            {
-                "Estado": "ProcesandoSalud",
-                "ValidacionInventario": "Validado",
-                "FechaValidacionInventario": _now_iso(),
-                "FechaInicioSalud": _now_iso(),
-                "FechaFin": "",
-                "Error": "",
-            },
-        )
-        row_number, refreshed_row = _request_row(sheets, request_id)
-        return _process_health_stage(
-            drive=drive,
-            sheets=sheets,
-            request_id=request_id,
-            row_number=row_number,
-            row=refreshed_row,
-            photo_paths=photo_paths,
-            parcela_id=parcela_id,
-            parcela_name=parcela_name,
-            idioma=idioma,
-            fecha_captura=fecha_captura,
-            surco_id=surco_id,
-        )
+        # El segundo Bot solo debe dispararse después de que el usuario
+        # confirme ValidacionInventario = "Validado" en AppSheet.
+        return inventory_result
 
     except HTTPException:
         raise
