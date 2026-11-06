@@ -2191,25 +2191,25 @@ def _process_inventory_stage(
         REQUEST_SHEET,
         row_number,
         {
-            "Estado": "InventarioGenerado",
+            "Estado": "PendienteValidacion",
             "FechaInventario": now,
             "FechaValidacionInventario": "",
             "FechaFin": "",
             "TotalFotos": len(photo_summaries),
             "ResumenInventario": _json_dumps(inventory_summary),
-            "ValidacionInventario": "Automático",
+            "ValidacionInventario": "Pendiente",
             "Error": "",
         },
     )
 
     return {
         "ok": True,
-        "status": "InventarioGenerado",
+        "status": "PendienteValidacion",
         "request_id": request_id,
         "total_fotos": len(photo_summaries),
         "total_surcos": len(inventory_records),
         "inventario": inventory_summary,
-        "mensaje": "Inventario calculado automáticamente con el motor TerraCore.",
+        "mensaje": "Inventario generado con el motor TerraCore. Revisa y confirma los surcos en AppSheet antes de ejecutar Salud.",
     }
 
 
@@ -2394,6 +2394,7 @@ def appsheet_process_analysis(
     payload: dict[str, Any],
     x_worker_token: str | None = Header(default=None),
 ):
+    """Procesa por etapas: Inventario primero; Salud solo tras confirmación AppSheet."""
     _verify_token(x_worker_token=x_worker_token)
     request_id = str(payload.get("request_id") or "").strip()
     if not request_id:
@@ -2408,6 +2409,10 @@ def appsheet_process_analysis(
         current_status = str(
             row.get(_normalize_header("Estado"), "") or ""
         ).strip().casefold()
+        validation_state = str(
+            row.get(_normalize_header("ValidacionInventario"), "") or ""
+        ).strip().casefold()
+
         if current_status in ("completado", "completed"):
             return {
                 "ok": True,
@@ -2426,6 +2431,19 @@ def appsheet_process_analysis(
                 "status": current_status,
                 "request_id": request_id,
                 "mensaje": "La solicitud ya está en proceso.",
+            }
+
+        # Una segunda ejecución solo puede iniciar Salud cuando el usuario
+        # confirmó expresamente el Inventario desde la acción de AppSheet.
+        if (
+            current_status in ("pendientevalidacion", "inventariogenerado")
+            and validation_state != "validado"
+        ):
+            return {
+                "ok": True,
+                "status": "PendienteValidacion",
+                "request_id": request_id,
+                "mensaje": "El Inventario está esperando revisión y confirmación en AppSheet.",
             }
 
         photo_paths = _photo_paths(row)
@@ -2466,10 +2484,34 @@ def appsheet_process_analysis(
             row.get(_normalize_header("SurcoID"), "") or ""
         ).strip()
 
-        # Flujo automático de una sola ejecución:
-        # 1) Ejecuta el mismo Inventario que Streamlit para cada fotografía.
-        # 2) Lee la geometría original recién calculada desde InventarioSurcos.
-        # 3) Ejecuta Salud inmediatamente, sin esperar edición ni confirmación manual.
+        if validation_state == "validado":
+            _update_row_fields(
+                sheets,
+                REQUEST_SHEET,
+                row_number,
+                {
+                    "Estado": "ProcesandoSalud",
+                    "FechaInicioSalud": _now_iso(),
+                    "FechaFin": "",
+                    "Error": "",
+                },
+            )
+            return _process_health_stage(
+                drive=drive,
+                sheets=sheets,
+                request_id=request_id,
+                row_number=row_number,
+                row=row,
+                photo_paths=photo_paths,
+                parcela_id=parcela_id,
+                parcela_name=parcela_name,
+                idioma=idioma,
+                fecha_captura=fecha_captura,
+                surco_id=surco_id,
+            )
+
+        # Primera ejecución: generar todas las filas de Inventario y detenerse.
+        # AppSheet muestra la tabla editable y espera el botón Confirmar Inventario.
         _update_row_fields(
             sheets,
             REQUEST_SHEET,
@@ -2479,11 +2521,12 @@ def appsheet_process_analysis(
                 "FechaInicio": _now_iso(),
                 "FechaInicioSalud": "",
                 "FechaFin": "",
-                "ValidacionInventario": "Automático",
+                "FechaValidacionInventario": "",
+                "ValidacionInventario": "Pendiente",
                 "Error": "",
             },
         )
-        inventory_result = _process_inventory_stage(
+        return _process_inventory_stage(
             drive=drive,
             sheets=sheets,
             request_id=request_id,
@@ -2494,35 +2537,6 @@ def appsheet_process_analysis(
             idioma=idioma,
             fecha_captura=fecha_captura,
         )
-        if not inventory_result.get("ok"):
-            raise RuntimeError("No se pudo generar el Inventario automático.")
-
-        _update_row_fields(
-            sheets,
-            REQUEST_SHEET,
-            row_number,
-            {
-                "Estado": "ProcesandoSalud",
-                "FechaInicioSalud": _now_iso(),
-                "FechaFin": "",
-                "Error": "",
-            },
-        )
-        result = _process_health_stage(
-            drive=drive,
-            sheets=sheets,
-            request_id=request_id,
-            row_number=row_number,
-            row=row,
-            photo_paths=photo_paths,
-            parcela_id=parcela_id,
-            parcela_name=parcela_name,
-            idioma=idioma,
-            fecha_captura=fecha_captura,
-            surco_id=surco_id,
-        )
-        result["inventario"] = inventory_result.get("inventario", {})
-        return result
 
     except HTTPException:
         raise
@@ -2543,7 +2557,6 @@ def appsheet_process_analysis(
         except Exception:
             pass
 
-        # No se repite automáticamente: el usuario corrige el dato y vuelve a activar el Bot.
         return {
             "ok": False,
             "status": "Error",
