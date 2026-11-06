@@ -13,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import time
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
@@ -112,6 +113,27 @@ def _quote_sheet(name: str) -> str:
     return "'" + str(name).replace("'", "''") + "'"
 
 
+def _execute_sheets_request(request, max_attempts: int = 6):
+    """Ejecuta una llamada de Sheets y espera si Google devuelve cuota 429."""
+    for attempt in range(max_attempts):
+        try:
+            return request.execute()
+        except Exception as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            if status != 429 or attempt >= max_attempts - 1:
+                raise
+            retry_after = None
+            response = getattr(exc, "resp", None)
+            if response is not None:
+                try:
+                    retry_after = float(response.get("retry-after"))
+                except (TypeError, ValueError, AttributeError):
+                    retry_after = None
+            delay = retry_after if retry_after and retry_after > 0 else min(60, 2 ** (attempt + 1))
+            time.sleep(delay)
+    raise RuntimeError("No se pudo completar la solicitud a Google Sheets.")
+
+
 def _verify_token(
     authorization: str | None = None,
     x_worker_token: str | None = None,
@@ -206,11 +228,12 @@ def _sheet_metadata(sheets) -> dict[str, dict[str, Any]]:
     cache = _sheets_cache(sheets)
     if cache.get("metadata") is not None:
         return cache["metadata"]
-
-    response = sheets.spreadsheets().get(
-        spreadsheetId=SPREADSHEET_ID,
-        fields="sheets.properties(sheetId,title,gridProperties(rowCount,columnCount))",
-    ).execute()
+    response = _execute_sheets_request(
+        sheets.spreadsheets().get(
+            spreadsheetId=SPREADSHEET_ID,
+            fields="sheets.properties(sheetId,title,gridProperties(rowCount,columnCount))",
+        )
+    )
     result = {}
     for item in response.get("sheets", []):
         props = item.get("properties", {})
@@ -223,41 +246,44 @@ def _read_sheet(sheets, sheet_name: str) -> tuple[list[str], list[list[Any]]]:
     """Lee una pestaña una sola vez por ejecución y reutiliza el resultado."""
     entry = _sheet_cache_entry(sheets, sheet_name)
     if not entry["loaded"]:
-        response = sheets.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"{_quote_sheet(sheet_name)}!A:AZ",
-            valueRenderOption="FORMATTED_VALUE",
-        ).execute()
+        response = _execute_sheets_request(
+            sheets.spreadsheets().values().get(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{_quote_sheet(sheet_name)}!A:AZ",
+                valueRenderOption="FORMATTED_VALUE",
+            )
+        )
         values = response.get("values", []) or []
         entry["headers"] = list(values[0]) if values else []
         entry["rows"] = [list(row) for row in values[1:]] if values else []
         entry["loaded"] = True
-
     return list(entry["headers"]), [list(row) for row in entry["rows"]]
 
 
 def _ensure_sheet_and_headers(sheets, sheet_name: str, required_headers: list[str]) -> list[str]:
-    """Prepara la pestaña usando la caché para evitar lecturas repetidas."""
+    """Prepara la pestaña usando la caché para evitar lecturas y escrituras repetidas."""
     metadata = _sheet_metadata(sheets)
     if sheet_name not in metadata:
-        sheets.spreadsheets().batchUpdate(
-            spreadsheetId=SPREADSHEET_ID,
-            body={
-                "requests": [
-                    {
-                        "addSheet": {
-                            "properties": {
-                                "title": sheet_name,
-                                "gridProperties": {
-                                    "rowCount": 1000,
-                                    "columnCount": max(26, len(required_headers)),
-                                },
+        _execute_sheets_request(
+            sheets.spreadsheets().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID,
+                body={
+                    "requests": [
+                        {
+                            "addSheet": {
+                                "properties": {
+                                    "title": sheet_name,
+                                    "gridProperties": {
+                                        "rowCount": 1000,
+                                        "columnCount": max(26, len(required_headers)),
+                                    },
+                                }
                             }
                         }
-                    }
-                ]
-            },
-        ).execute()
+                    ]
+                },
+            )
+        )
         _sheets_cache(sheets)["metadata"] = None
         metadata = _sheet_metadata(sheets)
 
@@ -267,12 +293,14 @@ def _ensure_sheet_and_headers(sheets, sheet_name: str, required_headers: list[st
 
     if not any(str(x or "").strip() for x in headers):
         headers = list(required_headers)
-        sheets.spreadsheets().values().update(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"{_quote_sheet(sheet_name)}!A1:{_column_letter(len(headers)-1)}1",
-            valueInputOption="RAW",
-            body={"values": [headers]},
-        ).execute()
+        _execute_sheets_request(
+            sheets.spreadsheets().values().update(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{_quote_sheet(sheet_name)}!A1:{_column_letter(len(headers)-1)}1",
+                valueInputOption="RAW",
+                body={"values": [headers]},
+            )
+        )
         entry["headers"] = list(headers)
         entry["rows"] = []
         entry["loaded"] = True
@@ -286,20 +314,22 @@ def _ensure_sheet_and_headers(sheets, sheet_name: str, required_headers: list[st
         grid = props.setdefault("gridProperties", {})
         current_columns = int(grid.get("columnCount", 26))
         if required_columns > current_columns:
-            sheets.spreadsheets().batchUpdate(
-                spreadsheetId=SPREADSHEET_ID,
-                body={
-                    "requests": [
-                        {
-                            "appendDimension": {
-                                "sheetId": props["sheetId"],
-                                "dimension": "COLUMNS",
-                                "length": required_columns - current_columns,
+            _execute_sheets_request(
+                sheets.spreadsheets().batchUpdate(
+                    spreadsheetId=SPREADSHEET_ID,
+                    body={
+                        "requests": [
+                            {
+                                "appendDimension": {
+                                    "sheetId": props["sheetId"],
+                                    "dimension": "COLUMNS",
+                                    "length": required_columns - current_columns,
+                                }
                             }
-                        }
-                    ]
-                },
-            ).execute()
+                        ]
+                    },
+                )
+            )
             grid["columnCount"] = required_columns
 
         updates = []
@@ -311,15 +341,15 @@ def _ensure_sheet_and_headers(sheets, sheet_name: str, required_headers: list[st
                     "values": [[header]],
                 }
             )
-        sheets.spreadsheets().values().batchUpdate(
-            spreadsheetId=SPREADSHEET_ID,
-            body={"valueInputOption": "RAW", "data": updates},
-        ).execute()
+        _execute_sheets_request(
+            sheets.spreadsheets().values().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID,
+                body={"valueInputOption": "RAW", "data": updates},
+            )
+        )
         headers.extend(missing)
         entry["headers"] = list(headers)
-
     return headers
-
 
 def _row_as_dict(headers: list[str], row: list[Any]) -> dict[str, Any]:
     result = {}
