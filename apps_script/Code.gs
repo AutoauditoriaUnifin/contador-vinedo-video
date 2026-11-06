@@ -8,7 +8,7 @@
  * GITHUB_OWNER
  * GITHUB_REPO
  * GITHUB_WORKFLOW_FILE (opcional; default process-appsheet-analysis.yml)
- * GITHUB_BRANCH (opcional; inicialmente integracion-appsheet)
+ * GITHUB_BRANCH (opcional; default main)
  */
 
 const TC_REQUEST_SHEET = "SolicitudesAnalisis";
@@ -33,7 +33,24 @@ const TC_REQUEST_HEADERS = [
   "HistorialIDs",
   "TotalFotos",
   "ResumenResultado",
-  "Error"
+  "Error",
+  "ValidacionInventario",
+  "FechaInventario",
+  "FechaValidacionInventario",
+  "FechaInicioSalud",
+  "ResumenInventario"
+];
+
+const TC_INVENTORY_SHEET = "InventarioSurcos";
+const TC_INVENTORY_HEADERS = [
+  "RegistroID", "SolicitudID", "AnalisisID", "ParcelaID", "ParcelaNombre",
+  "FotoIndex", "FotoNombre", "FotoRuta", "ImagenInventarioAppSheet",
+  "NumeroSurco", "Slots", "Ocupados", "Vacios", "VaciosIndices",
+  "Confianza", "ConfianzaSurco", "ConfianzaSlots",
+  "PuntoInicioX", "PuntoInicioY", "PuntoFinX", "PuntoFinY",
+  "RowSpacingPx", "SlotPitchPx", "GeometriaJSON",
+  "ManualPosition", "ManualInventory", "EstadoInventario",
+  "FechaValidacion", "Idioma", "Fecha"
 ];
 
 function doPost(e) {
@@ -92,36 +109,41 @@ function setupTerraCore() {
   }
 
   const ss = SpreadsheetApp.openById(spreadsheetId);
-  let sheet = ss.getSheetByName(TC_REQUEST_SHEET);
-  if (!sheet) {
-    sheet = ss.insertSheet(TC_REQUEST_SHEET);
-  }
+  tcEnsureSheetHeaders_(ss, TC_REQUEST_SHEET, TC_REQUEST_HEADERS);
+  tcEnsureSheetHeaders_(ss, TC_INVENTORY_SHEET, TC_INVENTORY_HEADERS);
+
+  return {
+    ok: true,
+    sheets: [TC_REQUEST_SHEET, TC_INVENTORY_SHEET],
+    message: "SolicitudesAnalisis e InventarioSurcos quedaron preparadas en el mismo Google Sheets.",
+    request_headers: TC_REQUEST_HEADERS,
+    inventory_headers: TC_INVENTORY_HEADERS
+  };
+}
+
+function tcEnsureSheetHeaders_(ss, sheetName, requiredHeaders) {
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) sheet = ss.insertSheet(sheetName);
 
   const lastColumn = Math.max(sheet.getLastColumn(), 1);
   const existing = sheet.getLastRow()
     ? sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0]
     : [];
-  const existingNormalized = existing.map(tcNormalize_);
+  const normalized = existing.map(tcNormalize_);
 
   if (!existing.length || existing.every(value => !String(value || "").trim())) {
-    sheet.getRange(1, 1, 1, TC_REQUEST_HEADERS.length)
-      .setValues([TC_REQUEST_HEADERS]);
-  } else {
-    const missing = TC_REQUEST_HEADERS.filter(
-      header => !existingNormalized.includes(tcNormalize_(header))
-    );
-    if (missing.length) {
-      sheet.getRange(1, lastColumn + 1, 1, missing.length)
-        .setValues([missing]);
-    }
+    sheet.getRange(1, 1, 1, requiredHeaders.length).setValues([requiredHeaders]);
+    sheet.setFrozenRows(1);
+    return;
   }
 
-  return {
-    ok: true,
-    sheet: TC_REQUEST_SHEET,
-    message: "Pestaña preparada en el mismo Google Sheets.",
-    headers: TC_REQUEST_HEADERS
-  };
+  const missing = requiredHeaders.filter(
+    header => !normalized.includes(tcNormalize_(header))
+  );
+  if (missing.length) {
+    sheet.getRange(1, lastColumn + 1, 1, missing.length).setValues([missing]);
+  }
+  sheet.setFrozenRows(1);
 }
 
 function tcTriggerAnalysis_(requestId) {
@@ -209,7 +231,7 @@ function tcDispatchGitHub_(requestId) {
     props.getProperty("GITHUB_WORKFLOW_FILE") || "process-appsheet-analysis.yml"
   ).trim();
   const branch = String(
-    props.getProperty("GITHUB_BRANCH") || "integracion-appsheet"
+    props.getProperty("GITHUB_BRANCH") || "main"
   ).trim();
 
   if (!token) throw new Error("Falta GITHUB_DISPATCH_TOKEN en Apps Script.");
