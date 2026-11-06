@@ -1360,6 +1360,7 @@ def _append_analysis_results(
     idioma: str,
     fecha_captura: str,
     surco_id: str,
+    inventory_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     uploaded = UploadedBytes(source_name, source_mime, raw)
 
@@ -1367,10 +1368,17 @@ def _append_analysis_results(
     os.environ["TERRACORE_LANGUAGE"] = (
         "FR" if str(idioma or "ES").strip().upper() == "FR" else "ES"
     )
-    inventory = _ocv2_inventory_from_file(uploaded)
-    backend_result = _ocv2_analyze_health(uploaded, inventory["rows"])
+    # En la segunda fase recibimos el Inventario validado por el usuario.
+    # No volvemos a detectar ni sustituimos sus correcciones manuales.
+    inventory = (
+        inventory_override
+        if inventory_override is not None
+        else _ocv2_inventory_from_file(uploaded)
+    )
     rows = inventory.get("rows", []) or []
-    table = inventory.get("table")
+    if not rows:
+        raise RuntimeError("No hay geometría de Inventario confirmada para esta fotografía.")
+    backend_result = _ocv2_analyze_health(uploaded, rows)
 
     total_slots = sum(int(row.get("slot_count", 0) or 0) for row in rows)
     vacant_slots = sum(
@@ -1558,31 +1566,27 @@ def _append_analysis_results(
             parcela_id,
         )
 
-    # Guardar todos los surcos en una sola escritura por lote.
-    inventory_records = []
-    for row in rows:
-        row_number = int(row.get("id", 0) or 0)
-        slots = int(row.get("slot_count", 0) or 0)
-        vacant = len(_tg_clean_indices(row.get("vacant_indices", []), slots))
-        occupied = max(0, slots - vacant)
-        confidence_row = round(float(row.get("slot_confidence", 0.0) or 0.0) * 100.0, 2)
-        record_id = _deterministic_id(f"{historial_id}|inventario|{row_number}")
-        inventory_records.append(
-            {
-                "RegistroID": record_id,
-                "AnalisisID": historial_id,
-                "ParcelaID": parcela_id,
-                "NumeroSurco": str(row_number),
-                "Slots": slots,
-                "Ocupados": occupied,
-                "Vacios": vacant,
-                "Confianza": confidence_row,
-                "Idioma": idioma,
-            }
+    # Actualizar el mismo lote que el usuario corrigió en AppSheet.
+    # La clave RegistroID se conserva entre Inventario y análisis de Salud.
+    inventory_records = [
+        _inventory_record_values(
+            request_id=request_id,
+            historial_id=historial_id,
+            parcela_id=parcela_id,
+            parcela_name=parcela_name,
+            photo_index=photo_index,
+            source_path=source_path,
+            source_name=source_name,
+            inventory_path=inventory_path,
+            row=row,
+            idioma=idioma,
+            estado="Validado",
         )
-    _append_rows_once(
+        for row in rows
+    ]
+    _upsert_rows_by_key(
         sheets,
-        "InventarioSurcos",
+        INVENTORY_SHEET,
         inventory_records,
         "RegistroID",
     )
