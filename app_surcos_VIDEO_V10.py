@@ -13380,7 +13380,31 @@ with main_col:
                             except Exception:
                                 slots_ind = 0
                         i2.metric(tr("Slots", "Emplacements"), slots_ind)
-                    
+
+                        # Diagnóstico de paridad: permite comparar el archivo y el motor
+                        # ejecutado por Streamlit contra el registro de AppSheet.
+                        debug_motor = inv_individual.get("debug", {}) or {}
+                        with st.expander(
+                            tr("Diagnóstico técnico del motor", "Diagnostic technique du moteur"),
+                            expanded=False
+                        ):
+                            st.json({
+                                "engine_version": debug_motor.get("engine_version", ""),
+                                "engine_source": debug_motor.get("engine_source", ""),
+                                "motor": debug_motor.get("motor", ""),
+                                "detected_rows": debug_motor.get("detected_rows", inv_individual.get("count", 0)),
+                                "input_sha256": debug_motor.get("input_sha256", ""),
+                                "input_bytes": debug_motor.get("input_bytes", 0),
+                                "input_format": debug_motor.get("input_format", ""),
+                                "input_width": debug_motor.get("input_width", 0),
+                                "input_height": debug_motor.get("input_height", 0),
+                                "exif_orientation": debug_motor.get("exif_orientation", 1),
+                                "python_version": debug_motor.get("python_version", ""),
+                                "opencv_version": debug_motor.get("opencv_version", ""),
+                                "numpy_version": debug_motor.get("numpy_version", ""),
+                                "pillow_version": debug_motor.get("pillow_version", ""),
+                            })
+
                         # Corrección manual del número REAL de surcos.
                         # Esto NO borra geometrías: solo corrige el número reportado.
                         surcos_auto_img = int(inv_individual.get("count", 0) or 0)
