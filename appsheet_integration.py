@@ -2180,10 +2180,8 @@ def _process_inventory_stage(
         "fotos": photo_summaries,
         "errores": errors,
         "instrucciones": (
-            "Revisa los surcos de cada fotografía en InventarioSurcos. "
-            "Corrige Slots, Ocupados, Vacios, VaciosIndices y, si hace falta, "
-            "las cuatro coordenadas de los extremos. Confirma solo cuando "
-            "Slots = Ocupados + Vacios en todos los surcos."
+            "Inventario generado automáticamente. La geometría original se "
+            "envía directamente a la etapa de Salud sin edición manual."
         ),
     }
     _update_row_fields(
@@ -2408,17 +2406,6 @@ def appsheet_process_analysis(
         current_status = str(
             row.get(_normalize_header("Estado"), "") or ""
         ).strip().casefold()
-        validation_value = row.get(
-            _normalize_header("ValidacionInventario"),
-            "",
-        )
-        validation_text = str(validation_value or "").strip().casefold()
-        inventory_validated = (
-            _truthy(validation_value)
-            or validation_text in ("validado", "validada")
-            or current_status in ("validado", "validada")
-        )
-
         if current_status in ("completado", "completed"):
             return {
                 "ok": True,
