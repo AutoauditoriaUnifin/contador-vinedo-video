@@ -168,7 +168,7 @@ function tcTriggerAnalysis_(requestId) {
     };
   }
 
-  if (["en cola", "procesando"].includes(status)) {
+  if (["en cola", "procesando", "procesandoinventario", "procesandosalud"].includes(status)) {
     return {
       ok: true,
       status: status === "en cola" ? "En cola" : "Procesando",
