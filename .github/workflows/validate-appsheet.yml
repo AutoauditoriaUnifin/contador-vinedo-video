@@ -3,6 +3,7 @@ name: Validate TerraCore AppSheet backend
 on:
   push:
     branches:
+      - main
       - integracion-appsheet
     paths:
       - "backend_api.py"
@@ -13,6 +14,7 @@ on:
       - "requirements_worker.txt"
       - "APPSHEET_FREE_SETUP.md"
       - "APPSHEET_SETUP.md"
+      - "GUIA_APPSHEET_INVENTARIO.md"
       - "apps_script/**"
       - ".github/workflows/validate-appsheet.yml"
       - ".github/workflows/process-appsheet-analysis.yml"
