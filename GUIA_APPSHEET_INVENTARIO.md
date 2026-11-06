@@ -16,6 +16,40 @@ Estados esperados:
 
 El worker no marca una solicitud como completada si falta Inventario validado de alguna fotografía o si una de las fotos falla durante Salud.
 
+## 0. Actualizar el puente Apps Script y el worker
+
+El repositorio contiene el puente en `apps_script/Code.gs`. La versión actualizada ahora:
+
+- Prepara las dos pestañas y sus encabezados sin borrar columnas existentes.
+- Agrega a `SolicitudesAnalisis` los campos de validación.
+- Crea `InventarioSurcos` con las 30 columnas que utiliza el worker.
+- Envía los trabajos de GitHub Actions a la rama `main`, no a la antigua `integracion-appsheet`.
+
+Para aplicar ese cambio en tu proyecto de Google Apps Script:
+
+1. Abre el proyecto de Apps Script que está desplegado como Web App.
+2. Sustituye el contenido de `Code.gs` por el archivo actualizado del repositorio: [apps_script/Code.gs](https://github.com/AutoauditoriaUnifin/contador-vinedo-video/blob/main/apps_script/Code.gs).
+3. Conserva el mismo proyecto y las mismas propiedades existentes. No compartas ni publiques sus secretos.
+4. En **Project Settings → Script Properties**, comprueba que existan:
+   - `GSHEET_ID`: ID del Google Sheets que usa TerraCore.
+   - `TERRACORE_SHARED_SECRET`: el secreto compartido que ya utiliza el worker.
+   - `GITHUB_DISPATCH_TOKEN`: token de GitHub con permiso para ejecutar Actions en este repositorio.
+   - `GITHUB_OWNER`: `AutoauditoriaUnifin`.
+   - `GITHUB_REPO`: `contador-vinedo-video`.
+   - `GITHUB_WORKFLOW_FILE`: `process-appsheet-analysis.yml`.
+5. Ejecuta una sola vez `setupTerraCore` desde el editor y autoriza los permisos de Google. Debe responder correctamente y crear/preparar `SolicitudesAnalisis` e `InventarioSurcos`.
+6. Ve a **Deploy → Manage deployments**, edita el despliegue Web App existente y crea una nueva versión. Conserva el mismo URL y el mismo acceso que usa actualmente AppSheet.
+
+En GitHub → **Settings → Secrets and variables → Actions**, verifica que estén configurados los secretos que consume el workflow:
+
+- `APPS_SCRIPT_WEBAPP_URL`
+- `APPS_SCRIPT_SHARED_SECRET`
+- `GSHEET_ID`
+- `GDRIVE_PARENT_FOLDER_ID`
+- `APPSHEET_DRIVE_ROOT_ID` (si tu estructura lo utiliza)
+
+El valor de `APPS_SCRIPT_SHARED_SECRET` debe coincidir exactamente con `TERRACORE_SHARED_SECRET` de Apps Script. No pegues estos valores en el chat ni en archivos públicos.
+
 ## 1. Preparar las pestañas
 
 El código prepara automáticamente los encabezados de `SolicitudesAnalisis` y `InventarioSurcos`. También puedes ejecutar una vez el endpoint `POST /appsheet/setup` si tienes desplegada la API FastAPI y su token.
