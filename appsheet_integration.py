@@ -2263,7 +2263,18 @@ def appsheet_process_analysis(
         drive, sheets, _ = _google_clients()
         row_number, row = _request_row(sheets, request_id)
 
-        current_status = str(row.get(_normalize_header("Estado"), "") or "").strip().casefold()
+        current_status = str(
+            row.get(_normalize_header("Estado"), "") or ""
+        ).strip().casefold()
+        validation_value = row.get(
+            _normalize_header("ValidacionInventario"),
+            "",
+        )
+        inventory_validated = (
+            _truthy(validation_value)
+            or current_status in ("validado", "validada")
+        )
+
         if current_status in ("completado", "completed"):
             return {
                 "ok": True,
@@ -2272,18 +2283,50 @@ def appsheet_process_analysis(
                 "mensaje": "La solicitud ya estaba terminada.",
             }
 
+        if current_status in (
+            "procesando",
+            "procesandoinventario",
+            "procesandosalud",
+        ):
+            return {
+                "ok": True,
+                "status": current_status,
+                "request_id": request_id,
+                "mensaje": "La solicitud ya está en proceso.",
+            }
+
+        if (
+            current_status in ("pendientevalidacion", "pendiente de validacion")
+            and not inventory_validated
+        ):
+            return {
+                "ok": True,
+                "status": "PendienteValidacion",
+                "request_id": request_id,
+                "mensaje": (
+                    "El Inventario está esperando revisión y confirmación en AppSheet."
+                ),
+            }
+
         photo_paths = _photo_paths(row)
         if not photo_paths:
             raise ValueError("No hay fotografías registradas en la solicitud.")
 
-        parcela_id = str(row.get(_normalize_header("ParcelaID"), "") or "").strip()
+        parcela_id = str(
+            row.get(_normalize_header("ParcelaID"), "") or ""
+        ).strip()
         if not parcela_id:
             raise ValueError("Selecciona una parcela en la columna ParcelaID.")
 
-        parcela_name = str(row.get(_normalize_header("ParcelaNombre"), "") or "").strip()
+        parcela_name = str(
+            row.get(_normalize_header("ParcelaNombre"), "") or ""
+        ).strip()
         if not parcela_name:
             _, parcel_row, _ = _find_row_by_key(
-                sheets, "Parcelas", "ID", parcela_id
+                sheets,
+                "Parcelas",
+                "ID",
+                parcela_id,
             )
             if parcel_row:
                 parcela_name = str(
@@ -2292,93 +2335,66 @@ def appsheet_process_analysis(
         if not parcela_name:
             parcela_name = parcela_id
 
-        idioma = str(row.get(_normalize_header("Idioma"), "ES") or "ES").strip().upper()
+        idioma = str(
+            row.get(_normalize_header("Idioma"), "ES") or "ES"
+        ).strip().upper()
         idioma = "FR" if idioma == "FR" else "ES"
-        fecha_captura = str(row.get(_normalize_header("FechaSolicitud"), "") or "").strip()
-        surco_id = str(row.get(_normalize_header("SurcoID"), "") or "").strip()
+        fecha_captura = str(
+            row.get(_normalize_header("FechaSolicitud"), "") or ""
+        ).strip()
+        surco_id = str(
+            row.get(_normalize_header("SurcoID"), "") or ""
+        ).strip()
 
-        _update_row_fields(
-            sheets,
-            REQUEST_SHEET,
-            row_number,
-            {
-                "Estado": "Procesando",
-                "FechaInicio": _now_iso(),
-                "FechaFin": "",
-                "Error": "",
-            },
-        )
-
-        history_ids = _parse_image_list(row.get(_normalize_header("HistorialIDs"), ""))
-        summaries = []
-
-        for photo_index, source_path in enumerate(photo_paths, 1):
-            raw, source_name, source_mime = _resolve_appsheet_file(drive, source_path)
-            summary = _append_analysis_results(
+        if inventory_validated:
+            _update_row_fields(
+                sheets,
+                REQUEST_SHEET,
+                row_number,
+                {
+                    "Estado": "ProcesandoSalud",
+                    "FechaInicioSalud": _now_iso(),
+                    "FechaFin": "",
+                    "Error": "",
+                },
+            )
+            return _process_health_stage(
                 drive=drive,
                 sheets=sheets,
                 request_id=request_id,
-                photo_index=photo_index,
-                source_path=source_path,
-                source_name=source_name,
-                source_mime=source_mime,
-                raw=raw,
+                row_number=row_number,
+                row=row,
+                photo_paths=photo_paths,
                 parcela_id=parcela_id,
                 parcela_name=parcela_name,
                 idioma=idioma,
                 fecha_captura=fecha_captura,
                 surco_id=surco_id,
             )
-            if summary["historial_id"] not in history_ids:
-                history_ids.append(summary["historial_id"])
-            summaries.append(summary)
-
-            _update_row_fields(
-                sheets,
-                REQUEST_SHEET,
-                row_number,
-                {
-                    "HistorialIDs": json.dumps(history_ids, ensure_ascii=False),
-                    "TotalFotos": len(history_ids),
-                    "ResumenResultado": json.dumps(summaries, ensure_ascii=False),
-                },
-            )
-
-        video_evidence_rows = _save_video_evidence(
-            sheets=sheets,
-            request_id=request_id,
-            history_ids=history_ids,
-            parcela_name=parcela_name,
-            idioma=idioma,
-            video_path=str(row.get(_normalize_header("Video"), "") or "").strip(),
-            simulation_video_path=str(
-                row.get(_normalize_header("Video simulación"), "") or ""
-            ).strip(),
-        )
 
         _update_row_fields(
             sheets,
             REQUEST_SHEET,
             row_number,
             {
-                "Estado": "Completado",
-                "FechaFin": _now_iso(),
-                "HistorialIDs": json.dumps(history_ids, ensure_ascii=False),
-                "TotalFotos": len(history_ids),
-                "ResumenResultado": json.dumps(summaries, ensure_ascii=False),
+                "Estado": "ProcesandoInventario",
+                "FechaInicio": _now_iso(),
+                "FechaFin": "",
+                "ValidacionInventario": "Pendiente",
                 "Error": "",
             },
         )
-
-        return {
-            "ok": True,
-            "status": "Completado",
-            "request_id": request_id,
-            "historial_ids": history_ids,
-            "total_fotos": len(history_ids),
-            "filas_evidencia_video": video_evidence_rows,
-            "resultados": summaries,
-        }
+        return _process_inventory_stage(
+            drive=drive,
+            sheets=sheets,
+            request_id=request_id,
+            row_number=row_number,
+            photo_paths=photo_paths,
+            parcela_id=parcela_id,
+            parcela_name=parcela_name,
+            idioma=idioma,
+            fecha_captura=fecha_captura,
+        )
 
     except HTTPException:
         raise
@@ -2399,8 +2415,7 @@ def appsheet_process_analysis(
         except Exception:
             pass
 
-        # Se responde 200 para no repetir automáticamente una solicitud
-        # que requiere corregir datos, permisos o una fotografía.
+        # No se repite automáticamente: el usuario corrige el dato y vuelve a activar el Bot.
         return {
             "ok": False,
             "status": "Error",
