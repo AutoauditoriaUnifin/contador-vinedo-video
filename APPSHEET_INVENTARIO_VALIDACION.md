@@ -60,6 +60,14 @@ Se conservan las columnas que ya existen y se agregan:
 
 Configura `RegistroID` como Key. La columna `ImagenInventarioAppSheet` debe ser de tipo Image para ver la imagen de referencia.
 
+En las propiedades de la tabla, permite **Updates** pero desactiva **Deletes** para no borrar accidentalmente geometrías. En las columnas editables configura **Editable_If** con:
+
+```appsheet
+LOOKUP([SolicitudID], "SolicitudesAnalisis", "SolicitudID", "Estado") = "PendienteValidacion"
+```
+
+Así los campos se bloquean cuando la solicitud ya pasa a Salud o queda completada.
+
 ### Cómo corregir
 
 - **Slots:** total de posiciones de ese surco.
