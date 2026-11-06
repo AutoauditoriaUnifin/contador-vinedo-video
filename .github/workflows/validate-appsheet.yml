@@ -79,7 +79,7 @@ jobs:
           python -m unittest discover -s tests -p "test_*.py" -v
           python - <<'PY'
           import backend_api
-          from appsheet_integration import REQUEST_HEADERS
+          from appsheet_integration import INVENTORY_HEADERS, REQUEST_HEADERS
 
           # FastAPI reciente puede incluir routers como objetos internos
           # sin atributo .path; OpenAPI expone las rutas públicas finales.
@@ -93,8 +93,12 @@ jobs:
           missing = required - paths
           assert not missing, f"Faltan rutas: {sorted(missing)}"
 
-          required_columns = {"Video", "Video simulación ", "ConfianzaImagen", "ConfianzaSurco", "ConfianzaSlots"}
-          missing_columns = required_columns - set(REQUEST_HEADERS)
-          assert not missing_columns, f"Faltan columnas de video: {sorted(missing_columns)}"
+          required_request_columns = {"Video", "Video simulación "}
+          missing_request_columns = required_request_columns - set(REQUEST_HEADERS)
+          assert not missing_request_columns, f"Faltan columnas de solicitud: {sorted(missing_request_columns)}"
+
+          required_inventory_columns = {"ConfianzaImagen", "ConfianzaSurco", "ConfianzaSlots"}
+          missing_inventory_columns = required_inventory_columns - set(INVENTORY_HEADERS)
+          assert not missing_inventory_columns, f"Faltan columnas de inventario: {sorted(missing_inventory_columns)}"
           print("API, rutas AppSheet, columnas de video y métricas de confianza verificadas.")
           PY
