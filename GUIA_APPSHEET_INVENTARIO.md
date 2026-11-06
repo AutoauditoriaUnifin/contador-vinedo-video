@@ -1,239 +1,92 @@
-# TerraCore — terminar la integración de Inventario en AppSheet
+# TerraCore — análisis automático de AppSheet con el motor de Streamlit
 
-## Estado del código
+## Objetivo
 
-El worker de AppSheet ejecuta el motor de `terracore_engine.py`, que conserva las funciones de detección y Salud de Streamlit. El flujo queda dividido en dos ejecuciones:
+AppSheet debe ejecutar el análisis completo sin intervención manual:
 
-1. **Primera ejecución:** genera el inventario de todas las fotos, guarda un registro por surco en `InventarioSurcos` y deja `SolicitudesAnalisis[Estado]` en `PendienteValidacion`.
-2. **Revisión en AppSheet:** permite corregir conteos, índices vacíos y extremos de las líneas.
-3. **Confirmación:** una acción cambia `ValidacionInventario` a `Validado`.
-4. **Segunda ejecución:** un Bot vigila únicamente `ValidacionInventario` y vuelve a lanzar el worker. El motor lee las correcciones y ejecuta `_ocv2_analyze_health()` sin volver a detectar ni reemplazar el inventario.
-5. **Cierre:** se guardan los resultados en las tablas de historial y análisis que ya utiliza TerraCore.
+1. Recibe la solicitud y las fotografías.
+2. Ejecuta el Inventario con `_ocv2_inventory_from_file()`.
+3. Conserva la geometría y los slots calculados por el motor.
+4. Ejecuta inmediatamente Salud con `_ocv2_analyze_health()`.
+5. Guarda imágenes y resultados en Drive, Sheets e historial.
 
-Estados esperados:
+**No se debe editar ni confirmar manualmente el Inventario.** El archivo `app_surcos_VIDEO_V10.py` de Streamlit permanece intacto. El worker utiliza las funciones equivalentes de `terracore_engine.py`.
 
-`Pendiente` → `ProcesandoInventario` → `PendienteValidacion` → `ProcesandoSalud` → `Completado`
+## 1. Actualizar Apps Script
 
-El worker no marca una solicitud como completada si falta Inventario validado de alguna fotografía o si una de las fotos falla durante Salud.
+El puente actualizado está en [apps_script/Code.gs](https://github.com/AutoauditoriaUnifin/contador-vinedo-video/blob/main/apps_script/Code.gs).
 
-## 0. Actualizar el puente Apps Script y el worker
-
-El repositorio contiene el puente en `apps_script/Code.gs`. La versión actualizada ahora:
-
-- Prepara las dos pestañas y sus encabezados sin borrar columnas existentes.
-- Agrega a `SolicitudesAnalisis` los campos de validación.
-- Crea `InventarioSurcos` con las 30 columnas que utiliza el worker.
-- Envía los trabajos de GitHub Actions a la rama `main`, no a la antigua `integracion-appsheet`.
-
-Para aplicar ese cambio en tu proyecto de Google Apps Script:
-
-1. Abre el proyecto de Apps Script que está desplegado como Web App.
-2. Sustituye el contenido de `Code.gs` por el archivo actualizado del repositorio: [apps_script/Code.gs](https://github.com/AutoauditoriaUnifin/contador-vinedo-video/blob/main/apps_script/Code.gs).
-3. Conserva el mismo proyecto y las mismas propiedades existentes. No compartas ni publiques sus secretos.
+1. Abre el proyecto de Apps Script que ya utiliza TerraCore.
+2. Sustituye el contenido de `Code.gs` por el del enlace anterior.
+3. Conserva las propiedades y el proyecto actuales. No compartas ni publiques secretos.
 4. En **Project Settings → Script Properties**, comprueba que existan:
-   - `GSHEET_ID`: ID del Google Sheets que usa TerraCore.
-   - `TERRACORE_SHARED_SECRET`: el secreto compartido que ya utiliza el worker.
-   - `GITHUB_DISPATCH_TOKEN`: token de GitHub con permiso para ejecutar Actions en este repositorio.
-   - `GITHUB_OWNER`: `AutoauditoriaUnifin`.
-   - `GITHUB_REPO`: `contador-vinedo-video`.
-   - `GITHUB_WORKFLOW_FILE`: `process-appsheet-analysis.yml`.
-5. Ejecuta una sola vez `setupTerraCore` desde el editor y autoriza los permisos de Google. Debe responder correctamente y crear/preparar `SolicitudesAnalisis` e `InventarioSurcos`.
-6. Ve a **Deploy → Manage deployments**, edita el despliegue Web App existente y crea una nueva versión. Conserva el mismo URL y el mismo acceso que usa actualmente AppSheet.
+   - `GSHEET_ID`
+   - `TERRACORE_SHARED_SECRET`
+   - `GITHUB_DISPATCH_TOKEN`
+   - `GITHUB_OWNER` = `AutoauditoriaUnifin`
+   - `GITHUB_REPO` = `contador-vinedo-video`
+   - `GITHUB_WORKFLOW_FILE` = `process-appsheet-analysis.yml`
+5. Ejecuta una sola vez `setupTerraCore()` desde el editor y autoriza los permisos.
+6. En **Deploy → Manage deployments**, edita el Web App existente y crea una nueva versión. Conserva el mismo URL y la misma configuración de acceso.
 
-En GitHub → **Settings → Secrets and variables → Actions**, verifica que estén configurados los secretos que consume el workflow:
-
+En GitHub → **Settings → Secrets and variables → Actions**, verifica:
 - `APPS_SCRIPT_WEBAPP_URL`
 - `APPS_SCRIPT_SHARED_SECRET`
 - `GSHEET_ID`
 - `GDRIVE_PARENT_FOLDER_ID`
 - `APPSHEET_DRIVE_ROOT_ID` (si tu estructura lo utiliza)
 
-El valor de `APPS_SCRIPT_SHARED_SECRET` debe coincidir exactamente con `TERRACORE_SHARED_SECRET` de Apps Script. No pegues estos valores en el chat ni en archivos públicos.
+`APPS_SCRIPT_SHARED_SECRET` debe coincidir exactamente con `TERRACORE_SHARED_SECRET`. Nunca pegues esos valores en el chat ni los guardes en archivos públicos.
 
-## 1. Preparar las pestañas
+## 2. Preparar las pestañas
 
-El código prepara automáticamente los encabezados de `SolicitudesAnalisis` y `InventarioSurcos`. También puedes ejecutar una vez el endpoint `POST /appsheet/setup` si tienes desplegada la API FastAPI y su token.
+`setupTerraCore()` prepara `SolicitudesAnalisis` e `InventarioSurcos` sin borrar las columnas existentes.
 
-Después de que exista la pestaña `InventarioSurcos` en el mismo Google Sheets:
+En AppSheet:
 
-1. En AppSheet abre **Data → Tables → + New Table**.
-2. Selecciona la pestaña `InventarioSurcos`.
-3. Agrega la tabla.
-4. En **Data → Columns**, regenera la estructura de `SolicitudesAnalisis` e `InventarioSurcos`.
+1. Abre **Data → Tables**.
+2. Regenera las columnas de `SolicitudesAnalisis`.
+3. `InventarioSurcos` puede agregarse como tabla de consulta si quieres ver el detalle detectado. Si la agregas, configura `RegistroID` como Key y deja Adds, Updates y Deletes desactivados para evitar que alguien modifique la geometría que el motor acaba de calcular.
 
-No elimines ni reemplaces columnas existentes.
+La tabla `InventarioSurcos` es un registro técnico del resultado intermedio; el worker la utiliza para continuar Salud en la misma ejecución. No es una pantalla de validación manual.
 
-## 2. Columnas de SolicitudesAnalisis
+## 3. Columnas de SolicitudesAnalisis
 
-El worker agrega estas columnas si faltan:
+El worker agrega si faltan:
+- `ValidacionInventario`
+- `FechaInventario`
+- `FechaValidacionInventario`
+- `FechaInicioSalud`
+- `ResumenInventario`
 
-- `ValidacionInventario` — Text o Enum.
-- `FechaInventario` — DateTime.
-- `FechaValidacionInventario` — DateTime.
-- `FechaInicioSalud` — DateTime.
-- `ResumenInventario` — LongText.
+Conserva `SolicitudID` como Key y no elimines las columnas actuales de fotos, parcela, estado o historial.
 
-La clave existente `SolicitudID` se conserva.
+## 4. Bot automático de AppSheet
 
-## 3. Configurar InventarioSurcos
+**Conserva el Bot actual que dispara el worker cuando se crea o se pone en cola una solicitud.** Ese único Bot debe iniciar el proceso completo.
 
-Configura `RegistroID` como **Key**. Desactiva **Deletes** y permite **Updates**.
+- No crees un segundo Bot para Salud.
+- Si anteriormente creaste el Bot `TerraCore - Salud después de validar inventario`, desactívalo.
+- No configures una acción `Confirmar Inventario`.
+- No cambies `ValidacionInventario` manualmente.
 
-| Columna | Tipo AppSheet | Editable |
-|---|---|---:|
-| RegistroID | Text (Key) | No |
-| SolicitudID | Ref o Text | No |
-| AnalisisID | Text | No |
-| ParcelaID | Text | No |
-| ParcelaNombre | Text | No |
-| FotoIndex | Number | No |
-| FotoNombre | Text | No |
-| FotoRuta | Image o Text | No |
-| ImagenInventarioAppSheet | Image o Text | No |
-| NumeroSurco | Text | No |
-| Slots | Number | Sí |
-| Ocupados | Number | Sí |
-| Vacios | Number | Sí |
-| VaciosIndices | LongText | Sí |
-| PuntoInicioX | Decimal | Sí |
-| PuntoInicioY | Decimal | Sí |
-| PuntoFinX | Decimal | Sí |
-| PuntoFinY | Decimal | Sí |
-| RowSpacingPx | Decimal | No |
-| SlotPitchPx | Decimal | No |
-| GeometriaJSON | LongText | No |
-| Confianza | Decimal | No |
-| ConfianzaSurco | Decimal | No |
-| ConfianzaSlots | Decimal | No |
-| ManualPosition | Yes/No | No |
-| ManualInventory | Yes/No | No |
-| EstadoInventario | Text | No |
-| FechaValidacion | DateTime | No |
-| Idioma | Text | No |
-| Fecha | DateTime | No |
+El worker ahora ejecuta Inventario y Salud consecutivamente. Al terminar, la solicitud debe quedar en `Completado`. Si falla una fotografía o una etapa, debe quedar en `Error` con el detalle correspondiente.
 
-Para las columnas editables, usa esta expresión en **Editable_If**:
+Estados esperados:
 
-```appsheet
-LOOKUP(
-  [SolicitudID],
-  "SolicitudesAnalisis",
-  "SolicitudID",
-  "Estado"
-) = "PendienteValidacion"
-```
+`Pendiente` → `ProcesandoInventario` → `InventarioGenerado` → `ProcesandoSalud` → `Completado`
 
-Validaciones recomendadas:
+## 5. Prueba de punta a punta
 
-- `Slots`: `[_THIS] >= 2`
-- `Ocupados`: `AND([_THIS] >= 0, [_THIS] <= [Slots])`
-- `Vacios`: `AND([_THIS] >= 0, [_THIS] <= [Slots])`
-- Coordenadas: `AND([_THIS] >= 0, [_THIS] <= 1000)`
+1. Registra una solicitud nueva con una parcela y sus fotografías.
+2. Deja que se active el Bot que ya existe.
+3. En GitHub → **Actions**, abre `Process TerraCore AppSheet analysis` y comprueba que el job se ejecutó en la rama `main`.
+4. En `SolicitudesAnalisis`, comprueba que el estado termine en `Completado`.
+5. Revisa en el historial las imágenes de Inventario, análisis y polígonos, así como el número de surcos y los porcentajes.
+6. Si queda en `Error`, copia únicamente el texto del error; no compartas tokens ni secretos.
 
-### Cómo editar los surcos
+## 6. Qué significa que sea el mismo análisis
 
-- **Slots:** número total de posiciones de ese surco.
-- **Ocupados:** posiciones ocupadas.
-- **Vacios:** posiciones vacías.
-- **VaciosIndices:** números de las posiciones vacías separados por coma; ejemplo `2,5,8`.
-- **PuntoInicioX/Y y PuntoFinX/Y:** extremos de la línea en escala normalizada de 0 a 1000. X va de izquierda a derecha; Y de arriba hacia abajo.
+El worker reutiliza las funciones del motor TerraCore que corresponden al flujo de Streamlit. La integración no debe volver a estimar, ajustar ni forzar el número de surcos. Cada foto se procesa por separado, con sus propios surcos, slots y geometría.
 
-Si no modificas los cuatro extremos, se conserva la geometría original detectada. Si modificas los cuatro, el worker reconstruye el eje recto y recalcula las posiciones sobre esa línea. AppSheet no tiene el mismo canvas de arrastrar y girar de Streamlit; aquí se editan las coordenadas numéricas.
-
-## 4. Acción Confirmar Inventario
-
-En **Behavior → Actions → New Action**:
-
-- **For a record of this table:** `SolicitudesAnalisis`
-- **Do this:** `Data: set the values of some columns in this row`
-- **Set these columns:** `ValidacionInventario` = `"Validado"`
-- **Only if this condition is true:**
-
-```appsheet
-AND(
-  [Estado] = "PendienteValidacion",
-  COUNT(
-    SELECT(
-      InventarioSurcos[RegistroID],
-      AND(
-        [SolicitudID] = [_THISROW].[SolicitudID],
-        OR(
-          [Slots] < 2,
-          [Ocupados] < 0,
-          [Vacios] < 0,
-          [Slots] <> ([Ocupados] + [Vacios]),
-          [Ocupados] > [Slots],
-          [Vacios] > [Slots],
-          [PuntoInicioX] < 0,
-          [PuntoInicioX] > 1000,
-          [PuntoInicioY] < 0,
-          [PuntoInicioY] > 1000,
-          [PuntoFinX] < 0,
-          [PuntoFinX] > 1000,
-          [PuntoFinY] < 0,
-          [PuntoFinY] > 1000
-        )
-      )
-    )
-  ) = 0,
-  COUNT(
-    SELECT(
-      InventarioSurcos[RegistroID],
-      [SolicitudID] = [_THISROW].[SolicitudID]
-    )
-  ) > 0,
-  COUNT(
-    UNIQUE(
-      SELECT(
-        InventarioSurcos[FotoIndex],
-        [SolicitudID] = [_THISROW].[SolicitudID]
-      )
-    )
-  ) = [TotalFotos]
-)
-```
-
-Muestra la acción como botón **Confirmar Inventario**. No permitas editar `ValidacionInventario` directamente desde el formulario.
-
-## 5. Bot de Salud posterior a la confirmación
-
-Conserva el Bot actual que procesa las solicitudes nuevas.
-
-Crea un segundo Bot:
-
-- **Nombre:** `TerraCore - Salud después de validar inventario`
-- **Tabla:** `SolicitudesAnalisis`
-- **Evento:** Data change → Updates.
-- **Columns to watch:** únicamente `ValidacionInventario`.
-- **Condición:** `[ValidacionInventario] = "Validado"`.
-- **Proceso:** Webhook al mismo Apps Script Web App que ya dispara el worker.
-
-Usa el mismo formato de cuerpo y el mismo secreto que ya utiliza el Bot actual. Si el webhook actual envía:
-
-```json
-{
-  "action": "trigger",
-  "request_id": "<<[SolicitudID]>>",
-  "secret": "EL_MISMO_SECRETO_CONFIGURADO"
-}
-```
-
-reutiliza exactamente esa configuración; no generes ni publiques un secreto nuevo. No pongas el secreto en una columna visible de AppSheet.
-
-Vigilar solo `ValidacionInventario` evita que los cambios de estado que hace el worker vuelvan a disparar el Bot.
-
-## 6. Prueba de punta a punta
-
-1. Crea una solicitud nueva desde AppSheet.
-2. Espera a que el worker termine el Inventario y el estado cambie a `PendienteValidacion`.
-3. Abre `InventarioSurcos` y filtra por el `SolicitudID` de esa solicitud.
-4. Revisa todas las fotografías. Corrige conteos, índices o coordenadas si es necesario.
-5. Pulsa **Confirmar Inventario**.
-6. Comprueba que se active el segundo Bot y que el estado pase a `ProcesandoSalud`.
-7. Espera `Completado` y revisa las imágenes y registros del historial.
-
-Si alguna foto no generó inventario, el botón no debe habilitarse porque no se alcanza `TotalFotos`. El backend también vuelve a validar los registros antes de ejecutar Salud.
-
-## Importante
-
-La implementación del repositorio no puede crear por sí sola los Bots ni cambiar las propiedades de tablas dentro de tu cuenta AppSheet. Esos pasos de configuración se hacen en el editor de AppSheet. La primera prueba real debe confirmar que el webhook del segundo Bot está usando el mismo Apps Script y secreto del flujo actual.
+La comprobación definitiva requiere una prueba A/B con **el mismo archivo de imagen original**: ejecutar esa foto en Streamlit y en AppSheet, y comparar el Inventario y la imagen resultante. Los checks de GitHub validan que el código compile y se importe; por sí solos no prueban el resultado de una fotografía real ni el despliegue de Apps Script.
