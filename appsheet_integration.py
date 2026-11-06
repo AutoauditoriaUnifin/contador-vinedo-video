@@ -678,7 +678,6 @@ def _upsert_rows_by_key(
             append_records,
             key_header,
         )
-        append_iter = iter(appended_positions)
         append_position_by_key = {}
         for record, position in zip(append_records, appended_positions):
             key_value = str(record.get(key_header, "") or "").strip()
@@ -686,10 +685,7 @@ def _upsert_rows_by_key(
         for index, record in enumerate(records):
             if result_positions[index] == 0:
                 key_value = str(record.get(key_header, "") or "").strip()
-                result_positions[index] = append_position_by_key.get(
-                    key_value,
-                    next(append_iter, 0),
-                )
+                result_positions[index] = append_position_by_key.get(key_value, 0)
 
     return result_positions
 
@@ -778,9 +774,10 @@ def _apply_inventory_record_edits(record: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("NumeroSurco debe ser mayor que cero.")
 
     slots = _safe_int(_record_value(record, "Slots", row.get("slot_count", 0)), 0)
+    original_slots = _safe_int(geometry.get("slot_count", 0), 0)
     original_vacant = _tg_clean_indices(
-        row.get("vacant_indices", []),
-        max(0, slots),
+        geometry.get("vacant_indices", []),
+        max(0, original_slots),
     )
     default_vacant_count = len(original_vacant)
     vacant_count = _safe_int(
@@ -805,12 +802,14 @@ def _apply_inventory_record_edits(record: dict[str, Any]) -> dict[str, Any]:
         )
 
     indices_raw = _record_value(record, "VaciosIndices", "")
-    if isinstance(indices_raw, (list, tuple)):
-        explicit_indices = _parse_vacant_indices(indices_raw)
-        has_explicit_indices = True
-    else:
-        has_explicit_indices = bool(str(indices_raw or "").strip())
-        explicit_indices = _parse_vacant_indices(indices_raw)
+    explicit_indices = _parse_vacant_indices(indices_raw)
+    # Si el texto sigue igual que el valor automático original, la edición
+    # corresponde a la tabla de conteos de Streamlit: ajustar índices existentes
+    # y completar desde el final cuando cambie la cantidad de Vacíos.
+    has_explicit_indices = (
+        bool(str(indices_raw or "").strip())
+        and explicit_indices != original_vacant
+    )
 
     if has_explicit_indices:
         if len(explicit_indices) != vacant_count:
