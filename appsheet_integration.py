@@ -528,6 +528,412 @@ def _append_rows_once(
     return result_positions
 
 
+
+def _json_safe(value: Any):
+    """Convierte valores NumPy/Python a tipos compatibles con JSON."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return _json_safe(value.item())
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(_json_safe(value), ensure_ascii=False, separators=(",", ":"))
+
+
+def _record_value(record: dict[str, Any], name: str, default: Any = "") -> Any:
+    return record.get(_normalize_header(name), default)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or str(value).strip() == "":
+            return int(default)
+        return int(round(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        return int(default)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or str(value).strip() == "":
+            return float(default)
+        result = float(value)
+        return result if np.isfinite(result) else float(default)
+    except (TypeError, ValueError, OverflowError):
+        return float(default)
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().casefold() in (
+        "1", "true", "yes", "si", "sí", "verdadero", "x"
+    )
+
+
+def _parse_vacant_indices(value: Any) -> list[int]:
+    if isinstance(value, (list, tuple, set)):
+        result = []
+        for item in value:
+            try:
+                result.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return result
+    text_value = str(value or "").strip()
+    if not text_value:
+        return []
+    return [int(item) for item in re.findall(r"\d+", text_value)]
+
+
+def _upsert_rows_by_key(
+    sheets,
+    sheet_name: str,
+    records: list[dict[str, Any]],
+    key_header: str,
+) -> list[int]:
+    """Inserta o actualiza un lote completo por clave con una sola escritura de actualización."""
+    if not records:
+        return []
+
+    required_headers = []
+    for record in records:
+        for header in record:
+            if header not in required_headers:
+                required_headers.append(header)
+
+    headers = _ensure_sheet_and_headers(sheets, sheet_name, required_headers)
+    _, existing_rows = _read_sheet(sheets, sheet_name)
+    index_map = {
+        _normalize_header(header): index
+        for index, header in enumerate(headers)
+        if str(header or "").strip()
+    }
+    key_index = index_map.get(_normalize_header(key_header))
+    if key_index is None:
+        raise RuntimeError(
+            f"No existe la columna clave '{key_header}' en '{sheet_name}'."
+        )
+
+    existing_positions = {}
+    for physical_row, row in enumerate(existing_rows, start=2):
+        value = row[key_index] if key_index < len(row) else ""
+        value = str(value or "").strip()
+        if value:
+            existing_positions.setdefault(value, physical_row)
+
+    update_data = []
+    append_records = []
+    result_positions = []
+    last_col = _column_letter(max(0, len(headers) - 1))
+
+    for record in records:
+        key_value = str(record.get(key_header, "") or "").strip()
+        physical_row = existing_positions.get(key_value) if key_value else None
+        if physical_row:
+            cache_index = physical_row - 2
+            merged = list(existing_rows[cache_index]) if cache_index < len(existing_rows) else []
+            while len(merged) < len(headers):
+                merged.append("")
+            for name, value in record.items():
+                column_index = index_map.get(_normalize_header(name))
+                if column_index is not None:
+                    merged[column_index] = value
+            update_data.append({
+                "range": (
+                    f"{_quote_sheet(sheet_name)}!A{physical_row}:"
+                    f"{last_col}{physical_row}"
+                ),
+                "values": [merged],
+            })
+            existing_rows[cache_index] = merged
+            result_positions.append(physical_row)
+        else:
+            append_records.append(record)
+            result_positions.append(0)
+
+    if update_data:
+        _execute_sheets_request(
+            sheets.spreadsheets().values().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID,
+                body={"valueInputOption": "RAW", "data": update_data},
+            )
+        )
+        entry = _sheet_cache_entry(sheets, sheet_name)
+        entry["rows"] = existing_rows
+        entry["loaded"] = True
+
+    if append_records:
+        appended_positions = _append_rows_once(
+            sheets,
+            sheet_name,
+            append_records,
+            key_header,
+        )
+        append_iter = iter(appended_positions)
+        append_position_by_key = {}
+        for record, position in zip(append_records, appended_positions):
+            key_value = str(record.get(key_header, "") or "").strip()
+            append_position_by_key.setdefault(key_value, position)
+        for index, record in enumerate(records):
+            if result_positions[index] == 0:
+                key_value = str(record.get(key_header, "") or "").strip()
+                result_positions[index] = append_position_by_key.get(
+                    key_value,
+                    next(append_iter, 0),
+                )
+
+    return result_positions
+
+
+def _inventory_record_values(
+    request_id: str,
+    historial_id: str,
+    parcela_id: str,
+    parcela_name: str,
+    photo_index: int,
+    source_path: str,
+    source_name: str,
+    inventory_path: str,
+    row: dict[str, Any],
+    idioma: str,
+    estado: str = "Pendiente",
+) -> dict[str, Any]:
+    row_id = int(row.get("id", 0) or 0)
+    slots = max(0, int(row.get("slot_count", 0) or 0))
+    vacant = _tg_clean_indices(row.get("vacant_indices", []), slots)
+    occupied = max(0, slots - len(vacant))
+    points = row.get("points_norm", []) or []
+    start = points[0] if len(points) >= 2 else ["", ""]
+    end = points[-1] if len(points) >= 2 else ["", ""]
+    row_confidence = round(
+        float(np.clip(row.get("confidence", 0.0) or 0.0, 0.0, 1.0)) * 100.0,
+        2,
+    )
+    slot_confidence = round(
+        float(np.clip(row.get("slot_confidence", 0.0) or 0.0, 0.0, 1.0)) * 100.0,
+        2,
+    )
+    return {
+        "RegistroID": _deterministic_id(
+            f"{historial_id}|inventario|{row_id}"
+        ),
+        "SolicitudID": request_id,
+        "AnalisisID": historial_id,
+        "ParcelaID": parcela_id,
+        "ParcelaNombre": parcela_name,
+        "FotoIndex": int(photo_index),
+        "FotoNombre": source_name,
+        "FotoRuta": source_path,
+        "ImagenInventarioAppSheet": inventory_path,
+        "NumeroSurco": f"{row_id:02d}",
+        "Slots": slots,
+        "Ocupados": occupied,
+        "Vacios": len(vacant),
+        "VaciosIndices": ",".join(str(index) for index in vacant),
+        "Confianza": slot_confidence,
+        "ConfianzaSurco": row_confidence,
+        "ConfianzaSlots": slot_confidence,
+        "PuntoInicioX": round(_safe_float(start[0], 0.0), 3) if start[0] != "" else "",
+        "PuntoInicioY": round(_safe_float(start[1], 0.0), 3) if start[1] != "" else "",
+        "PuntoFinX": round(_safe_float(end[0], 0.0), 3) if end[0] != "" else "",
+        "PuntoFinY": round(_safe_float(end[1], 0.0), 3) if end[1] != "" else "",
+        "RowSpacingPx": round(_safe_float(row.get("row_spacing_px", 0.0)), 3),
+        "SlotPitchPx": round(_safe_float(row.get("slot_pitch_px", 0.0)), 3),
+        "GeometriaJSON": _json_dumps(row),
+        "ManualPosition": bool(row.get("manual_position", False)),
+        "ManualInventory": bool(row.get("manual_inventory", False)),
+        "EstadoInventario": estado,
+        "FechaValidacion": _now_iso() if estado == "Validado" else "",
+        "Idioma": idioma,
+        "Fecha": _now_iso(),
+    }
+
+
+def _apply_inventory_record_edits(record: dict[str, Any]) -> dict[str, Any]:
+    """Replica la sincronización de la tabla editable de Streamlit sobre la geometría real."""
+    geometry_raw = _record_value(record, "GeometriaJSON", "")
+    try:
+        geometry = json.loads(geometry_raw) if isinstance(geometry_raw, str) else geometry_raw
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("GeometriaJSON no contiene una geometría válida.") from exc
+    if not isinstance(geometry, dict):
+        raise ValueError("Falta la geometría original del surco.")
+
+    row = dict(geometry)
+    original_points = row.get("points_norm", []) or []
+    if len(original_points) < 2:
+        raise ValueError("El surco no contiene dos extremos de geometría.")
+
+    row_id = _safe_int(_record_value(record, "NumeroSurco", row.get("id", 0)), 0)
+    if row_id <= 0:
+        raise ValueError("NumeroSurco debe ser mayor que cero.")
+
+    slots = _safe_int(_record_value(record, "Slots", row.get("slot_count", 0)), 0)
+    original_vacant = _tg_clean_indices(
+        row.get("vacant_indices", []),
+        max(0, slots),
+    )
+    default_vacant_count = len(original_vacant)
+    vacant_count = _safe_int(
+        _record_value(record, "Vacios", default_vacant_count),
+        default_vacant_count,
+    )
+    occupied_count = _safe_int(
+        _record_value(
+            record,
+            "Ocupados",
+            max(0, slots - vacant_count),
+        ),
+        max(0, slots - vacant_count),
+    )
+
+    if slots < 0 or vacant_count < 0 or occupied_count < 0:
+        raise ValueError(f"Surco {row_id:02d}: Slots, Ocupados y Vacíos no pueden ser negativos.")
+    if slots != occupied_count + vacant_count:
+        raise ValueError(
+            f"Surco {row_id:02d}: Slots ({slots}) debe ser igual a "
+            f"Ocupados ({occupied_count}) + Vacíos ({vacant_count})."
+        )
+
+    indices_raw = _record_value(record, "VaciosIndices", "")
+    if isinstance(indices_raw, (list, tuple)):
+        explicit_indices = _parse_vacant_indices(indices_raw)
+        has_explicit_indices = True
+    else:
+        has_explicit_indices = bool(str(indices_raw or "").strip())
+        explicit_indices = _parse_vacant_indices(indices_raw)
+
+    if has_explicit_indices:
+        if len(explicit_indices) != vacant_count:
+            raise ValueError(
+                f"Surco {row_id:02d}: VaciosIndices debe contener exactamente "
+                f"{vacant_count} número(s)."
+            )
+        if len(set(explicit_indices)) != len(explicit_indices):
+            raise ValueError(f"Surco {row_id:02d}: VaciosIndices contiene números duplicados.")
+        if any(index < 1 or index > slots for index in explicit_indices):
+            raise ValueError(
+                f"Surco {row_id:02d}: cada índice vacío debe estar entre 1 y {slots}."
+            )
+        vacant_indices = sorted(explicit_indices)
+    else:
+        vacant_indices = list(original_vacant)
+        vacant_indices = [index for index in vacant_indices if index <= slots][:vacant_count]
+        if len(vacant_indices) < vacant_count:
+            available = [
+                index for index in range(slots, 0, -1)
+                if index not in set(vacant_indices)
+            ]
+            vacant_indices.extend(available[:vacant_count - len(vacant_indices)])
+        vacant_indices = sorted(set(vacant_indices))[:vacant_count]
+
+    row["id"] = row_id
+    row["slot_count"] = int(slots)
+    row["vacant_indices"] = vacant_indices
+
+    endpoint_names = (
+        "PuntoInicioX", "PuntoInicioY", "PuntoFinX", "PuntoFinY"
+    )
+    endpoint_values = [_record_value(record, name, "") for name in endpoint_names]
+    endpoint_present = [str(value or "").strip() != "" for value in endpoint_values]
+    if any(endpoint_present) and not all(endpoint_present):
+        raise ValueError(
+            f"Surco {row_id:02d}: completa las cuatro coordenadas para mover o girar la línea."
+        )
+
+    original_start = [float(original_points[0][0]), float(original_points[0][1])]
+    original_end = [float(original_points[-1][0]), float(original_points[-1][1])]
+    if all(endpoint_present):
+        start_x, start_y, end_x, end_y = [
+            _safe_float(value, 0.0) for value in endpoint_values
+        ]
+        coords = (start_x, start_y, end_x, end_y)
+        if any(value < 0.0 or value > 1000.0 for value in coords):
+            raise ValueError(
+                f"Surco {row_id:02d}: las coordenadas deben estar entre 0 y 1000."
+            )
+        new_start = [start_x, start_y]
+        new_end = [end_x, end_y]
+        moved = any(
+            abs(new_value - old_value) > 0.01
+            for new_point, old_point in zip((new_start, new_end), (original_start, original_end))
+            for new_value, old_value in zip(new_point, old_point)
+        )
+        if moved:
+            point_count = max(2, len(original_points))
+            row["points_norm"] = [
+                [
+                    float(new_start[0] * (1.0 - t) + new_end[0] * t),
+                    float(new_start[1] * (1.0 - t) + new_end[1] * t),
+                ]
+                for t in np.linspace(0.0, 1.0, point_count)
+            ]
+            row["manual_position"] = True
+
+    row_spacing = _safe_float(
+        _record_value(record, "RowSpacingPx", row.get("row_spacing_px", 18.0)),
+        _safe_float(row.get("row_spacing_px", 18.0), 18.0),
+    )
+    slot_pitch = _safe_float(
+        _record_value(record, "SlotPitchPx", row.get("slot_pitch_px", 0.0)),
+        _safe_float(row.get("slot_pitch_px", 0.0), 0.0),
+    )
+    if row_spacing > 0:
+        row["row_spacing_px"] = row_spacing
+    if slot_pitch >= 0:
+        row["slot_pitch_px"] = slot_pitch
+
+    row["manual_inventory"] = bool(
+        row.get("manual_inventory", False)
+        or slots != _safe_int(geometry.get("slot_count", 0), 0)
+        or vacant_indices != _tg_clean_indices(
+            geometry.get("vacant_indices", []),
+            _safe_int(geometry.get("slot_count", 0), 0),
+        )
+    )
+    return row
+
+
+def _inventory_records_for_request(sheets, request_id: str) -> list[dict[str, Any]]:
+    headers, rows = _read_sheet(sheets, INVENTORY_SHEET)
+    if not headers:
+        raise RuntimeError(
+            f"No existe la pestaña {INVENTORY_SHEET}. Ejecuta primero la etapa de Inventario."
+        )
+    result = []
+    for row in rows:
+        data = _row_as_dict(headers, row)
+        if str(data.get(_normalize_header("SolicitudID"), "") or "").strip() == request_id:
+            result.append(data)
+    result.sort(
+        key=lambda item: (
+            _safe_int(item.get(_normalize_header("FotoIndex"), 0), 0),
+            _safe_int(item.get(_normalize_header("NumeroSurco"), 0), 0),
+        )
+    )
+    return result
+
+
+def _inventory_rows_for_photo(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = [_apply_inventory_record_edits(record) for record in records]
+    rows.sort(key=lambda item: int(item.get("id", 0) or 0))
+    ids = [int(row.get("id", 0) or 0) for row in rows]
+    if len(ids) != len(set(ids)):
+        raise ValueError("El Inventario contiene números de surco duplicados para una fotografía.")
+    if not rows:
+        raise ValueError("No hay surcos de Inventario para esta fotografía.")
+    return rows
+
+
 def _append_row_once(
     sheets,
     sheet_name: str,
