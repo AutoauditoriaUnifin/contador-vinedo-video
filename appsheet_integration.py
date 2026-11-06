@@ -1336,8 +1336,6 @@ def _save_video_evidence(
     )
     return len(evidence_records)
 
-    return saved
-
 
 def _enqueue_analysis_task(request_id: str) -> str:
     from google.cloud import tasks_v2
