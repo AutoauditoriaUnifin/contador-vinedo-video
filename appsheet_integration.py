@@ -1897,6 +1897,10 @@ def appsheet_submit_analysis(
         _, sheets, _ = _google_clients()
         row_number, row = _request_row(sheets, request_id)
         status = str(row.get(_normalize_header("Estado"), "") or "").strip().casefold()
+        inventory_validated = (
+            _truthy(row.get(_normalize_header("ValidacionInventario"), ""))
+            or status in ("validado", "validada")
+        )
 
         if status in ("completado", "completed"):
             return {
@@ -1905,12 +1909,24 @@ def appsheet_submit_analysis(
                 "request_id": request_id,
                 "mensaje": "Esta solicitud ya fue procesada.",
             }
-        if status in ("en cola", "procesando"):
+        if status in (
+            "en cola",
+            "procesando",
+            "procesandoinventario",
+            "procesandosalud",
+        ):
             return {
                 "ok": True,
                 "status": status.title(),
                 "request_id": request_id,
                 "mensaje": "La solicitud ya está en proceso.",
+            }
+        if status in ("pendientevalidacion", "pendiente de validacion") and not inventory_validated:
+            return {
+                "ok": True,
+                "status": "PendienteValidacion",
+                "request_id": request_id,
+                "mensaje": "Confirma el Inventario en AppSheet antes de continuar con Salud.",
             }
 
         photo_paths = _photo_paths(row)
