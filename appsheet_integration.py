@@ -558,7 +558,7 @@ def _safe_int(value: Any, default: int = 0) -> int:
     try:
         if value is None or str(value).strip() == "":
             return int(default)
-        return int(round(float(value)))
+        return int(float(value))
     except (TypeError, ValueError, OverflowError):
         return int(default)
 
