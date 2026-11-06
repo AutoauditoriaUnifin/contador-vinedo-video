@@ -31,12 +31,9 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
 
-if not OPENAI_API_KEY:
-    raise RuntimeError(
-        "Falta OPENAI_API_KEY. Configúrala como variable de entorno o secreto."
-    )
-
-client = OpenAI(api_key=OPENAI_API_KEY)
+# OpenAI sigue disponible para el endpoint legado /analyze-image.
+# La integración AppSheet usa el motor OpenCV local y no requiere esta clave.
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 
 # ============================================================
@@ -59,6 +56,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Rutas de integración AppSheet. Se mantiene el endpoint legado de Streamlit.
+from appsheet_integration import router as appsheet_router
+app.include_router(appsheet_router)
 
 app.mount(
     "/uploads",
@@ -786,6 +787,15 @@ def root():
 @app.post("/analyze-image")
 async def analyze_image(file: UploadFile = File(...)):
     try:
+        if client is None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ok": False,
+                    "error": "El endpoint legado /analyze-image requiere OPENAI_API_KEY.",
+                },
+            )
+
         raw = await file.read()
 
         if not raw:

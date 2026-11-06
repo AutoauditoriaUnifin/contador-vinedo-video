@@ -1,0 +1,94 @@
+name: Validate TerraCore AppSheet backend
+
+on:
+  push:
+    branches:
+      - integracion-appsheet
+    paths:
+      - "backend_api.py"
+      - "appsheet_integration.py"
+      - "terracore_engine.py"
+      - "run_appsheet_job.py"
+      - "requirements_backend.txt"
+      - "requirements_worker.txt"
+      - "APPSHEET_FREE_SETUP.md"
+      - "APPSHEET_SETUP.md"
+      - "apps_script/**"
+      - ".github/workflows/validate-appsheet.yml"
+      - ".github/workflows/process-appsheet-analysis.yml"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # En PR se prueba el commit real de la rama, no el merge ref sintético.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify backend and Apps Script files
+        run: |
+          test -f backend_api.py
+          test -f appsheet_integration.py
+          test -f terracore_engine.py
+          test -f run_appsheet_job.py
+          test -f requirements_worker.txt
+          test -f apps_script/Code.gs
+          test -f apps_script/appsscript.json
+          test -f .github/workflows/process-appsheet-analysis.yml
+          test -f APPSHEET_FREE_SETUP.md
+          test -f APPSHEET_SETUP.md
+          echo "Los archivos de la integración gratuita están presentes."
+
+      - name: Check Apps Script JavaScript syntax
+        run: node --check < apps_script/Code.gs
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_backend.txt
+
+      - name: Compile Python modules
+        run: |
+          python -m compileall -q backend_api.py appsheet_integration.py terracore_engine.py run_appsheet_job.py
+
+      - name: Import API and verify AppSheet routes
+        env:
+          GSHEET_ID: test-sheet-id
+          GDRIVE_PARENT_FOLDER_ID: test-drive-folder-id
+          OPENAI_API_KEY: ""
+          GCP_SERVICE_ACCOUNT_JSON: ""
+          APPSHEET_API_TOKEN: ""
+          CLOUD_TASKS_PROJECT: ""
+          CLOUD_RUN_SERVICE_URL: ""
+        run: |
+          python - <<'PY'
+          import backend_api
+          from appsheet_integration import REQUEST_HEADERS
+
+          # FastAPI reciente puede incluir routers como objetos internos
+          # sin atributo .path; OpenAPI expone las rutas públicas finales.
+          paths = set(backend_api.app.openapi().get("paths", {}))
+          required = {
+              "/appsheet/health",
+              "/appsheet/setup",
+              "/appsheet/analysis/submit",
+              "/appsheet/analysis/process",
+          }
+          missing = required - paths
+          assert not missing, f"Faltan rutas: {sorted(missing)}"
+
+          required_columns = {"Video", "Video simulación "}
+          missing_columns = required_columns - set(REQUEST_HEADERS)
+          assert not missing_columns, f"Faltan columnas de video: {sorted(missing_columns)}"
+          print("API, rutas AppSheet y columnas de video verificadas.")
+          PY
