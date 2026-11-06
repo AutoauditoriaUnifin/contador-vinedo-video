@@ -1969,14 +1969,6 @@ def appsheet_submit_analysis(
                 "request_id": request_id,
                 "mensaje": "La solicitud ya está en proceso.",
             }
-        if status in ("pendientevalidacion", "pendiente de validacion") and not inventory_validated:
-            return {
-                "ok": True,
-                "status": "PendienteValidacion",
-                "request_id": request_id,
-                "mensaje": "Confirma el Inventario en AppSheet antes de continuar con Salud.",
-            }
-
         photo_paths = _photo_paths(row)
         if not photo_paths:
             raise HTTPException(
@@ -2068,7 +2060,7 @@ def _process_inventory_stage(
                         inventory_path=inventory_path,
                         row=inventory_row,
                         idioma=idioma,
-                        estado="Pendiente",
+                        estado="Validado",
                     )
                 )
 
@@ -2099,7 +2091,7 @@ def _process_inventory_stage(
                         2,
                     ),
                     "imagen_inventario": inventory_path,
-                    "estado": "Pendiente de validación",
+                    "estado": "Validado automáticamente",
                 }
             )
         except Exception as exc:
@@ -2130,10 +2122,8 @@ def _process_inventory_stage(
         "fotos": photo_summaries,
         "errores": errors,
         "instrucciones": (
-            "Revisa los surcos de cada fotografía en InventarioSurcos. "
-            "Corrige Slots, Ocupados, Vacios, VaciosIndices y, si hace falta, "
-            "las cuatro coordenadas de los extremos. Confirma solo cuando "
-            "Slots = Ocupados + Vacios en todos los surcos."
+            "Inventario procesado automáticamente. El motor continúa con Salud "
+            "utilizando los surcos y posiciones detectados."
         ),
     }
     _update_row_fields(
@@ -2141,26 +2131,26 @@ def _process_inventory_stage(
         REQUEST_SHEET,
         row_number,
         {
-            "Estado": "PendienteValidacion",
+            "Estado": "ProcesandoSalud",
             "FechaInventario": now,
+            "FechaValidacionInventario": now,
             "FechaFin": "",
             "TotalFotos": len(photo_summaries),
             "ResumenInventario": _json_dumps(inventory_summary),
-            "ValidacionInventario": "Pendiente",
+            "ValidacionInventario": "Validado",
             "Error": "",
         },
     )
 
     return {
         "ok": True,
-        "status": "PendienteValidacion",
+        "status": "InventarioValidadoAutomaticamente",
         "request_id": request_id,
         "total_fotos": len(photo_summaries),
         "total_surcos": len(inventory_records),
         "inventario": inventory_summary,
         "mensaje": (
-            "Inventario generado. Revisa y corrige los registros de InventarioSurcos "
-            "en AppSheet y después confirma la validación."
+            "Inventario generado y validado automáticamente. Continúa con el análisis de Salud."
         ),
     }
 
@@ -2178,7 +2168,7 @@ def _process_health_stage(
     fecha_captura: str,
     surco_id: str,
 ) -> dict[str, Any]:
-    """Fase 2: analiza Salud únicamente con el Inventario editado y confirmado."""
+    """Fase 2: analiza Salud con el Inventario generado automáticamente."""
     os.environ["TERRACORE_LANGUAGE"] = (
         "FR" if str(idioma or "ES").strip().upper() == "FR" else "ES"
     )
@@ -2203,7 +2193,7 @@ def _process_health_stage(
         photo_records = records_by_photo.get(photo_index, [])
         if not photo_records:
             errors.append(
-                f"Fotografía {photo_index}: no hay Inventario validado en {INVENTORY_SHEET}."
+                f"Fotografía {photo_index}: no hay Inventario generado en {INVENTORY_SHEET}."
             )
             continue
 
@@ -2268,7 +2258,7 @@ def _process_health_stage(
 
     if not summaries:
         raise RuntimeError(
-            "No se pudo completar el análisis de Salud con el Inventario validado. "
+            "No se pudo completar el análisis de Salud con el Inventario generado. "
             + " | ".join(errors)
         )
 
@@ -2337,10 +2327,16 @@ def appsheet_process_analysis(
             "",
         )
         validation_text = str(validation_value or "").strip().casefold()
+        existing_inventory_records = (
+            _inventory_records_for_request(sheets, request_id)
+            if current_status in ("pendientevalidacion", "pendiente de validacion")
+            else []
+        )
         inventory_validated = (
             _truthy(validation_value)
             or validation_text in ("validado", "validada")
             or current_status in ("validado", "validada")
+            or bool(existing_inventory_records)
         )
 
         if current_status in ("completado", "completed"):
@@ -2452,7 +2448,7 @@ def appsheet_process_analysis(
                 "Error": "",
             },
         )
-        return _process_inventory_stage(
+        inventory_result = _process_inventory_stage(
             drive=drive,
             sheets=sheets,
             request_id=request_id,
@@ -2462,6 +2458,37 @@ def appsheet_process_analysis(
             parcela_name=parcela_name,
             idioma=idioma,
             fecha_captura=fecha_captura,
+        )
+        if not inventory_result.get("ok"):
+            raise RuntimeError("No se pudo generar el Inventario automático.")
+
+        # Continuación automática: no requiere botón ni confirmación en AppSheet.
+        _update_row_fields(
+            sheets,
+            REQUEST_SHEET,
+            row_number,
+            {
+                "Estado": "ProcesandoSalud",
+                "ValidacionInventario": "Validado",
+                "FechaValidacionInventario": _now_iso(),
+                "FechaInicioSalud": _now_iso(),
+                "FechaFin": "",
+                "Error": "",
+            },
+        )
+        row_number, refreshed_row = _request_row(sheets, request_id)
+        return _process_health_stage(
+            drive=drive,
+            sheets=sheets,
+            request_id=request_id,
+            row_number=row_number,
+            row=refreshed_row,
+            photo_paths=photo_paths,
+            parcela_id=parcela_id,
+            parcela_name=parcela_name,
+            idioma=idioma,
+            fecha_captura=fecha_captura,
+            surco_id=surco_id,
         )
 
     except HTTPException:
