@@ -1,0 +1,71 @@
+name: Validate TerraCore engine
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "terracore_engine.py"
+      - "appsheet_integration.py"
+      - "requirements_worker.txt"
+      - ".github/workflows/validate-terracore-engine.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate headless OpenCV engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements_worker.txt
+
+      - name: Install worker dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_worker.txt
+
+      - name: Compile and import TerraCore modules
+        run: |
+          python -m py_compile terracore_engine.py appsheet_integration.py run_appsheet_job.py
+          python - <<'PY'
+          import os
+          import terracore_engine
+          from appsheet_integration import appsheet_process_analysis
+
+          required = [
+              "_ocv2_analyze_health",
+              "_ocv2_group_consecutive",
+              "_ocv2_inventory_from_file",
+              "_ocv2_polygon_for_group",
+              "_ocv2_slot_positions",
+              "_tc_quitar_nombre_motor_del_analisis",
+              "_tg_clean_indices",
+              "_tg_norm_to_px",
+          ]
+          missing = [
+              name for name in required
+              if not callable(getattr(terracore_engine, name, None))
+          ]
+          if missing:
+              raise SystemExit("Faltan funciones del motor: " + ", ".join(missing))
+
+          os.environ["TERRACORE_LANGUAGE"] = "ES"
+          assert terracore_engine.tr("Español", "Français") == "Español"
+          os.environ["TERRACORE_LANGUAGE"] = "FR"
+          assert terracore_engine.tr("Español", "Français") == "Français"
+
+          assert callable(appsheet_process_analysis)
+          print("OK: motor TerraCore e integración AppSheet importan correctamente.")
+          print("OK: funciones requeridas y selección ES/FR verificadas.")
+          PY
