@@ -11,7 +11,9 @@ import hashlib
 import io
 import math
 import os
+import platform
 import re
+import PIL
 
 import cv2
 import numpy as np
@@ -22,6 +24,7 @@ from scipy.signal import find_peaks
 
 ENGINE_SOURCE = "app_surcos_VIDEO_V10.py"
 ENGINE_MODE = "opencv-v2-straight-grid-polygons"
+ENGINE_VERSION = "2026.11.06-parity-v1"
 
 __all__ = ["_ocv2_analyze_health","_ocv2_group_consecutive","_ocv2_inventory_from_file","_ocv2_polygon_for_group","_ocv2_slot_positions","_tc_quitar_nombre_motor_del_analisis","_tg_clean_indices","_tg_norm_to_px"]
 
@@ -3441,6 +3444,12 @@ def _ocv2_inventory_from_file(uploaded_file):
             "input_height": int(source_height),
             "exif_orientation": int(exif_orientation),
             "detected_rows": int(len(rows)),
+            "engine_version": ENGINE_VERSION,
+            "engine_source": ENGINE_SOURCE,
+            "python_version": platform.python_version(),
+            "opencv_version": str(cv2.__version__),
+            "numpy_version": str(np.__version__),
+            "pillow_version": str(PIL.__version__),
         },
     }
 
