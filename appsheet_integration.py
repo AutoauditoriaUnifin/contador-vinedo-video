@@ -1112,7 +1112,8 @@ def _append_analysis_results(
             parcela_id,
         )
 
-    # Guardar una fila por surco en InventarioSurcos.
+    # Guardar todos los surcos en una sola escritura por lote.
+    inventory_records = []
     for row in rows:
         row_number = int(row.get("id", 0) or 0)
         slots = int(row.get("slot_count", 0) or 0)
@@ -1120,9 +1121,7 @@ def _append_analysis_results(
         occupied = max(0, slots - vacant)
         confidence_row = round(float(row.get("slot_confidence", 0.0) or 0.0) * 100.0, 2)
         record_id = _deterministic_id(f"{historial_id}|inventario|{row_number}")
-        _append_row_once(
-            sheets,
-            "InventarioSurcos",
+        inventory_records.append(
             {
                 "RegistroID": record_id,
                 "AnalisisID": historial_id,
@@ -1133,12 +1132,16 @@ def _append_analysis_results(
                 "Vacios": vacant,
                 "Confianza": confidence_row,
                 "Idioma": idioma,
-            },
-            "RegistroID",
-            record_id,
+            }
         )
+    _append_rows_once(
+        sheets,
+        "InventarioSurcos",
+        inventory_records,
+        "RegistroID",
+    )
 
-    # Evidencias: originales, inventario, análisis y polígonos.
+    # Evidencias: originales, inventario, análisis y polígonos; un solo lote.
     evidence_items = [
         ("ORIGINAL", original_name, original_id, source_mime),
         ("INVENTARIO", inventory_name, inventory_id, "image/png"),
@@ -1147,13 +1150,12 @@ def _append_analysis_results(
     if polygon_id:
         evidence_items.append(("POLIGONOS", polygon_name, polygon_id, "image/png"))
 
+    evidence_records = []
     for evidence_type, filename, file_id, mime_type in evidence_items:
         evidence_id = _deterministic_id(
             f"{historial_id}|evidencia|{evidence_type}"
         )
-        _append_row_once(
-            sheets,
-            "Evidencias",
+        evidence_records.append(
             {
                 "EvidenciaID": evidence_id,
                 "AnalisisID": historial_id,
@@ -1165,10 +1167,16 @@ def _append_analysis_results(
                 "Fecha": now,
                 "Fuente": "AppSheet TerraCore",
                 "Idioma": idioma,
-            },
-            "EvidenciaID",
-            evidence_id,
+            }
         )
+    _append_rows_once(
+        sheets,
+        "Evidencias",
+        evidence_records,
+        "EvidenciaID",
+    )
+
+
 
     if note:
         _append_row_once(
@@ -1183,6 +1191,8 @@ def _append_analysis_results(
             historial_id,
         )
 
+    critical_region_records = []
+    damaged_zone_records = []
     for index, region in enumerate(regions, 1):
         polygon_json = json.dumps(
             {"space": "image_px", "points": region["points"]},
@@ -1192,9 +1202,7 @@ def _append_analysis_results(
         region_id = region["region_id"]
         region_name = f"Región crítica {index}"
         segment = f"Slots {region['primer_slot']}-{region['ultimo_slot']}"
-        _append_row_once(
-            sheets,
-            "RegionesCriticas",
+        critical_region_records.append(
             {
                 "RegionID": region_id,
                 "AnalisisID": historial_id,
@@ -1212,14 +1220,11 @@ def _append_analysis_results(
                 "EstadoSeguimiento": "Pendiente",
                 "Fecha": now,
                 "Idioma": idioma,
-            },
-            "RegionID",
-            region_id,
+            }
         )
+
         zone_id = _deterministic_id(f"{historial_id}|zona|{index}")
-        _append_row_once(
-            sheets,
-            "ZonasDañadas",
+        damaged_zone_records.append(
             {
                 "ZonaID": zone_id,
                 "AnalisisID": historial_id,
@@ -1232,10 +1237,23 @@ def _append_analysis_results(
                 "Estado": "Pendiente",
                 "Fecha": now,
                 "Idioma": idioma,
-            },
-            "ZonaID",
-            zone_id,
+            }
         )
+
+    _append_rows_once(
+        sheets,
+        "RegionesCriticas",
+        critical_region_records,
+        "RegionID",
+    )
+    _append_rows_once(
+        sheets,
+        "ZonasDañadas",
+        damaged_zone_records,
+        "ZonaID",
+    )
+
+
 
     return {
         "historial_id": historial_id,
@@ -1276,7 +1294,7 @@ def _save_video_evidence(
     if not video_path and not simulation_video_path:
         return 0
 
-    saved = 0
+    evidence_records = []
     for historial_id in history_ids:
         history_row, _, _ = _find_row_by_key(
             sheets,
@@ -1298,9 +1316,7 @@ def _save_video_evidence(
         evidence_id = _deterministic_id(
             f"{request_id}|video-evidencia|{historial_id}"
         )
-        _append_row_once(
-            sheets,
-            "Evidencias1",
+        evidence_records.append(
             {
                 "UNIQUEID": evidence_id,
                 "NOMBRE": parcela_name,
@@ -1309,11 +1325,16 @@ def _save_video_evidence(
                 "Video simulación ": simulation_video_path,
                 "Idioma ": idioma,
                 "HistorialID": historial_id,
-            },
-            "UNIQUEID",
-            evidence_id,
+            }
         )
-        saved += 1
+
+    _append_rows_once(
+        sheets,
+        "Evidencias1",
+        evidence_records,
+        "UNIQUEID",
+    )
+    return len(evidence_records)
 
     return saved
 
