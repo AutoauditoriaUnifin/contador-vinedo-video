@@ -230,9 +230,8 @@ function tcDispatchGitHub_(requestId) {
   const workflow = String(
     props.getProperty("GITHUB_WORKFLOW_FILE") || "process-appsheet-analysis.yml"
   ).trim();
-  const branch = String(
-    props.getProperty("GITHUB_BRANCH") || "main"
-  ).trim();
+  // La integración activa y validada vive en main. No usar ramas antiguas.
+  const branch = "main";
 
   if (!token) throw new Error("Falta GITHUB_DISPATCH_TOKEN en Apps Script.");
 
