@@ -16,6 +16,8 @@ on:
       - "APPSHEET_SETUP.md"
       - "GUIA_APPSHEET_INVENTARIO.md"
       - "apps_script/**"
+      - "tests/**"
+      - "HOMOLOGACION_STREAMLIT_APPSHEET.md"
       - ".github/workflows/validate-appsheet.yml"
       - ".github/workflows/process-appsheet-analysis.yml"
   pull_request:
@@ -61,7 +63,7 @@ jobs:
 
       - name: Compile Python modules
         run: |
-          python -m compileall -q backend_api.py appsheet_integration.py terracore_engine.py run_appsheet_job.py
+          python -m compileall -q backend_api.py appsheet_integration.py terracore_engine.py run_appsheet_job.py tests
 
       - name: Import API and verify AppSheet routes
         env:
@@ -73,6 +75,7 @@ jobs:
           CLOUD_TASKS_PROJECT: ""
           CLOUD_RUN_SERVICE_URL: ""
         run: |
+          python -m unittest discover -s tests -p "test_*.py" -v
           python - <<'PY'
           import backend_api
           from appsheet_integration import REQUEST_HEADERS
@@ -89,8 +92,8 @@ jobs:
           missing = required - paths
           assert not missing, f"Faltan rutas: {sorted(missing)}"
 
-          required_columns = {"Video", "Video simulación "}
+          required_columns = {"Video", "Video simulación ", "ConfianzaImagen", "ConfianzaSurco", "ConfianzaSlots"}
           missing_columns = required_columns - set(REQUEST_HEADERS)
           assert not missing_columns, f"Faltan columnas de video: {sorted(missing_columns)}"
-          print("API, rutas AppSheet y columnas de video verificadas.")
+          print("API, rutas AppSheet, columnas de video y métricas de confianza verificadas.")
           PY
