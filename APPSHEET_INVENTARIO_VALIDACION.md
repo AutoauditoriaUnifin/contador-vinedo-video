@@ -16,7 +16,7 @@ Estados de `SolicitudesAnalisis`:
 
 ## Tablas y columnas
 
-El worker agrega automáticamente las columnas que falten en `SolicitudesAnalisis` y `InventarioSurcos`. Después de la primera ejecución, en AppSheet abre **Data → Columns → Regenerate structure** para ambas tablas.
+Primero ejecuta una vez el endpoint existente `POST /appsheet/setup` con el token de integración. Ahora prepara tanto `SolicitudesAnalisis` como `InventarioSurcos` en el mismo Google Sheets. Después, en AppSheet agrega `InventarioSurcos` como tabla y abre **Data → Columns → Regenerate structure** para ambas tablas. El worker también asegura las columnas si faltan.
 
 ### SolicitudesAnalisis
 
