@@ -2151,6 +2151,7 @@ def _process_health_stage(
     errors = []
 
     for photo_index, source_path in enumerate(photo_paths, 1):
+        source_name = str(source_path)
         photo_records = records_by_photo.get(photo_index, [])
         if not photo_records:
             errors.append(
@@ -2215,7 +2216,7 @@ def _process_health_stage(
                 },
             )
         except Exception as exc:
-            errors.append(f"{source_name if 'source_name' in locals() else source_path}: {exc}")
+            errors.append(f"{source_name}: {exc}")
 
     if not summaries:
         raise RuntimeError(
