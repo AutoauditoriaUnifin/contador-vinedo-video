@@ -2359,19 +2359,6 @@ def appsheet_process_analysis(
                 "mensaje": "La solicitud ya está en proceso.",
             }
 
-        if (
-            current_status in ("pendientevalidacion", "pendiente de validacion")
-            and not inventory_validated
-        ):
-            return {
-                "ok": True,
-                "status": "PendienteValidacion",
-                "request_id": request_id,
-                "mensaje": (
-                    "El Inventario está esperando revisión y confirmación en AppSheet."
-                ),
-            }
-
         photo_paths = _photo_paths(row)
         if not photo_paths:
             raise ValueError("No hay fotografías registradas en la solicitud.")
