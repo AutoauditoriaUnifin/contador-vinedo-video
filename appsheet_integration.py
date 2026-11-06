@@ -2182,8 +2182,9 @@ def _process_inventory_stage(
         "fotos": photo_summaries,
         "errores": errors,
         "instrucciones": (
-            "Inventario generado automáticamente. La geometría original se "
-            "envía directamente a la etapa de Salud sin edición manual."
+            "Inventario generado automáticamente. Revisa y corrige en AppSheet "
+            "los surcos, conteos y extremos de línea; confirma el Inventario "
+            "para habilitar la etapa de Salud."
         ),
     }
     _update_row_fields(
