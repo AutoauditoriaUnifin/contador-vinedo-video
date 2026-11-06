@@ -43,7 +43,7 @@ Se conservan las columnas que ya existen y se agregan:
 | `ParcelaNombre` | Text | No |
 | `FotoIndex` | Number | No |
 | `FotoNombre` | Text | No |
-| `FotoRuta` | Text | No |
+| `FotoRuta` | Image | No |
 | `ImagenInventarioAppSheet` | Image | No |
 | `NumeroSurco` | Text | No |
 | `Slots` | Number | Sí |
@@ -69,6 +69,15 @@ Configura `RegistroID` como Key. La columna `ImagenInventarioAppSheet` debe ser 
 - **PuntoInicioX/Y y PuntoFinX/Y:** extremos de la línea del surco en escala normalizada de 0 a 1000. X: 0 es izquierda y 1000 derecha. Y: 0 es arriba y 1000 abajo. Modificar los cuatro valores mueve y gira la línea; los slots se reconstruyen sobre el eje corregido.
 
 La app Streamlit dispone de un canvas para arrastrar y girar líneas. AppSheet no ofrece ese mismo canvas nativo; en AppSheet la corrección de geometría se realiza editando los cuatro extremos numéricos mientras se consulta la imagen de Inventario. El motor recibe esos extremos y reconstruye la misma geometría normalizada que consume el análisis original.
+
+Validaciones recomendadas en AppSheet:
+
+- `Slots` → Valid_If: `[_THIS] >= 0`
+- `Ocupados` → Valid_If: `AND([_THIS] >= 0, [_THIS] <= [Slots])`
+- `Vacios` → Valid_If: `AND([_THIS] >= 0, [_THIS] <= [Slots])`
+- Cada uno de los cuatro extremos → Valid_If: `AND([_THIS] >= 0, [_THIS] <= 1000)`
+
+La acción de confirmación valida además la igualdad de los tres conteos y que todas las fotografías inventariadas tengan registros. El worker vuelve a comprobarlo antes de ejecutar Salud.
 
 ## Acción para confirmar Inventario
 
@@ -103,7 +112,15 @@ AND(
       InventarioSurcos[RegistroID],
       [SolicitudID] = [_THISROW].[SolicitudID]
     )
-  ) > 0
+  ) > 0,
+  COUNT(
+    UNIQUE(
+      SELECT(
+        InventarioSurcos[FotoIndex],
+        [SolicitudID] = [_THISROW].[SolicitudID]
+      )
+    )
+  ) = [TotalFotos]
 )
 ```
 
