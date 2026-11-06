@@ -87,6 +87,7 @@ INVENTORY_HEADERS = [
     "Vacios",
     "VaciosIndices",
     "Confianza",
+    "ConfianzaImagen",
     "ConfianzaSurco",
     "ConfianzaSlots",
     "PuntoInicioX",
@@ -702,6 +703,7 @@ def _inventory_record_values(
     row: dict[str, Any],
     idioma: str,
     estado: str = "Pendiente",
+    image_confidence: float | None = None,
 ) -> dict[str, Any]:
     row_id = int(row.get("id", 0) or 0)
     slots = max(0, int(row.get("slot_count", 0) or 0))
@@ -716,6 +718,17 @@ def _inventory_record_values(
     )
     slot_confidence = round(
         float(np.clip(row.get("slot_confidence", 0.0) or 0.0, 0.0, 1.0)) * 100.0,
+        2,
+    )
+    # En Streamlit, la confianza de imagen es la media de la confianza de
+    # periodicidad/contraste de los slots de todos los surcos de la fotografía.
+    confidence_image_value = (
+        image_confidence
+        if image_confidence is not None
+        else row.get("slot_confidence", 0.0)
+    )
+    image_confidence_pct = round(
+        float(np.clip(_safe_float(confidence_image_value, 0.0), 0.0, 1.0)) * 100.0,
         2,
     )
     return {
@@ -736,6 +749,7 @@ def _inventory_record_values(
         "Vacios": len(vacant),
         "VaciosIndices": ",".join(str(index) for index in vacant),
         "Confianza": slot_confidence,
+        "ConfianzaImagen": image_confidence_pct,
         "ConfianzaSurco": row_confidence,
         "ConfianzaSlots": slot_confidence,
         "PuntoInicioX": round(_safe_float(start[0], 0.0), 3) if start[0] != "" else "",
@@ -2096,6 +2110,7 @@ def _process_inventory_stage(
             # MISMA función de inventario que utiliza Streamlit.
             inventory = _ocv2_inventory_from_file(uploaded)
             rows = inventory.get("rows", []) or []
+            image_confidence = _safe_float(inventory.get("confidence", 0.0), 0.0)
             validation = _validate_original_inventory(rows)
 
             historial_id = _analysis_id_for_request(sheets, request_id, photo_index)
@@ -2128,6 +2143,7 @@ def _process_inventory_stage(
                         row=inventory_row,
                         idioma=idioma,
                         estado="Pendiente",
+                        image_confidence=image_confidence,
                     )
                 )
 
@@ -2144,8 +2160,19 @@ def _process_inventory_stage(
                     "ocupados": validation["ocupados"],
                     "vacios": vacant_slots,
                     "confianza_inventario": round(
-                        float(inventory.get("confidence", 0.0) or 0.0) * 100.0,
+                        image_confidence * 100.0,
                         2,
+                    ),
+                    "confianza_imagen_pct": round(
+                        image_confidence * 100.0,
+                        2,
+                    ),
+                    "definicion_confianza_imagen": (
+                        "Promedio de la confianza de periodicidad y contraste "
+                        "de las posiciones (slots) detectadas en todos los surcos."
+                    ),
+                    "motor_analisis": (inventory.get("debug", {}) or {}).get(
+                        "motor", "opencv-v2-straight-grid"
                     ),
                     # Diagnóstico para demostrar qué archivo exacto recibió AppSheet.
                     "diagnostico_imagen": inventory.get("debug", {}) or {},
