@@ -760,6 +760,10 @@ def _append_analysis_results(
 ) -> dict[str, Any]:
     uploaded = UploadedBytes(source_name, source_mime, raw)
 
+    # El motor reutiliza el idioma elegido en el formulario AppSheet.
+    os.environ["TERRACORE_LANGUAGE"] = (
+        "FR" if str(idioma or "ES").strip().upper() == "FR" else "ES"
+    )
     inventory = _ocv2_inventory_from_file(uploaded)
     backend_result = _ocv2_analyze_health(uploaded, inventory["rows"])
     rows = inventory.get("rows", []) or []
