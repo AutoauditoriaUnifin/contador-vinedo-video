@@ -1223,6 +1223,47 @@ def _upload_artifact(
     return file_id, f"{folder_name}/{filename}"
 
 
+
+def _upload_artifact_replace(
+    drive,
+    content: bytes,
+    filename: str,
+    mime_type: str,
+    folder_name: str,
+) -> tuple[str, str]:
+    """Sube o reemplaza el contenido de un artefacto sin cambiar su FileID."""
+    folder = _folder_id(drive, folder_name)
+    escaped_name = _drive_escape(filename)
+    query = (
+        f"name = '{escaped_name}' and '{folder}' in parents "
+        "and trashed = false"
+    )
+    matches = _drive_list(drive, query)
+    media = MediaIoBaseUpload(
+        io.BytesIO(content),
+        mimetype=mime_type or "application/octet-stream",
+        resumable=True,
+    )
+    if matches:
+        file_id = matches[0]["id"]
+        drive.files().update(
+            fileId=file_id,
+            media_body=media,
+            fields="id,name,webViewLink",
+            supportsAllDrives=True,
+        ).execute()
+    else:
+        created = drive.files().create(
+            body={"name": filename, "parents": [folder]},
+            media_body=media,
+            fields="id,name,webViewLink",
+            supportsAllDrives=True,
+        ).execute()
+        file_id = created["id"]
+    return file_id, f"{folder_name}/{filename}"
+
+
+
 def _drive_url(file_id: str) -> str:
     return f"https://drive.google.com/file/d/{file_id}/view"
 
@@ -1425,7 +1466,7 @@ def _append_analysis_results(
     processed_bytes = _image_to_png_bytes(backend_result.get("annotated"))
     polygon_bytes = _image_to_png_bytes(backend_result.get("polygon_image"))
 
-    inventory_id, inventory_path = _upload_artifact(
+    inventory_id, inventory_path = _upload_artifact_replace(
         drive, inventory_bytes, inventory_name, "image/png", "Inventarios"
     )
     processed_id, processed_path = _upload_artifact(
