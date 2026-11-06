@@ -2336,8 +2336,10 @@ def appsheet_process_analysis(
             _normalize_header("ValidacionInventario"),
             "",
         )
+        validation_text = str(validation_value or "").strip().casefold()
         inventory_validated = (
             _truthy(validation_value)
+            or validation_text in ("validado", "validada")
             or current_status in ("validado", "validada")
         )
 
