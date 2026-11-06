@@ -932,68 +932,122 @@ def calcular_rejilla_global_surcos(
     if spacing is None:
         return None
 
-    # Para el conteo final no permitimos picos a media hilera.
-    min_distance = max(
-        6,
-        int(
-            round(
-                spacing * 0.90
-            )
-        )
-    )
-
-    prominence = max(
+    # --------------------------------------------------------
+    # DETECCIÓN MULTIBANDA:
+    # el promedio de toda la imagen puede ocultar hileras cuando
+    # hay zonas secas, sombras o vegetación discontinua. Se buscan
+    # posiciones repetitivas en cinco franjas y se conservan las
+    # que aparecen en al menos dos franjas. Los picos globales
+    # originales se mantienen como evidencia adicional.
+    # --------------------------------------------------------
+    min_distance = max(6, int(round(spacing * 0.90)))
+    global_prominence = max(
         0.004,
-        float(
-            np.max(signal) - np.median(signal)
-        ) * 0.13
+        float(np.max(signal) - np.median(signal)) * 0.13
     )
-
-    peaks, props = find_peaks(
+    global_peaks, _ = find_peaks(
         signal,
         distance=min_distance,
-        prominence=prominence
+        prominence=global_prominence
     )
+
+    band_votes = []
+    band_peaks_all = []
+    band_count = 5
+    y_start = int(h * 0.08)
+    y_end = int(h * 0.92)
+    band_edges = np.linspace(y_start, y_end, band_count + 1).astype(int)
+
+    for band_index in range(band_count):
+        by0 = int(band_edges[band_index])
+        by1 = int(band_edges[band_index + 1])
+        if by1 - by0 < 8:
+            continue
+
+        band_profile = np.mean(
+            (rotated[by0:by1] > 0).astype(np.float32),
+            axis=0
+        )
+        band_profile = gaussian_filter1d(band_profile, sigma=1.0)
+        band_trend = gaussian_filter1d(
+            band_profile,
+            sigma=max(7.0, w / 55.0)
+        )
+        band_signal = band_profile - band_trend
+        band_prominence = max(
+            0.002,
+            float(np.max(band_signal) - np.median(band_signal)) * 0.10
+        )
+        band_peaks, _ = find_peaks(
+            band_signal,
+            distance=max(5, int(round(spacing * 0.70))),
+            prominence=band_prominence
+        )
+        for peak in band_peaks:
+            band_votes.append((float(peak), band_index))
+            band_peaks_all.append(int(peak))
+
+    # Agrupar detecciones cercanas: una posición solo suma un voto
+    # por franja, aunque el perfil tenga varios máximos próximos.
+    band_candidates = []
+    for peak, band_index in sorted(band_votes, key=lambda item: item[0]):
+        if band_candidates and abs(peak - band_candidates[-1]["x"]) <= spacing * 0.38:
+            band_candidates[-1]["xs"].append(peak)
+            band_candidates[-1]["bands"].add(band_index)
+            band_candidates[-1]["x"] = float(np.median(band_candidates[-1]["xs"]))
+        else:
+            band_candidates.append({
+                "x": peak,
+                "xs": [peak],
+                "bands": {band_index},
+            })
+
+    supported_band_peaks = [
+        int(round(item["x"]))
+        for item in band_candidates
+        if len(item["bands"]) >= 2
+    ]
+
+    # Combinar picos globales y multibanda. Se aplica una separación
+    # mínima para no contar dos bordes de la misma hilera.
+    candidates = sorted(
+        set(int(p) for p in global_peaks)
+        | set(supported_band_peaks)
+    )
+    selected = []
+    for candidate in candidates:
+        if not selected or candidate - selected[-1] >= max(5, int(round(spacing * 0.72))):
+            selected.append(candidate)
+        else:
+            previous = selected[-1]
+            # Priorizar el candidato con mayor soporte en la imagen completa.
+            if profile[candidate] > profile[previous]:
+                selected[-1] = candidate
+
+    peaks = np.asarray(selected, dtype=np.int32)
 
     if len(peaks) < 4:
         return None
 
-    # Quitar picos muy débiles respecto al perfil de vegetación.
-    profile_floor = float(
-        np.percentile(
-            profile,
-            32
-        )
-    )
-
+    # Quitar picos globalmente débiles solo si tampoco tienen
+    # respaldo multibanda. Así se conservan hileras parcialmente secas.
+    profile_floor = float(np.percentile(profile, 32))
     profile_span = max(
         1e-6,
-        float(
-            np.percentile(profile, 88)
-            -
-            profile_floor
-        )
+        float(np.percentile(profile, 88) - profile_floor)
     )
-
+    band_support_x = np.asarray(supported_band_peaks, dtype=np.float32)
     keep = []
-
     for p in peaks:
-        strength = (
-            float(profile[p])
-            -
-            profile_floor
-        ) / profile_span
+        strength = (float(profile[p]) - profile_floor) / profile_span
+        has_band_support = (
+            len(band_support_x) > 0
+            and float(np.min(np.abs(band_support_x - float(p)))) <= spacing * 0.40
+        )
+        if strength >= 0.10 or has_band_support:
+            keep.append(int(p))
 
-        if strength >= 0.10:
-            keep.append(
-                int(p)
-            )
-
-    peaks = np.asarray(
-        keep,
-        dtype=np.int32
-    )
-
+    peaks = np.asarray(keep, dtype=np.int32)
     if len(peaks) < 4:
         return None
 
@@ -1002,7 +1056,10 @@ def calcular_rejilla_global_surcos(
         "angle_deg": angle_deg,
         "M": M,
         "peaks": peaks,
-        "spacing": float(spacing)
+        "spacing": float(spacing),
+        "peak_count_global": int(len(global_peaks)),
+        "peak_count_multiband": int(len(supported_band_peaks)),
+        "peak_count_final": int(len(peaks)),
     }
 
 def asignar_track_a_rejilla(
