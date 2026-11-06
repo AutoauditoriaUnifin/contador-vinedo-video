@@ -1895,6 +1895,7 @@ def appsheet_submit_analysis(
 
     try:
         _, sheets, _ = _google_clients()
+        _ensure_sheet_and_headers(sheets, REQUEST_SHEET, REQUEST_HEADERS)
         row_number, row = _request_row(sheets, request_id)
         status = str(row.get(_normalize_header("Estado"), "") or "").strip().casefold()
         inventory_validated = (
@@ -2278,6 +2279,7 @@ def appsheet_process_analysis(
     drive = sheets = None
     try:
         drive, sheets, _ = _google_clients()
+        _ensure_sheet_and_headers(sheets, REQUEST_SHEET, REQUEST_HEADERS)
         row_number, row = _request_row(sheets, request_id)
 
         current_status = str(
