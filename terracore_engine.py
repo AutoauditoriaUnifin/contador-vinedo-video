@@ -3369,6 +3369,69 @@ def _ocv2_inventory_from_file(uploaded_file):
         },
     }
 
+
+def _ocv2_render_inventory_with_rows(pil_original, rows):
+    """Redibuja el Inventario con geometrías corregidas, usando el formato de Streamlit.
+
+    No vuelve a detectar surcos ni slots: solo representa las filas ya corregidas.
+    """
+    pil = pil_original.convert("RGB")
+    w, h = pil.size
+    band_h = max(46, int(round(h * 0.065)))
+    canvas = Image.new("RGB", (w, h + band_h), (91, 37, 46))
+    canvas.paste(pil, (0, band_h))
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default()
+    line_w = max(1, int(round(min(w, h) / 950)))
+
+    for row in rows or []:
+        rid = int(row.get("id", 0) or 0)
+        pts = _tg_norm_to_px(row.get("points_norm", []), w, h)
+        if len(pts) < 2:
+            continue
+
+        a, b = pts[0], pts[-1]
+        draw.line(
+            (a[0], a[1] + band_h, b[0], b[1] + band_h),
+            fill=(245, 245, 245),
+            width=line_w,
+        )
+
+        count = int(row.get("slot_count", 0) or 0)
+        vacant = set(_tg_clean_indices(row.get("vacant_indices", []), count))
+        positions = _ocv2_slot_positions(row, (w, h))
+        for idx_slot, point in enumerate(positions, 1):
+            x = float(point[0])
+            y = float(point[1] + band_h)
+            if idx_slot in vacant:
+                radius = 2.5
+                fill = (255, 145, 35)
+            else:
+                radius = 1.8
+                fill = (45, 190, 255)
+            draw.ellipse(
+                (x - radius, y - radius, x + radius, y + radius),
+                fill=fill,
+            )
+
+        label = f"{rid:02d}"
+        bbox = draw.textbbox((0, 0), label, font=font)
+        text_width = max(10, bbox[2] - bbox[0])
+        top = a if a[1] <= b[1] else b
+        tx = int(np.clip(top[0] - text_width / 2, 1, max(1, w - text_width - 2)))
+        ty = 5 if rid % 2 else 20
+        draw.text(
+            (tx, ty),
+            label,
+            fill=(255, 255, 255),
+            font=font,
+            stroke_width=2,
+            stroke_fill=(35, 20, 25),
+        )
+
+    return canvas
+
+
 def _ocv2_slot_patch_scores(bgr, center, direction, row_spacing, slot_pitch):
     """Mide verde y seco en un rectángulo orientado sin invadir el surco vecino."""
     h, w = bgr.shape[:2]

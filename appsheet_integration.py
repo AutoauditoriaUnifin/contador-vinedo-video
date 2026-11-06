@@ -31,6 +31,7 @@ from terracore_engine import (
     _ocv2_group_consecutive,
     _ocv2_inventory_from_file,
     _ocv2_polygon_for_group,
+    _ocv2_render_inventory_with_rows,
     _ocv2_slot_positions,
     _tc_quitar_nombre_motor_del_analisis,
     _tg_clean_indices,
@@ -62,6 +63,45 @@ REQUEST_HEADERS = [
     "TotalFotos",
     "ResumenResultado",
     "Error",
+    "ValidacionInventario",
+    "FechaInventario",
+    "FechaValidacionInventario",
+    "FechaInicioSalud",
+    "ResumenInventario",
+]
+
+INVENTORY_SHEET = "InventarioSurcos"
+INVENTORY_HEADERS = [
+    "RegistroID",
+    "SolicitudID",
+    "AnalisisID",
+    "ParcelaID",
+    "ParcelaNombre",
+    "FotoIndex",
+    "FotoNombre",
+    "FotoRuta",
+    "ImagenInventarioAppSheet",
+    "NumeroSurco",
+    "Slots",
+    "Ocupados",
+    "Vacios",
+    "VaciosIndices",
+    "Confianza",
+    "ConfianzaSurco",
+    "ConfianzaSlots",
+    "PuntoInicioX",
+    "PuntoInicioY",
+    "PuntoFinX",
+    "PuntoFinY",
+    "RowSpacingPx",
+    "SlotPitchPx",
+    "GeometriaJSON",
+    "ManualPosition",
+    "ManualInventory",
+    "EstadoInventario",
+    "FechaValidacion",
+    "Idioma",
+    "Fecha",
 ]
 
 SCOPES = [
@@ -488,6 +528,411 @@ def _append_rows_once(
     return result_positions
 
 
+
+def _json_safe(value: Any):
+    """Convierte valores NumPy/Python a tipos compatibles con JSON."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return _json_safe(value.item())
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(_json_safe(value), ensure_ascii=False, separators=(",", ":"))
+
+
+def _record_value(record: dict[str, Any], name: str, default: Any = "") -> Any:
+    return record.get(_normalize_header(name), default)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or str(value).strip() == "":
+            return int(default)
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return int(default)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or str(value).strip() == "":
+            return float(default)
+        result = float(value)
+        return result if np.isfinite(result) else float(default)
+    except (TypeError, ValueError, OverflowError):
+        return float(default)
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().casefold() in (
+        "1", "true", "yes", "si", "sí", "verdadero", "x"
+    )
+
+
+def _parse_vacant_indices(value: Any) -> list[int]:
+    if isinstance(value, (list, tuple, set)):
+        result = []
+        for item in value:
+            try:
+                result.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return result
+    text_value = str(value or "").strip()
+    if not text_value:
+        return []
+    return [int(item) for item in re.findall(r"\d+", text_value)]
+
+
+def _upsert_rows_by_key(
+    sheets,
+    sheet_name: str,
+    records: list[dict[str, Any]],
+    key_header: str,
+) -> list[int]:
+    """Inserta o actualiza un lote completo por clave con una sola escritura de actualización."""
+    if not records:
+        return []
+
+    required_headers = []
+    for record in records:
+        for header in record:
+            if header not in required_headers:
+                required_headers.append(header)
+
+    headers = _ensure_sheet_and_headers(sheets, sheet_name, required_headers)
+    _, existing_rows = _read_sheet(sheets, sheet_name)
+    index_map = {
+        _normalize_header(header): index
+        for index, header in enumerate(headers)
+        if str(header or "").strip()
+    }
+    key_index = index_map.get(_normalize_header(key_header))
+    if key_index is None:
+        raise RuntimeError(
+            f"No existe la columna clave '{key_header}' en '{sheet_name}'."
+        )
+
+    existing_positions = {}
+    for physical_row, row in enumerate(existing_rows, start=2):
+        value = row[key_index] if key_index < len(row) else ""
+        value = str(value or "").strip()
+        if value:
+            existing_positions.setdefault(value, physical_row)
+
+    update_data = []
+    append_records = []
+    result_positions = []
+    last_col = _column_letter(max(0, len(headers) - 1))
+
+    for record in records:
+        key_value = str(record.get(key_header, "") or "").strip()
+        physical_row = existing_positions.get(key_value) if key_value else None
+        if physical_row:
+            cache_index = physical_row - 2
+            merged = list(existing_rows[cache_index]) if cache_index < len(existing_rows) else []
+            while len(merged) < len(headers):
+                merged.append("")
+            for name, value in record.items():
+                column_index = index_map.get(_normalize_header(name))
+                if column_index is not None:
+                    merged[column_index] = value
+            update_data.append({
+                "range": (
+                    f"{_quote_sheet(sheet_name)}!A{physical_row}:"
+                    f"{last_col}{physical_row}"
+                ),
+                "values": [merged],
+            })
+            existing_rows[cache_index] = merged
+            result_positions.append(physical_row)
+        else:
+            append_records.append(record)
+            result_positions.append(0)
+
+    if update_data:
+        _execute_sheets_request(
+            sheets.spreadsheets().values().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID,
+                body={"valueInputOption": "RAW", "data": update_data},
+            )
+        )
+        entry = _sheet_cache_entry(sheets, sheet_name)
+        entry["rows"] = existing_rows
+        entry["loaded"] = True
+
+    if append_records:
+        appended_positions = _append_rows_once(
+            sheets,
+            sheet_name,
+            append_records,
+            key_header,
+        )
+        append_position_by_key = {}
+        for record, position in zip(append_records, appended_positions):
+            key_value = str(record.get(key_header, "") or "").strip()
+            append_position_by_key.setdefault(key_value, position)
+        for index, record in enumerate(records):
+            if result_positions[index] == 0:
+                key_value = str(record.get(key_header, "") or "").strip()
+                result_positions[index] = append_position_by_key.get(key_value, 0)
+
+    return result_positions
+
+
+def _inventory_record_values(
+    request_id: str,
+    historial_id: str,
+    parcela_id: str,
+    parcela_name: str,
+    photo_index: int,
+    source_path: str,
+    source_name: str,
+    inventory_path: str,
+    row: dict[str, Any],
+    idioma: str,
+    estado: str = "Pendiente",
+) -> dict[str, Any]:
+    row_id = int(row.get("id", 0) or 0)
+    slots = max(0, int(row.get("slot_count", 0) or 0))
+    vacant = _tg_clean_indices(row.get("vacant_indices", []), slots)
+    occupied = max(0, slots - len(vacant))
+    points = row.get("points_norm", []) or []
+    start = points[0] if len(points) >= 2 else ["", ""]
+    end = points[-1] if len(points) >= 2 else ["", ""]
+    row_confidence = round(
+        float(np.clip(row.get("confidence", 0.0) or 0.0, 0.0, 1.0)) * 100.0,
+        2,
+    )
+    slot_confidence = round(
+        float(np.clip(row.get("slot_confidence", 0.0) or 0.0, 0.0, 1.0)) * 100.0,
+        2,
+    )
+    return {
+        "RegistroID": _deterministic_id(
+            f"{historial_id}|inventario|{row_id}"
+        ),
+        "SolicitudID": request_id,
+        "AnalisisID": historial_id,
+        "ParcelaID": parcela_id,
+        "ParcelaNombre": parcela_name,
+        "FotoIndex": int(photo_index),
+        "FotoNombre": source_name,
+        "FotoRuta": source_path,
+        "ImagenInventarioAppSheet": inventory_path,
+        "NumeroSurco": f"{row_id:02d}",
+        "Slots": slots,
+        "Ocupados": occupied,
+        "Vacios": len(vacant),
+        "VaciosIndices": ",".join(str(index) for index in vacant),
+        "Confianza": slot_confidence,
+        "ConfianzaSurco": row_confidence,
+        "ConfianzaSlots": slot_confidence,
+        "PuntoInicioX": round(_safe_float(start[0], 0.0), 3) if start[0] != "" else "",
+        "PuntoInicioY": round(_safe_float(start[1], 0.0), 3) if start[1] != "" else "",
+        "PuntoFinX": round(_safe_float(end[0], 0.0), 3) if end[0] != "" else "",
+        "PuntoFinY": round(_safe_float(end[1], 0.0), 3) if end[1] != "" else "",
+        "RowSpacingPx": round(_safe_float(row.get("row_spacing_px", 0.0)), 3),
+        "SlotPitchPx": round(_safe_float(row.get("slot_pitch_px", 0.0)), 3),
+        "GeometriaJSON": _json_dumps(row),
+        "ManualPosition": bool(row.get("manual_position", False)),
+        "ManualInventory": bool(row.get("manual_inventory", False)),
+        "EstadoInventario": estado,
+        "FechaValidacion": _now_iso() if estado == "Validado" else "",
+        "Idioma": idioma,
+        "Fecha": _now_iso(),
+    }
+
+
+def _apply_inventory_record_edits(record: dict[str, Any]) -> dict[str, Any]:
+    """Replica la sincronización de la tabla editable de Streamlit sobre la geometría real."""
+    geometry_raw = _record_value(record, "GeometriaJSON", "")
+    try:
+        geometry = json.loads(geometry_raw) if isinstance(geometry_raw, str) else geometry_raw
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("GeometriaJSON no contiene una geometría válida.") from exc
+    if not isinstance(geometry, dict):
+        raise ValueError("Falta la geometría original del surco.")
+
+    row = dict(geometry)
+    original_points = row.get("points_norm", []) or []
+    if len(original_points) < 2:
+        raise ValueError("El surco no contiene dos extremos de geometría.")
+
+    row_id = _safe_int(_record_value(record, "NumeroSurco", row.get("id", 0)), 0)
+    if row_id <= 0:
+        raise ValueError("NumeroSurco debe ser mayor que cero.")
+
+    slots = _safe_int(_record_value(record, "Slots", row.get("slot_count", 0)), 0)
+    original_slots = _safe_int(geometry.get("slot_count", 0), 0)
+    original_vacant = _tg_clean_indices(
+        geometry.get("vacant_indices", []),
+        max(0, original_slots),
+    )
+    default_vacant_count = len(original_vacant)
+    vacant_count = _safe_int(
+        _record_value(record, "Vacios", default_vacant_count),
+        default_vacant_count,
+    )
+    occupied_count = _safe_int(
+        _record_value(
+            record,
+            "Ocupados",
+            max(0, slots - vacant_count),
+        ),
+        max(0, slots - vacant_count),
+    )
+
+    if slots < 0 or vacant_count < 0 or occupied_count < 0:
+        raise ValueError(f"Surco {row_id:02d}: Slots, Ocupados y Vacíos no pueden ser negativos.")
+    if slots != occupied_count + vacant_count:
+        raise ValueError(
+            f"Surco {row_id:02d}: Slots ({slots}) debe ser igual a "
+            f"Ocupados ({occupied_count}) + Vacíos ({vacant_count})."
+        )
+
+    indices_raw = _record_value(record, "VaciosIndices", "")
+    explicit_indices = _parse_vacant_indices(indices_raw)
+    # Si el texto sigue igual que el valor automático original, la edición
+    # corresponde a la tabla de conteos de Streamlit: ajustar índices existentes
+    # y completar desde el final cuando cambie la cantidad de Vacíos.
+    has_explicit_indices = (
+        bool(str(indices_raw or "").strip())
+        and explicit_indices != original_vacant
+    )
+
+    if has_explicit_indices:
+        if len(explicit_indices) != vacant_count:
+            raise ValueError(
+                f"Surco {row_id:02d}: VaciosIndices debe contener exactamente "
+                f"{vacant_count} número(s)."
+            )
+        if len(set(explicit_indices)) != len(explicit_indices):
+            raise ValueError(f"Surco {row_id:02d}: VaciosIndices contiene números duplicados.")
+        if any(index < 1 or index > slots for index in explicit_indices):
+            raise ValueError(
+                f"Surco {row_id:02d}: cada índice vacío debe estar entre 1 y {slots}."
+            )
+        vacant_indices = sorted(explicit_indices)
+    else:
+        vacant_indices = list(original_vacant)
+        vacant_indices = [index for index in vacant_indices if index <= slots][:vacant_count]
+        if len(vacant_indices) < vacant_count:
+            available = [
+                index for index in range(slots, 0, -1)
+                if index not in set(vacant_indices)
+            ]
+            vacant_indices.extend(available[:vacant_count - len(vacant_indices)])
+        vacant_indices = sorted(set(vacant_indices))[:vacant_count]
+
+    row["id"] = row_id
+    row["slot_count"] = int(slots)
+    row["vacant_indices"] = vacant_indices
+
+    endpoint_names = (
+        "PuntoInicioX", "PuntoInicioY", "PuntoFinX", "PuntoFinY"
+    )
+    endpoint_values = [_record_value(record, name, "") for name in endpoint_names]
+    endpoint_present = [str(value or "").strip() != "" for value in endpoint_values]
+    if any(endpoint_present) and not all(endpoint_present):
+        raise ValueError(
+            f"Surco {row_id:02d}: completa las cuatro coordenadas para mover o girar la línea."
+        )
+
+    original_start = [float(original_points[0][0]), float(original_points[0][1])]
+    original_end = [float(original_points[-1][0]), float(original_points[-1][1])]
+    if all(endpoint_present):
+        start_x, start_y, end_x, end_y = [
+            _safe_float(value, 0.0) for value in endpoint_values
+        ]
+        coords = (start_x, start_y, end_x, end_y)
+        if any(value < 0.0 or value > 1000.0 for value in coords):
+            raise ValueError(
+                f"Surco {row_id:02d}: las coordenadas deben estar entre 0 y 1000."
+            )
+        new_start = [start_x, start_y]
+        new_end = [end_x, end_y]
+        moved = any(
+            abs(new_value - old_value) > 0.01
+            for new_point, old_point in zip((new_start, new_end), (original_start, original_end))
+            for new_value, old_value in zip(new_point, old_point)
+        )
+        if moved:
+            point_count = max(2, len(original_points))
+            row["points_norm"] = [
+                [
+                    float(new_start[0] * (1.0 - t) + new_end[0] * t),
+                    float(new_start[1] * (1.0 - t) + new_end[1] * t),
+                ]
+                for t in np.linspace(0.0, 1.0, point_count)
+            ]
+            row["manual_position"] = True
+
+    row_spacing = _safe_float(
+        _record_value(record, "RowSpacingPx", row.get("row_spacing_px", 18.0)),
+        _safe_float(row.get("row_spacing_px", 18.0), 18.0),
+    )
+    slot_pitch = _safe_float(
+        _record_value(record, "SlotPitchPx", row.get("slot_pitch_px", 0.0)),
+        _safe_float(row.get("slot_pitch_px", 0.0), 0.0),
+    )
+    if row_spacing > 0:
+        row["row_spacing_px"] = row_spacing
+    if slot_pitch >= 0:
+        row["slot_pitch_px"] = slot_pitch
+
+    row["manual_inventory"] = bool(
+        row.get("manual_inventory", False)
+        or slots != _safe_int(geometry.get("slot_count", 0), 0)
+        or vacant_indices != _tg_clean_indices(
+            geometry.get("vacant_indices", []),
+            _safe_int(geometry.get("slot_count", 0), 0),
+        )
+    )
+    return row
+
+
+def _inventory_records_for_request(sheets, request_id: str) -> list[dict[str, Any]]:
+    headers, rows = _read_sheet(sheets, INVENTORY_SHEET)
+    if not headers:
+        raise RuntimeError(
+            f"No existe la pestaña {INVENTORY_SHEET}. Ejecuta primero la etapa de Inventario."
+        )
+    result = []
+    for row in rows:
+        data = _row_as_dict(headers, row)
+        if str(data.get(_normalize_header("SolicitudID"), "") or "").strip() == request_id:
+            result.append(data)
+    result.sort(
+        key=lambda item: (
+            _safe_int(item.get(_normalize_header("FotoIndex"), 0), 0),
+            _safe_int(item.get(_normalize_header("NumeroSurco"), 0), 0),
+        )
+    )
+    return result
+
+
+def _inventory_rows_for_photo(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = [_apply_inventory_record_edits(record) for record in records]
+    rows.sort(key=lambda item: int(item.get("id", 0) or 0))
+    ids = [int(row.get("id", 0) or 0) for row in rows]
+    if len(ids) != len(set(ids)):
+        raise ValueError("El Inventario contiene números de surco duplicados para una fotografía.")
+    if not rows:
+        raise ValueError("No hay surcos de Inventario para esta fotografía.")
+    return rows
+
+
 def _append_row_once(
     sheets,
     sheet_name: str,
@@ -778,6 +1223,47 @@ def _upload_artifact(
     return file_id, f"{folder_name}/{filename}"
 
 
+
+def _upload_artifact_replace(
+    drive,
+    content: bytes,
+    filename: str,
+    mime_type: str,
+    folder_name: str,
+) -> tuple[str, str]:
+    """Sube o reemplaza el contenido de un artefacto sin cambiar su FileID."""
+    folder = _folder_id(drive, folder_name)
+    escaped_name = _drive_escape(filename)
+    query = (
+        f"name = '{escaped_name}' and '{folder}' in parents "
+        "and trashed = false"
+    )
+    matches = _drive_list(drive, query)
+    media = MediaIoBaseUpload(
+        io.BytesIO(content),
+        mimetype=mime_type or "application/octet-stream",
+        resumable=True,
+    )
+    if matches:
+        file_id = matches[0]["id"]
+        drive.files().update(
+            fileId=file_id,
+            media_body=media,
+            fields="id,name,webViewLink",
+            supportsAllDrives=True,
+        ).execute()
+    else:
+        created = drive.files().create(
+            body={"name": filename, "parents": [folder]},
+            media_body=media,
+            fields="id,name,webViewLink",
+            supportsAllDrives=True,
+        ).execute()
+        file_id = created["id"]
+    return file_id, f"{folder_name}/{filename}"
+
+
+
 def _drive_url(file_id: str) -> str:
     return f"https://drive.google.com/file/d/{file_id}/view"
 
@@ -914,6 +1400,7 @@ def _append_analysis_results(
     idioma: str,
     fecha_captura: str,
     surco_id: str,
+    inventory_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     uploaded = UploadedBytes(source_name, source_mime, raw)
 
@@ -921,10 +1408,17 @@ def _append_analysis_results(
     os.environ["TERRACORE_LANGUAGE"] = (
         "FR" if str(idioma or "ES").strip().upper() == "FR" else "ES"
     )
-    inventory = _ocv2_inventory_from_file(uploaded)
-    backend_result = _ocv2_analyze_health(uploaded, inventory["rows"])
+    # En la segunda fase recibimos el Inventario validado por el usuario.
+    # No volvemos a detectar ni sustituimos sus correcciones manuales.
+    inventory = (
+        inventory_override
+        if inventory_override is not None
+        else _ocv2_inventory_from_file(uploaded)
+    )
     rows = inventory.get("rows", []) or []
-    table = inventory.get("table")
+    if not rows:
+        raise RuntimeError("No hay geometría de Inventario confirmada para esta fotografía.")
+    backend_result = _ocv2_analyze_health(uploaded, rows)
 
     total_slots = sum(int(row.get("slot_count", 0) or 0) for row in rows)
     vacant_slots = sum(
@@ -972,7 +1466,7 @@ def _append_analysis_results(
     processed_bytes = _image_to_png_bytes(backend_result.get("annotated"))
     polygon_bytes = _image_to_png_bytes(backend_result.get("polygon_image"))
 
-    inventory_id, inventory_path = _upload_artifact(
+    inventory_id, inventory_path = _upload_artifact_replace(
         drive, inventory_bytes, inventory_name, "image/png", "Inventarios"
     )
     processed_id, processed_path = _upload_artifact(
@@ -1112,31 +1606,27 @@ def _append_analysis_results(
             parcela_id,
         )
 
-    # Guardar todos los surcos en una sola escritura por lote.
-    inventory_records = []
-    for row in rows:
-        row_number = int(row.get("id", 0) or 0)
-        slots = int(row.get("slot_count", 0) or 0)
-        vacant = len(_tg_clean_indices(row.get("vacant_indices", []), slots))
-        occupied = max(0, slots - vacant)
-        confidence_row = round(float(row.get("slot_confidence", 0.0) or 0.0) * 100.0, 2)
-        record_id = _deterministic_id(f"{historial_id}|inventario|{row_number}")
-        inventory_records.append(
-            {
-                "RegistroID": record_id,
-                "AnalisisID": historial_id,
-                "ParcelaID": parcela_id,
-                "NumeroSurco": str(row_number),
-                "Slots": slots,
-                "Ocupados": occupied,
-                "Vacios": vacant,
-                "Confianza": confidence_row,
-                "Idioma": idioma,
-            }
+    # Actualizar el mismo lote que el usuario corrigió en AppSheet.
+    # La clave RegistroID se conserva entre Inventario y análisis de Salud.
+    inventory_records = [
+        _inventory_record_values(
+            request_id=request_id,
+            historial_id=historial_id,
+            parcela_id=parcela_id,
+            parcela_name=parcela_name,
+            photo_index=photo_index,
+            source_path=source_path,
+            source_name=source_name,
+            inventory_path=inventory_path,
+            row=row,
+            idioma=idioma,
+            estado="Validado",
         )
-    _append_rows_once(
+        for row in rows
+    ]
+    _upsert_rows_by_key(
         sheets,
-        "InventarioSurcos",
+        INVENTORY_SHEET,
         inventory_records,
         "RegistroID",
     )
@@ -1418,13 +1908,20 @@ def appsheet_setup(authorization: str | None = Header(default=None)):
             REQUEST_SHEET,
             REQUEST_HEADERS,
         )
+        inventory_headers = _ensure_sheet_and_headers(
+            sheets,
+            INVENTORY_SHEET,
+            INVENTORY_HEADERS,
+        )
         return {
             "ok": True,
             "pestana": REQUEST_SHEET,
             "encabezados": headers,
+            "pestana_inventario": INVENTORY_SHEET,
+            "encabezados_inventario": inventory_headers,
             "mensaje": (
-                "La pestaña quedó preparada en el mismo Google Sheets. "
-                "Ahora agrégala como tabla en AppSheet."
+                "Las pestañas de solicitudes e inventario quedaron preparadas "
+                "en el mismo Google Sheets. Agrega o regenera ambas tablas en AppSheet."
             ),
         }
     except HTTPException:
@@ -1445,8 +1942,13 @@ def appsheet_submit_analysis(
 
     try:
         _, sheets, _ = _google_clients()
+        _ensure_sheet_and_headers(sheets, REQUEST_SHEET, REQUEST_HEADERS)
         row_number, row = _request_row(sheets, request_id)
         status = str(row.get(_normalize_header("Estado"), "") or "").strip().casefold()
+        inventory_validated = (
+            _truthy(row.get(_normalize_header("ValidacionInventario"), ""))
+            or status in ("validado", "validada")
+        )
 
         if status in ("completado", "completed"):
             return {
@@ -1455,12 +1957,24 @@ def appsheet_submit_analysis(
                 "request_id": request_id,
                 "mensaje": "Esta solicitud ya fue procesada.",
             }
-        if status in ("en cola", "procesando"):
+        if status in (
+            "en cola",
+            "procesando",
+            "procesandoinventario",
+            "procesandosalud",
+        ):
             return {
                 "ok": True,
                 "status": status.title(),
                 "request_id": request_id,
                 "mensaje": "La solicitud ya está en proceso.",
+            }
+        if status in ("pendientevalidacion", "pendiente de validacion") and not inventory_validated:
+            return {
+                "ok": True,
+                "status": "PendienteValidacion",
+                "request_id": request_id,
+                "mensaje": "Confirma el Inventario en AppSheet antes de continuar con Salud.",
             }
 
         photo_paths = _photo_paths(row)
@@ -1493,72 +2007,232 @@ def appsheet_submit_analysis(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/analysis/process")
-def appsheet_process_analysis(
-    payload: dict[str, Any],
-    x_worker_token: str | None = Header(default=None),
-):
-    _verify_token(x_worker_token=x_worker_token)
-    request_id = str(payload.get("request_id") or "").strip()
-    if not request_id:
-        raise HTTPException(status_code=400, detail="Falta request_id.")
 
-    drive = sheets = None
-    try:
-        drive, sheets, _ = _google_clients()
-        row_number, row = _request_row(sheets, request_id)
+def _process_inventory_stage(
+    drive,
+    sheets,
+    request_id: str,
+    row_number: int,
+    photo_paths: list[str],
+    parcela_id: str,
+    parcela_name: str,
+    idioma: str,
+    fecha_captura: str,
+) -> dict[str, Any]:
+    """Fase 1: ejecuta el inventario original y lo deja editable en AppSheet."""
+    os.environ["TERRACORE_LANGUAGE"] = (
+        "FR" if str(idioma or "ES").strip().upper() == "FR" else "ES"
+    )
+    inventory_records = []
+    photo_summaries = []
+    errors = []
+    parcel_safe = _safe_name(parcela_name or parcela_id or "Parcela")
+    request_safe = _safe_name(request_id)
 
-        current_status = str(row.get(_normalize_header("Estado"), "") or "").strip().casefold()
-        if current_status in ("completado", "completed"):
-            return {
-                "ok": True,
-                "status": "Completado",
-                "request_id": request_id,
-                "mensaje": "La solicitud ya estaba terminada.",
-            }
+    for photo_index, source_path in enumerate(photo_paths, 1):
+        try:
+            raw, source_name, source_mime = _resolve_appsheet_file(drive, source_path)
+            uploaded = UploadedBytes(source_name, source_mime, raw)
+            # MISMA función de inventario que utiliza Streamlit.
+            inventory = _ocv2_inventory_from_file(uploaded)
+            rows = inventory.get("rows", []) or []
+            if not rows:
+                raise RuntimeError("OpenCV no generó surcos para esta fotografía.")
 
-        photo_paths = _photo_paths(row)
-        if not photo_paths:
-            raise ValueError("No hay fotografías registradas en la solicitud.")
-
-        parcela_id = str(row.get(_normalize_header("ParcelaID"), "") or "").strip()
-        if not parcela_id:
-            raise ValueError("Selecciona una parcela en la columna ParcelaID.")
-
-        parcela_name = str(row.get(_normalize_header("ParcelaNombre"), "") or "").strip()
-        if not parcela_name:
-            _, parcel_row, _ = _find_row_by_key(
-                sheets, "Parcelas", "ID", parcela_id
+            historial_id = _analysis_id_for_request(sheets, request_id, photo_index)
+            inventory_name = (
+                f"{parcel_safe}_{request_safe}_{historial_id}_F{photo_index:02d}_"
+                "inventario_pendiente.png"
             )
-            if parcel_row:
-                parcela_name = str(
-                    parcel_row.get(_normalize_header("NombreParcela"), "") or ""
-                ).strip()
-        if not parcela_name:
-            parcela_name = parcela_id
+            inventory_bytes = _image_to_png_bytes(inventory.get("image"))
+            if not inventory_bytes:
+                raise RuntimeError("No se pudo generar la imagen del Inventario.")
+            _, inventory_path = _upload_artifact(
+                drive,
+                inventory_bytes,
+                inventory_name,
+                "image/png",
+                "Inventarios",
+            )
 
-        idioma = str(row.get(_normalize_header("Idioma"), "ES") or "ES").strip().upper()
-        idioma = "FR" if idioma == "FR" else "ES"
-        fecha_captura = str(row.get(_normalize_header("FechaSolicitud"), "") or "").strip()
-        surco_id = str(row.get(_normalize_header("SurcoID"), "") or "").strip()
+            for inventory_row in rows:
+                inventory_records.append(
+                    _inventory_record_values(
+                        request_id=request_id,
+                        historial_id=historial_id,
+                        parcela_id=parcela_id,
+                        parcela_name=parcela_name,
+                        photo_index=photo_index,
+                        source_path=source_path,
+                        source_name=source_name,
+                        inventory_path=inventory_path,
+                        row=inventory_row,
+                        idioma=idioma,
+                        estado="Pendiente",
+                    )
+                )
 
-        _update_row_fields(
-            sheets,
-            REQUEST_SHEET,
-            row_number,
-            {
-                "Estado": "Procesando",
-                "FechaInicio": _now_iso(),
-                "FechaFin": "",
-                "Error": "",
-            },
+            total_slots = sum(
+                int(item.get("slot_count", 0) or 0) for item in rows
+            )
+            vacant_slots = sum(
+                len(
+                    _tg_clean_indices(
+                        item.get("vacant_indices", []),
+                        int(item.get("slot_count", 0) or 0),
+                    )
+                )
+                for item in rows
+            )
+            photo_summaries.append(
+                {
+                    "foto_index": photo_index,
+                    "foto": source_name,
+                    "ruta": source_path,
+                    "analisis_id": historial_id,
+                    "surcos": len(rows),
+                    "slots": total_slots,
+                    "ocupados": max(0, total_slots - vacant_slots),
+                    "vacios": vacant_slots,
+                    "confianza_inventario": round(
+                        float(inventory.get("confidence", 0.0) or 0.0) * 100.0,
+                        2,
+                    ),
+                    "imagen_inventario": inventory_path,
+                    "estado": "Pendiente de validación",
+                }
+            )
+        except Exception as exc:
+            errors.append(
+                {
+                    "foto_index": photo_index,
+                    "foto": str(source_path),
+                    "error": str(exc)[:1000],
+                }
+            )
+
+    if not inventory_records:
+        detail = " | ".join(item["error"] for item in errors)
+        raise RuntimeError(
+            detail or "No se pudo generar el Inventario de ninguna fotografía."
         )
 
-        history_ids = _parse_image_list(row.get(_normalize_header("HistorialIDs"), ""))
-        summaries = []
+    # Un solo lote por pestaña: conserva las claves y evita duplicados en reintentos.
+    _upsert_rows_by_key(
+        sheets,
+        INVENTORY_SHEET,
+        inventory_records,
+        "RegistroID",
+    )
 
-        for photo_index, source_path in enumerate(photo_paths, 1):
+    now = _now_iso()
+    inventory_summary = {
+        "fotos": photo_summaries,
+        "errores": errors,
+        "instrucciones": (
+            "Revisa los surcos de cada fotografía en InventarioSurcos. "
+            "Corrige Slots, Ocupados, Vacios, VaciosIndices y, si hace falta, "
+            "las cuatro coordenadas de los extremos. Confirma solo cuando "
+            "Slots = Ocupados + Vacios en todos los surcos."
+        ),
+    }
+    _update_row_fields(
+        sheets,
+        REQUEST_SHEET,
+        row_number,
+        {
+            "Estado": "PendienteValidacion",
+            "FechaInventario": now,
+            "FechaFin": "",
+            "TotalFotos": len(photo_summaries),
+            "ResumenInventario": _json_dumps(inventory_summary),
+            "ValidacionInventario": "Pendiente",
+            "Error": "",
+        },
+    )
+
+    return {
+        "ok": True,
+        "status": "PendienteValidacion",
+        "request_id": request_id,
+        "total_fotos": len(photo_summaries),
+        "total_surcos": len(inventory_records),
+        "inventario": inventory_summary,
+        "mensaje": (
+            "Inventario generado. Revisa y corrige los registros de InventarioSurcos "
+            "en AppSheet y después confirma la validación."
+        ),
+    }
+
+
+def _process_health_stage(
+    drive,
+    sheets,
+    request_id: str,
+    row_number: int,
+    row: dict[str, Any],
+    photo_paths: list[str],
+    parcela_id: str,
+    parcela_name: str,
+    idioma: str,
+    fecha_captura: str,
+    surco_id: str,
+) -> dict[str, Any]:
+    """Fase 2: analiza Salud únicamente con el Inventario editado y confirmado."""
+    os.environ["TERRACORE_LANGUAGE"] = (
+        "FR" if str(idioma or "ES").strip().upper() == "FR" else "ES"
+    )
+    inventory_records = _inventory_records_for_request(sheets, request_id)
+    records_by_photo: dict[int, list[dict[str, Any]]] = {}
+    for record in inventory_records:
+        photo_index = _safe_int(
+            record.get(_normalize_header("FotoIndex"), 0),
+            0,
+        )
+        if photo_index > 0:
+            records_by_photo.setdefault(photo_index, []).append(record)
+
+    history_ids = _parse_image_list(
+        row.get(_normalize_header("HistorialIDs"), "")
+    )
+    summaries = []
+    errors = []
+
+    for photo_index, source_path in enumerate(photo_paths, 1):
+        source_name = str(source_path)
+        photo_records = records_by_photo.get(photo_index, [])
+        if not photo_records:
+            errors.append(
+                f"Fotografía {photo_index}: no hay Inventario validado en {INVENTORY_SHEET}."
+            )
+            continue
+
+        try:
+            # Se aplican las correcciones guardadas en las columnas editables.
+            rows = _inventory_rows_for_photo(photo_records)
             raw, source_name, source_mime = _resolve_appsheet_file(drive, source_path)
+            uploaded = UploadedBytes(source_name, source_mime, raw)
+
+            # Streamlit utiliza la fotografía original para volver a dibujar las
+            # líneas movidas. Aquí se hace lo mismo sin volver a ejecutar detección.
+            original_pil = Image.open(io.BytesIO(raw)).convert("RGB")
+            inventory_image = _ocv2_render_inventory_with_rows(original_pil, rows)
+            inventory_confidence = (
+                float(np.mean([
+                    float(item.get("slot_confidence", 0.0) or 0.0)
+                    for item in rows
+                ]))
+                if rows else 0.0
+            )
+            inventory_override = {
+                "rows": rows,
+                "image": inventory_image,
+                "count": len(rows),
+                "confidence": inventory_confidence,
+            }
+
+            # MISMA función de Salud que utiliza Streamlit:
+            # _tc_analyze_health_openai -> _ocv2_analyze_health.
             summary = _append_analysis_results(
                 drive=drive,
                 sheets=sheets,
@@ -1573,6 +2247,7 @@ def appsheet_process_analysis(
                 idioma=idioma,
                 fecha_captura=fecha_captura,
                 surco_id=surco_id,
+                inventory_override=inventory_override,
             )
             if summary["historial_id"] not in history_ids:
                 history_ids.append(summary["historial_id"])
@@ -1583,47 +2258,209 @@ def appsheet_process_analysis(
                 REQUEST_SHEET,
                 row_number,
                 {
-                    "HistorialIDs": json.dumps(history_ids, ensure_ascii=False),
+                    "HistorialIDs": _json_dumps(history_ids),
                     "TotalFotos": len(history_ids),
-                    "ResumenResultado": json.dumps(summaries, ensure_ascii=False),
+                    "ResumenResultado": _json_dumps(summaries),
                 },
             )
+        except Exception as exc:
+            errors.append(f"{source_name}: {exc}")
 
-        video_evidence_rows = _save_video_evidence(
-            sheets=sheets,
-            request_id=request_id,
-            history_ids=history_ids,
-            parcela_name=parcela_name,
-            idioma=idioma,
-            video_path=str(row.get(_normalize_header("Video"), "") or "").strip(),
-            simulation_video_path=str(
-                row.get(_normalize_header("Video simulación"), "") or ""
-            ).strip(),
+    if not summaries:
+        raise RuntimeError(
+            "No se pudo completar el análisis de Salud con el Inventario validado. "
+            + " | ".join(errors)
         )
+
+    video_evidence_rows = _save_video_evidence(
+        sheets=sheets,
+        request_id=request_id,
+        history_ids=history_ids,
+        parcela_name=parcela_name,
+        idioma=idioma,
+        video_path=str(row.get(_normalize_header("Video"), "") or "").strip(),
+        simulation_video_path=str(
+            row.get(_normalize_header("Video simulación"), "") or ""
+        ).strip(),
+    )
+
+    now = _now_iso()
+    _update_row_fields(
+        sheets,
+        REQUEST_SHEET,
+        row_number,
+        {
+            "Estado": "Completado",
+            "FechaValidacionInventario": now,
+            "FechaFin": now,
+            "ValidacionInventario": "Validado",
+            "HistorialIDs": _json_dumps(history_ids),
+            "TotalFotos": len(history_ids),
+            "ResumenResultado": _json_dumps(summaries),
+            "Error": "",
+        },
+    )
+
+    return {
+        "ok": True,
+        "status": "Completado",
+        "request_id": request_id,
+        "historial_ids": history_ids,
+        "total_fotos": len(history_ids),
+        "filas_evidencia_video": video_evidence_rows,
+        "resultados": summaries,
+        "advertencias": errors,
+    }
+
+
+@router.post("/analysis/process")
+def appsheet_process_analysis(
+    payload: dict[str, Any],
+    x_worker_token: str | None = Header(default=None),
+):
+    _verify_token(x_worker_token=x_worker_token)
+    request_id = str(payload.get("request_id") or "").strip()
+    if not request_id:
+        raise HTTPException(status_code=400, detail="Falta request_id.")
+
+    drive = sheets = None
+    try:
+        drive, sheets, _ = _google_clients()
+        _ensure_sheet_and_headers(sheets, REQUEST_SHEET, REQUEST_HEADERS)
+        row_number, row = _request_row(sheets, request_id)
+
+        current_status = str(
+            row.get(_normalize_header("Estado"), "") or ""
+        ).strip().casefold()
+        validation_value = row.get(
+            _normalize_header("ValidacionInventario"),
+            "",
+        )
+        inventory_validated = (
+            _truthy(validation_value)
+            or current_status in ("validado", "validada")
+        )
+
+        if current_status in ("completado", "completed"):
+            return {
+                "ok": True,
+                "status": "Completado",
+                "request_id": request_id,
+                "mensaje": "La solicitud ya estaba terminada.",
+            }
+
+        if current_status in (
+            "procesando",
+            "procesandoinventario",
+            "procesandosalud",
+        ):
+            return {
+                "ok": True,
+                "status": current_status,
+                "request_id": request_id,
+                "mensaje": "La solicitud ya está en proceso.",
+            }
+
+        if (
+            current_status in ("pendientevalidacion", "pendiente de validacion")
+            and not inventory_validated
+        ):
+            return {
+                "ok": True,
+                "status": "PendienteValidacion",
+                "request_id": request_id,
+                "mensaje": (
+                    "El Inventario está esperando revisión y confirmación en AppSheet."
+                ),
+            }
+
+        photo_paths = _photo_paths(row)
+        if not photo_paths:
+            raise ValueError("No hay fotografías registradas en la solicitud.")
+
+        parcela_id = str(
+            row.get(_normalize_header("ParcelaID"), "") or ""
+        ).strip()
+        if not parcela_id:
+            raise ValueError("Selecciona una parcela en la columna ParcelaID.")
+
+        parcela_name = str(
+            row.get(_normalize_header("ParcelaNombre"), "") or ""
+        ).strip()
+        if not parcela_name:
+            _, parcel_row, _ = _find_row_by_key(
+                sheets,
+                "Parcelas",
+                "ID",
+                parcela_id,
+            )
+            if parcel_row:
+                parcela_name = str(
+                    parcel_row.get(_normalize_header("NombreParcela"), "") or ""
+                ).strip()
+        if not parcela_name:
+            parcela_name = parcela_id
+
+        idioma = str(
+            row.get(_normalize_header("Idioma"), "ES") or "ES"
+        ).strip().upper()
+        idioma = "FR" if idioma == "FR" else "ES"
+        fecha_captura = str(
+            row.get(_normalize_header("FechaSolicitud"), "") or ""
+        ).strip()
+        surco_id = str(
+            row.get(_normalize_header("SurcoID"), "") or ""
+        ).strip()
+
+        if inventory_validated:
+            _update_row_fields(
+                sheets,
+                REQUEST_SHEET,
+                row_number,
+                {
+                    "Estado": "ProcesandoSalud",
+                    "FechaInicioSalud": _now_iso(),
+                    "FechaFin": "",
+                    "Error": "",
+                },
+            )
+            return _process_health_stage(
+                drive=drive,
+                sheets=sheets,
+                request_id=request_id,
+                row_number=row_number,
+                row=row,
+                photo_paths=photo_paths,
+                parcela_id=parcela_id,
+                parcela_name=parcela_name,
+                idioma=idioma,
+                fecha_captura=fecha_captura,
+                surco_id=surco_id,
+            )
 
         _update_row_fields(
             sheets,
             REQUEST_SHEET,
             row_number,
             {
-                "Estado": "Completado",
-                "FechaFin": _now_iso(),
-                "HistorialIDs": json.dumps(history_ids, ensure_ascii=False),
-                "TotalFotos": len(history_ids),
-                "ResumenResultado": json.dumps(summaries, ensure_ascii=False),
+                "Estado": "ProcesandoInventario",
+                "FechaInicio": _now_iso(),
+                "FechaFin": "",
+                "ValidacionInventario": "Pendiente",
                 "Error": "",
             },
         )
-
-        return {
-            "ok": True,
-            "status": "Completado",
-            "request_id": request_id,
-            "historial_ids": history_ids,
-            "total_fotos": len(history_ids),
-            "filas_evidencia_video": video_evidence_rows,
-            "resultados": summaries,
-        }
+        return _process_inventory_stage(
+            drive=drive,
+            sheets=sheets,
+            request_id=request_id,
+            row_number=row_number,
+            photo_paths=photo_paths,
+            parcela_id=parcela_id,
+            parcela_name=parcela_name,
+            idioma=idioma,
+            fecha_captura=fecha_captura,
+        )
 
     except HTTPException:
         raise
@@ -1644,8 +2481,7 @@ def appsheet_process_analysis(
         except Exception:
             pass
 
-        # Se responde 200 para no repetir automáticamente una solicitud
-        # que requiere corregir datos, permisos o una fotografía.
+        # No se repite automáticamente: el usuario corrige el dato y vuelve a activar el Bot.
         return {
             "ok": False,
             "status": "Error",

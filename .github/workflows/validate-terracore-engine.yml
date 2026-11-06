@@ -9,6 +9,14 @@ on:
       - "appsheet_integration.py"
       - "requirements_worker.txt"
       - ".github/workflows/validate-terracore-engine.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "terracore_engine.py"
+      - "appsheet_integration.py"
+      - "requirements_worker.txt"
+      - ".github/workflows/validate-terracore-engine.yml"
 
 permissions:
   contents: read
@@ -42,7 +50,12 @@ jobs:
           import os
           import terracore_engine
           import appsheet_integration as integration
-          from appsheet_integration import appsheet_process_analysis
+          from appsheet_integration import (
+              _apply_inventory_record_edits,
+              appsheet_process_analysis,
+          )
+          from PIL import Image
+          import json
 
           class FakeRequest:
               def __init__(self, result):
@@ -150,7 +163,58 @@ jobs:
           assert terracore_engine.tr("Español", "Français") == "Français"
 
           assert callable(appsheet_process_analysis)
+
+          # La validación de AppSheet debe conservar la geometría original
+          # y aplicar los extremos/conteos corregidos antes del análisis de Salud.
+          geometry = {
+              "id": 1,
+              "points_norm": [[100.0, 100.0], [100.0, 260.0], [100.0, 420.0],
+                              [100.0, 580.0], [100.0, 740.0], [100.0, 900.0]],
+              "slot_count": 4,
+              "vacant_indices": [2],
+              "row_spacing_px": 18.0,
+              "slot_pitch_px": 10.0,
+              "confidence": 0.8,
+              "slot_confidence": 0.7,
+          }
+          edited_record = {
+              "geometriajson": json.dumps(geometry),
+              "numerosurco": "01",
+              "slots": "4",
+              "ocupados": "3",
+              "vacios": "1",
+              "vaciosindices": "3",
+              "puntoiniciox": "120",
+              "puntoinicioy": "100",
+              "puntofinx": "120",
+              "puntofiny": "900",
+          }
+          edited_row = _apply_inventory_record_edits(edited_record)
+          assert edited_row["id"] == 1
+          assert edited_row["slot_count"] == 4
+          assert edited_row["vacant_indices"] == [3]
+          assert edited_row["manual_position"] is True
+          assert edited_row["points_norm"][0] == [120.0, 100.0]
+          assert edited_row["points_norm"][-1] == [120.0, 900.0]
+
+          invalid_record = dict(edited_record)
+          invalid_record["ocupados"] = "2"
+          try:
+              _apply_inventory_record_edits(invalid_record)
+          except ValueError:
+              pass
+          else:
+              raise AssertionError("Se aceptó un inventario donde Slots != Ocupados + Vacíos.")
+
+          rendered = terracore_engine._ocv2_render_inventory_with_rows(
+              Image.new("RGB", (100, 80), (80, 100, 80)),
+              [edited_row],
+          )
+          assert rendered.size == (100, 126)
+
           print("OK: motor TerraCore e integración AppSheet importan correctamente.")
           print("OK: funciones requeridas y selección ES/FR verificadas.")
           print("OK: 100 zonas se guardan en una sola escritura y no se duplican.")
+          print("OK: correcciones manuales de geometría y validación de inventario verificadas.")
+          print("OK: render del Inventario corregido verificado.")
           PY
