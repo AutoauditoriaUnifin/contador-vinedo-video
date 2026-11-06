@@ -1908,13 +1908,20 @@ def appsheet_setup(authorization: str | None = Header(default=None)):
             REQUEST_SHEET,
             REQUEST_HEADERS,
         )
+        inventory_headers = _ensure_sheet_and_headers(
+            sheets,
+            INVENTORY_SHEET,
+            INVENTORY_HEADERS,
+        )
         return {
             "ok": True,
             "pestana": REQUEST_SHEET,
             "encabezados": headers,
+            "pestana_inventario": INVENTORY_SHEET,
+            "encabezados_inventario": inventory_headers,
             "mensaje": (
-                "La pestaña quedó preparada en el mismo Google Sheets. "
-                "Ahora agrégala como tabla en AppSheet."
+                "Las pestañas de solicitudes e inventario quedaron preparadas "
+                "en el mismo Google Sheets. Agrega o regenera ambas tablas en AppSheet."
             ),
         }
     except HTTPException:
