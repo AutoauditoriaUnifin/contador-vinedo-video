@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - integracion-appsheet
+      - homologacion-streamlit-appsheet
     paths:
       - "backend_api.py"
       - "appsheet_integration.py"
