@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
+import terracore_engine as tc_engine
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks, savgol_filter
 from scipy.interpolate import UnivariateSpline
@@ -13219,7 +13220,8 @@ with main_col:
 
             for idx_img, up in enumerate(uploaded_images, 1):
                 try:
-                    inv_img = _ocv2_inventory_from_file(up)
+                    # App Streamlit y AppSheet usan el mismo motor compartido.
+                    inv_img = tc_engine._ocv2_inventory_from_file(up)
                     inventarios_por_imagen[up.name] = inv_img
 
                     score = (
@@ -13772,7 +13774,8 @@ if st.session_state.tc_inventario_procesado:
                             )
 
                             # MISMO motor de líneas rectas / slots / verde-rojo / polígonos.
-                            backend_result = _tc_analyze_health_openai(
+                            # Salud usa el mismo motor compartido que el worker de AppSheet.
+                            backend_result = tc_engine._ocv2_analyze_health(
                                 uploaded_image,
                                 rows_ai
                             )
