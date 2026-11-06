@@ -95,19 +95,21 @@ No agregues estos valores a archivos Python, YAML, Markdown ni al código de App
 | `Video` | File | Video principal opcional |
 | `Video simulación` | File | Video de simulación opcional |
 | `SurcoID` | Text | Opcional |
-| `Estado` | Enum | Pendiente, En cola, Procesando, Completado, Error; inicial: `"Pendiente"` |
-| `FechaInicio`, `FechaFin` | DateTime | No editables |
-| `HistorialIDs`, `TotalFotos`, `ResumenResultado`, `Error` | LongText / Number | No editables |
+| `Estado` | Enum | Pendiente, En cola, ProcesandoInventario, PendienteValidacion, ProcesandoSalud, Completado, Error; inicial: `"Pendiente"` |
+| `ValidacionInventario` | Enum | Pendiente / Validado; inicial: `"Pendiente"` |
+| `FechaInicio`, `FechaInventario`, `FechaValidacionInventario`, `FechaInicioSalud`, `FechaFin` | DateTime | No editables |
+| `HistorialIDs`, `TotalFotos`, `ResumenResultado`, `ResumenInventario`, `Error` | LongText / Number | No editables |
 
 La solicitud debe tener una parcela y al menos una foto. Los videos son opcionales.
 
-## 7. Crear el Bot de AppSheet
+## 7. Crear los Bots y botones de AppSheet
+
+### Bot 1 — Generar Inventario
 
 1. Ve a **Automation → Bots → New Bot**.
 2. Evento: **Data change → Adds only** en `SolicitudesAnalisis`.
-3. Condición del evento: `[Estado] = "Pendiente"`.
-4. Agrega un paso **Call a webhook**.
-5. Configura:
+3. Condición: `[Estado] = "Pendiente"`.
+4. Agrega un paso **Call a webhook**:
    - Method: `POST`
    - URL: la URL `/exec` de Apps Script
    - Content type: `application/json`
@@ -117,21 +119,47 @@ La solicitud debe tener una parcela y al menos una foto. Los videos son opcional
 {
   "action": "trigger",
   "request_id": "<<[SolicitudID]>>",
-  "secret": "PEGA_AQUI_EL_MISMO_SECRETO_COMPARTIDO"
+  "secret": "EL_MISMO_SECRETO_COMPARTIDO"
 }
 ```
 
-Sustituye el texto de ejemplo por el secreto que guardaste en Apps Script. No uses un token de GitHub en este cuerpo.
+Este primer Bot ejecuta únicamente Inventario. Al terminar, el estado queda en `PendienteValidacion`; todavía no ejecuta Salud.
 
-## 8. Qué sucede al guardar una solicitud
+### Acción — Confirmar Inventario
 
-1. AppSheet guarda la fila y sus archivos en Drive.
-2. Apps Script valida la solicitud y la marca como `En cola`.
-3. Apps Script llama a GitHub Actions.
-4. GitHub Actions solicita a Apps Script un token OAuth temporal.
-5. Python descarga las fotos desde Drive, ejecuta el motor OpenCV y guarda los resultados en las pestañas existentes.
-6. Los videos adjuntos se relacionan con cada `HistorialID` generado y se registran en `HistorialTerroCore` y `Evidencias1`.
-7. AppSheet muestra el estado `Completado` o `Error`.
+En **Behavior → Actions → New Action**:
+
+- Tabla: `SolicitudesAnalisis`.
+- Acción: `Data: set the values of some columns in this row`.
+- Establece `ValidacionInventario` = `"Validado"`.
+- Nombre visible: **Confirmar Inventario**.
+- Condición: `[Estado] = "PendienteValidacion"` y la validación de conteos debe ser correcta.
+
+Agrega `InventarioSurcos` como tabla editable solo en los campos de conteos e inicio/fin de cada línea. Conserva `RegistroID` como Key y desactiva Deletes. La fórmula completa de validación está en `APPSHEET_INVENTARIO_VALIDACION.md`.
+
+### Bot 2 — Ejecutar Salud después de confirmar
+
+1. Crea otro Bot en `SolicitudesAnalisis`.
+2. Evento: **Data change → Updates**.
+3. En **Columns to watch**, selecciona únicamente `ValidacionInventario`.
+4. Condición: `[ValidacionInventario] = "Validado"`.
+5. Usa el mismo webhook de Apps Script y el mismo cuerpo JSON del Bot 1.
+
+No vigiles la columna `Estado`; el worker la modifica durante el proceso y podría provocar ejecuciones repetidas.
+
+Sustituye el secreto de ejemplo por el mismo secreto configurado en Apps Script. No uses un token de GitHub en el cuerpo del webhook.
+
+## 8. Qué sucede en el flujo por etapas
+
+1. AppSheet guarda la solicitud y sus fotografías en Drive.
+2. Apps Script valida la solicitud y la envía a GitHub Actions.
+3. GitHub Actions solicita un token OAuth temporal y descarga las fotografías originales.
+4. El motor TerraCore genera el Inventario completo y guarda una fila por cada surco detectado en `InventarioSurcos`.
+5. La solicitud queda en `PendienteValidacion`. El usuario puede revisar y corregir los conteos y extremos de las líneas.
+6. Al pulsar **Confirmar Inventario**, el segundo Bot vuelve a llamar a GitHub Actions.
+7. El worker utiliza la geometría confirmada, sin volver a detectar ni reemplazar los surcos, y ejecuta Salud.
+8. Se guardan los resultados en las pestañas de historial, análisis, regiones y evidencias; los videos se relacionan con el historial.
+9. AppSheet muestra `Completado` o `Error`.
 
 El token OAuth se solicita al iniciar cada trabajo y se mantiene solo en memoria del ejecutor. No se imprime en los logs.
 
