@@ -320,6 +320,7 @@ def _ensure_sheet_and_headers(sheets, sheet_name: str, required_headers: list[st
 
     return headers
 
+
 def _row_as_dict(headers: list[str], row: list[Any]) -> dict[str, Any]:
     result = {}
     for index, header in enumerate(headers):
@@ -390,7 +391,7 @@ def _append_row_once(
     ).execute()
 
     updated_range = result.get("updates", {}).get("updatedRange", "")
-    match = re.search(r"![A-Z]+(\\d+)", updated_range)
+    match = re.search(r"![A-Z]+(\d+)", updated_range)
     entry = _sheet_cache_entry(sheets, sheet_name)
     if match:
         physical_row = int(match.group(1))
