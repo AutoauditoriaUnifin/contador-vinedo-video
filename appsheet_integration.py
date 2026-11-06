@@ -2251,6 +2251,25 @@ def _process_health_stage(
             + ", ".join(str(index) for index in missing_photo_indices)
         )
 
+    # Registrar la confirmación en cada surco antes de iniciar Salud.
+    validation_timestamp = _now_iso()
+    validated_inventory_records = [
+        {
+            "RegistroID": str(_record_value(record, "RegistroID", "") or "").strip(),
+            "EstadoInventario": "Validado",
+            "FechaValidacion": validation_timestamp,
+        }
+        for record in inventory_records
+    ]
+    if any(not item["RegistroID"] for item in validated_inventory_records):
+        raise RuntimeError("Hay registros de Inventario sin RegistroID.")
+    _upsert_rows_by_key(
+        sheets,
+        INVENTORY_SHEET,
+        validated_inventory_records,
+        "RegistroID",
+    )
+
     history_ids = _parse_image_list(
         row.get(_normalize_header("HistorialIDs"), "")
     )
@@ -2467,6 +2486,7 @@ def appsheet_process_analysis(
                 row_number,
                 {
                     "Estado": "ProcesandoSalud",
+                    "FechaValidacionInventario": _now_iso(),
                     "FechaInicioSalud": _now_iso(),
                     "FechaFin": "",
                     "Error": "",
