@@ -7,6 +7,7 @@ Streamlit original permanece intacta.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import math
 import os
@@ -3295,10 +3296,20 @@ def _tc_mejorar_calidad_imagen(pil_img):
         return original
 
 def _ocv2_inventory_from_file(uploaded_file):
-    # Leer la fotografía original
-    pil_original = Image.open(
-        io.BytesIO(uploaded_file.getvalue())
-    ).convert("RGB")
+    # Registrar la huella del archivo recibido para comparar Streamlit vs AppSheet.
+    raw_bytes = uploaded_file.getvalue()
+    source_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    source_bytes = len(raw_bytes)
+
+    # Leer la fotografía original y conservar sus metadatos antes de convertirla.
+    with Image.open(io.BytesIO(raw_bytes)) as source_image:
+        source_format = str(source_image.format or "")
+        source_width, source_height = source_image.size
+        try:
+            exif_orientation = int(source_image.getexif().get(274, 1) or 1)
+        except Exception:
+            exif_orientation = 1
+        pil_original = source_image.convert("RGB")
 
     # Mejorar la imagen antes de analizarla
     pil = _tc_mejorar_calidad_imagen(pil_original)
@@ -3423,6 +3434,13 @@ def _ocv2_inventory_from_file(uploaded_file):
             "row_spacing_px": float(base.get("row_spacing_px", 0.0) or 0.0),
             "angle_deg": float(base.get("angle_deg", 0.0) or 0.0),
             "motor": "opencv-v2-straight-grid",
+            "input_sha256": source_sha256,
+            "input_bytes": int(source_bytes),
+            "input_format": source_format,
+            "input_width": int(source_width),
+            "input_height": int(source_height),
+            "exif_orientation": int(exif_orientation),
+            "detected_rows": int(len(rows)),
         },
     }
 
