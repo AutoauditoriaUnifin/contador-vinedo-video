@@ -1467,7 +1467,10 @@ def _append_analysis_results(
     )
     inventory_bytes = _image_to_png_bytes(inventory.get("image"))
     processed_bytes = _image_to_png_bytes(backend_result.get("annotated"))
-    polygon_bytes = _image_to_png_bytes(backend_result.get("polygon_image"))
+    # AppSheet recibe la fotografía original como lienzo vacío para dibujar.
+    # No reutilizar la capa de polígonos automáticos en esta imagen.
+    polygon_canvas = Image.open(io.BytesIO(raw)).convert("RGB")
+    polygon_bytes = _image_to_png_bytes(polygon_canvas)
 
     inventory_id, inventory_path = _upload_artifact_replace(
         drive, inventory_bytes, inventory_name, "image/png", "Inventarios"
