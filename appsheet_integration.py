@@ -2150,7 +2150,7 @@ def _process_inventory_stage(
                     # Diagnóstico para demostrar qué archivo exacto recibió AppSheet.
                     "diagnostico_imagen": inventory.get("debug", {}) or {},
                     "imagen_inventario": inventory_path,
-                    "estado": "Pendiente de validación",
+                    "estado": "Validado automáticamente",
                     "validacion_automatica": validation,
                 }
             )
@@ -2187,9 +2187,7 @@ def _process_inventory_stage(
         "fotos": photo_summaries,
         "errores": errors,
         "instrucciones": (
-            "Inventario generado automáticamente. Revisa y corrige en AppSheet "
-            "los surcos, conteos y extremos de línea; confirma el Inventario "
-            "para habilitar la etapa de Salud."
+            "Inventario generado y validado automáticamente. Se continúa con la etapa de Salud."
         ),
     }
     _update_row_fields(
@@ -2215,7 +2213,7 @@ def _process_inventory_stage(
         "total_fotos": len(photo_summaries),
         "total_surcos": len(inventory_records),
         "inventario": inventory_summary,
-        "mensaje": "Inventario generado con el motor TerraCore. Revisa y confirma los surcos en AppSheet antes de ejecutar Salud.",
+        "mensaje": "Inventario generado y validado automáticamente. Se inicia Salud con el mismo Inventario.",
     }
 
 
