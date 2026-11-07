@@ -2192,7 +2192,7 @@ def _process_inventory_stage(
         REQUEST_SHEET,
         row_number,
         {
-            "Estado": "PendienteValidacion",
+            "Estado": "InventarioGenerado",
             "FechaInventario": now,
             "FechaValidacionInventario": "",
             "FechaFin": "",
@@ -2205,7 +2205,7 @@ def _process_inventory_stage(
 
     return {
         "ok": True,
-        "status": "PendienteValidacion",
+        "status": "InventarioGenerado",
         "request_id": request_id,
         "total_fotos": len(photo_summaries),
         "total_surcos": len(inventory_records),
