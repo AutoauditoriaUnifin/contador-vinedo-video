@@ -3384,7 +3384,11 @@ def _ocv2_draw_row_line_clipped(base_image, start, end, fill, width, row_spacing
     )
     mask = Image.new("L", (w, h), 0)
     ImageDraw.Draw(mask).polygon(corridor, fill=255)
-    overlay.putalpha(mask)
+    # Intersectar la máscara del surco con el alfa del trazo:
+    # así se recorta la línea sin pintar de negro el resto del corredor.
+    alpha_line = np.asarray(overlay.getchannel("A"), dtype=np.uint8)
+    alpha_mask = np.asarray(mask, dtype=np.uint8)
+    overlay.putalpha(Image.fromarray(np.minimum(alpha_line, alpha_mask)))
     base_image.paste(overlay, (0, 0), overlay)
 
 
