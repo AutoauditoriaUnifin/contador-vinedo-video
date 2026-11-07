@@ -3706,11 +3706,7 @@ def _ocv2_draw_health_and_polygons(pil, rows, health_map):
                 col = (25,225,55,255)
             draw_l.ellipse((x-rr,y-rr,x+rr,y+rr), fill=col)
 
-        # Solo número arriba.
-        top = a if a[1] <= b[1] else b
-        label = f"{rid:02d}"
-        draw_l.text((int(top[0])-6, max(0,int(top[1])-13)), label,
-                    fill=(255,255,255,255), font=font, stroke_width=2, stroke_fill=(35,20,25,255))
+        # Imagen Salud sin números de identificación sobre la fotografía.
 
     green_total = max(0, total - red_total)
     green_pct = 100.0 * green_total / total if total else 0.0
