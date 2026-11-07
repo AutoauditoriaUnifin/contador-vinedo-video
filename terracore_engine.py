@@ -3268,11 +3268,15 @@ def _ocv2_inventory_from_file(uploaded_file):
         if len(pts) < 2:
             continue
         a, b = pts[0], pts[-1]
-        draw.line((a[0], a[1] + band_h, b[0], b[1] + band_h), fill=(245,245,245), width=line_w)
-
         count = int(r.get("slot_count", 0) or 0)
         vacant = set(_tg_clean_indices(r.get("vacant_indices", []), count))
         positions = _ocv2_slot_positions(r, (w, h))
+        row_spacing = float(r.get("row_spacing_px", 18.0) or 18.0)
+        if len(positions) >= 2:
+            _ocv2_draw_row_line_clipped(
+                canvas, positions[0], positions[-1], (245, 245, 245, 255),
+                line_w, row_spacing, y_offset=band_h,
+            )
         for idx, p in enumerate(positions, 1):
             x = float(p[0]); y = float(p[1] + band_h)
             if idx in vacant:
@@ -3349,6 +3353,41 @@ def _ocv2_inventory_from_file(uploaded_file):
     }
 
 
+def _ocv2_draw_row_line_clipped(base_image, start, end, fill, width, row_spacing, y_offset=0):
+    """Dibuja una línea SOLO dentro de una franja visual del surco.
+
+    Es una restricción de presentación: no modifica geometrías, slots,
+    ocupación, vacíos, confianza ni resultados del análisis.
+    """
+    w, h = base_image.size
+    p0 = np.asarray([float(start[0]), float(start[1]) + y_offset], dtype=np.float32)
+    p1 = np.asarray([float(end[0]), float(end[1]) + y_offset], dtype=np.float32)
+    direction = p1 - p0
+    length = float(np.linalg.norm(direction))
+    if length < 1e-6:
+        return
+    direction /= length
+    normal = np.asarray([-direction[1], direction[0]], dtype=np.float32)
+    half_width = max(2.0, float(row_spacing or 18.0) * 0.32)
+
+    corridor = [
+        tuple((p0 + normal * half_width).tolist()),
+        tuple((p1 + normal * half_width).tolist()),
+        tuple((p1 - normal * half_width).tolist()),
+        tuple((p0 - normal * half_width).tolist()),
+    ]
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ImageDraw.Draw(overlay).line(
+        (float(p0[0]), float(p0[1]), float(p1[0]), float(p1[1])),
+        fill=fill,
+        width=max(1, int(width)),
+    )
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).polygon(corridor, fill=255)
+    overlay.putalpha(mask)
+    base_image.paste(overlay, (0, 0), overlay)
+
+
 def _ocv2_render_inventory_with_rows(pil_original, rows):
     """Redibuja el Inventario con geometrías corregidas, usando el formato de Streamlit.
 
@@ -3370,15 +3409,15 @@ def _ocv2_render_inventory_with_rows(pil_original, rows):
             continue
 
         a, b = pts[0], pts[-1]
-        draw.line(
-            (a[0], a[1] + band_h, b[0], b[1] + band_h),
-            fill=(245, 245, 245),
-            width=line_w,
-        )
-
         count = int(row.get("slot_count", 0) or 0)
         vacant = set(_tg_clean_indices(row.get("vacant_indices", []), count))
         positions = _ocv2_slot_positions(row, (w, h))
+        row_spacing = float(row.get("row_spacing_px", 18.0) or 18.0)
+        if len(positions) >= 2:
+            _ocv2_draw_row_line_clipped(
+                canvas, positions[0], positions[-1], (245, 245, 245, 255),
+                line_w, row_spacing, y_offset=band_h,
+            )
         for idx_slot, point in enumerate(positions, 1):
             x = float(point[0])
             y = float(point[1] + band_h)
@@ -3596,9 +3635,10 @@ def _ocv2_draw_health_and_polygons(pil, rows, health_map):
     base = pil.convert("RGB")
     w, h = base.size
     lines_img = base.copy()
+    # AppSheet recibe la foto limpia como lienzo para dibujo manual.
+    # No se generan polígonos superpuestos en esta imagen.
     polygons_img = base.copy()
     draw_l = ImageDraw.Draw(lines_img, "RGBA")
-    draw_p = ImageDraw.Draw(polygons_img, "RGBA")
     font = ImageFont.load_default()
     line_w = max(2, int(round(min(w,h)/600)))
 
@@ -3623,10 +3663,12 @@ def _ocv2_draw_health_and_polygons(pil, rows, health_map):
         total += count
         red_total += len(red_indices)
 
-        # Diagnóstico de líneas: eje VERDE recto completo.
-        draw_l.line((float(a[0]),float(a[1]),float(b[0]),float(b[1])), fill=(25,220,55,255), width=line_w)
-
+        # Diagnóstico visual: trazo limitado a la franja del surco.
         row_spacing = float(r.get("row_spacing_px", 18.0) or 18.0)
+        _ocv2_draw_row_line_clipped(
+            lines_img, positions[0], positions[-1], (25, 220, 55, 255),
+            line_w, row_spacing,
+        )
         slot_pitch = float(r.get("slot_pitch_px", 0.0) or 0.0)
         if slot_pitch <= 0:
             slot_pitch = float(np.linalg.norm(b-a))/max(1, count-1)
@@ -3639,12 +3681,14 @@ def _ocv2_draw_health_and_polygons(pil, rows, health_map):
             t1 = min(1.0, (last - 1 + 0.45) / max(1, count - 1))
             p0 = _tg_point_on_polyline(pts, t0)
             p1 = _tg_point_on_polyline(pts, t1)
-            draw_l.line((p0[0],p0[1],p1[0],p1[1]), fill=(245,45,45,255), width=max(3,line_w+1))
+            _ocv2_draw_row_line_clipped(
+                lines_img, p0, p1, (245, 45, 45, 255),
+                max(3, line_w + 1), row_spacing,
+            )
 
             poly = _ocv2_polygon_for_group(positions, group, row_spacing, slot_pitch)
-            if poly:
-                # Polígono rojo SOLO en la zona seca/vacía.
-                draw_p.polygon(poly, fill=(40,120,255,88), outline=(30,110,245,235))
+            # Se conserva el cálculo geométrico para métricas/regiones,
+            # pero la imagen de polígonos permanece limpia para AppSheet.
 
         # Puntos del diagnóstico: todos sobre el MISMO eje recto.
         for idx, p in enumerate(positions, 1):
