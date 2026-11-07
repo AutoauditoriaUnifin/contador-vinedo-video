@@ -24,7 +24,7 @@ from scipy.signal import find_peaks
 
 ENGINE_SOURCE = "app_surcos_VIDEO_V10.py"
 ENGINE_MODE = "opencv-v2-upper-third-2pct-straight-grid-polygons"
-ENGINE_VERSION = "2026.11.06-upper-third-2pct-v1"
+ENGINE_VERSION = "2026.11.06-upper-third-2pct-normalized-v2"
 
 __all__ = ["_ocv2_analyze_health","_ocv2_group_consecutive","_ocv2_inventory_from_file","_ocv2_polygon_for_group","_ocv2_slot_positions","_tc_quitar_nombre_motor_del_analisis","_tg_clean_indices","_tg_norm_to_px"]
 
