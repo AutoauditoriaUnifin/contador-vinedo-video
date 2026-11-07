@@ -2163,11 +2163,16 @@ def _process_inventory_stage(
                 }
             )
 
-    if not inventory_records:
+    if errors or len(photo_summaries) != len(photo_paths):
         detail = " | ".join(item["error"] for item in errors)
         raise RuntimeError(
-            detail or "No se pudo generar el Inventario de ninguna fotografía."
+            "No se autoriza el paso automático a Salud porque el Inventario "
+            "no terminó correctamente para todas las fotografías. "
+            + (detail or "Revisa los registros del Inventario.")
         )
+
+    if not inventory_records:
+        raise RuntimeError("No se generaron registros de Inventario.")
 
     # Un solo lote por pestaña: conserva las claves y evita duplicados en reintentos.
     _upsert_rows_by_key(
@@ -2511,8 +2516,9 @@ def appsheet_process_analysis(
                 surco_id=surco_id,
             )
 
-        # Primera ejecución: generar todas las filas de Inventario y detenerse.
-        # AppSheet muestra la tabla editable y espera el botón Confirmar Inventario.
+        # Primera ejecución: generar Inventario y, si supera las validaciones
+        # estructurales para TODAS las fotografías, confirmarlo automáticamente
+        # y continuar con Salud sin intervención manual.
         _update_row_fields(
             sheets,
             REQUEST_SHEET,
@@ -2527,7 +2533,7 @@ def appsheet_process_analysis(
                 "Error": "",
             },
         )
-        return _process_inventory_stage(
+        inventory_result = _process_inventory_stage(
             drive=drive,
             sheets=sheets,
             request_id=request_id,
@@ -2538,6 +2544,39 @@ def appsheet_process_analysis(
             idioma=idioma,
             fecha_captura=fecha_captura,
         )
+
+        # La confirmación automática ocurre SOLO después de que el Inventario
+        # completo fue generado y pasó _validate_original_inventory.
+        validation_timestamp = _now_iso()
+        _update_row_fields(
+            sheets,
+            REQUEST_SHEET,
+            row_number,
+            {
+                "Estado": "ProcesandoSalud",
+                "FechaValidacionInventario": validation_timestamp,
+                "FechaInicioSalud": validation_timestamp,
+                "ValidacionInventario": "Validado",
+                "Error": "",
+            },
+        )
+
+        health_result = _process_health_stage(
+            drive=drive,
+            sheets=sheets,
+            request_id=request_id,
+            row_number=row_number,
+            row=row,
+            photo_paths=photo_paths,
+            parcela_id=parcela_id,
+            parcela_name=parcela_name,
+            idioma=idioma,
+            fecha_captura=fecha_captura,
+            surco_id=surco_id,
+        )
+        health_result["inventario_automatico"] = inventory_result.get("inventario", {})
+        health_result["validacion_inventario_automatica"] = True
+        return health_result
 
     except HTTPException:
         raise
