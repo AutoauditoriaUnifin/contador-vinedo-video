@@ -10819,136 +10819,14 @@ def _tc_mejorar_calidad_imagen(pil_img):
 
 
 def _ocv2_inventory_from_file(uploaded_file):
-    # Leer la fotografía original
-    pil_original = Image.open(
-        io.BytesIO(uploaded_file.getvalue())
-    ).convert("RGB")
+    """
+    Punto único de entrada del Inventario en Streamlit.
 
-    # Mejorar la imagen antes de analizarla
-    pil = _tc_mejorar_calidad_imagen(pil_original)
-
-    # Ejecutar la detección sobre la imagen mejorada
-    w, h = pil.size
-    base = _ocv2_detect_straight_rows(pil)
-
-    # Continuar con el análisis original
-    rows = [dict(r) for r in base["rows"]]
-    response_map = np.asarray(
-        base["response_map"], dtype=np.float32
-    )
-
-    # 1) Encontrar un paso común de planta para evitar conteos erráticos entre hileras.
-    pitch_candidates = []
-    for r in rows:
-        pts = np.asarray(_tg_norm_to_px(r.get("points_norm", []), w, h), dtype=np.float32)
-        if len(pts) < 2:
-            continue
-        spacing = float(r.get("row_spacing_px", base.get("row_spacing_px", 18.0)) or 18.0)
-        sampled = np.asarray([_tg_point_on_polyline(pts.tolist(), t) for t in np.linspace(0, 1, 100)], dtype=np.float32)
-        ds, prof, _ = _tc_sample_map_along_track(response_map, sampled, spacing, step_px=2.0)
-        if len(ds) >= 8:
-            p, c = _tc_estimar_pitch_slots(ds, prof, spacing)
-            if np.isfinite(p) and 4.0 <= float(p) <= max(8.0, spacing * 1.25):
-                pitch_candidates.append(float(p))
-
-    forced_pitch = float(np.median(pitch_candidates)) if pitch_candidates else None
-
-    confs = []
-    for r in rows:
-        pts = np.asarray(_tg_norm_to_px(r.get("points_norm", []), w, h), dtype=np.float32)
-        spacing = float(r.get("row_spacing_px", base.get("row_spacing_px", 18.0)) or 18.0)
-        sampled = np.asarray([_tg_point_on_polyline(pts.tolist(), t) for t in np.linspace(0, 1, 120)], dtype=np.float32)
-        local_track = {"points": sampled, "spacing": spacing}
-        slots, pitch_used, conf = _tc_slots_track(response_map, local_track, forced_pitch=forced_pitch)
-
-        # Si la señal no permitió slots, usar la escala común SIN inventar cambios laterales.
-        if len(slots) < 2 and forced_pitch:
-            length = float(np.linalg.norm(pts[-1] - pts[0]))
-            count = max(2, int(round(length / max(5.0, forced_pitch))) + 1)
-            positions = [_tg_point_on_polyline(pts.tolist(), t) for t in np.linspace(0, 1, count)]
-            slots = [{"point": p, "occupied": True, "score": 0.0} for p in positions]
-            conf = 0.42
-            pitch_used = forced_pitch
-
-        r["slot_count"] = int(len(slots))
-        r["vacant_indices"] = [i + 1 for i, s in enumerate(slots) if not bool(s.get("occupied", False))]
-        r["slot_confidence"] = float(conf)
-        r["slot_pitch_px"] = float(pitch_used or forced_pitch or 0.0)
-        confs.append(float(conf))
-
-    # 2) Dibujo Inventario. Línea y puntos comparten EXACTAMENTE el mismo eje recto.
-    band_h = max(46, int(round(h * 0.065)))
-    canvas = Image.new("RGB", (w, h + band_h), (91, 37, 46))
-    canvas.paste(pil, (0, band_h))
-    draw = ImageDraw.Draw(canvas)
-    font = ImageFont.load_default()
-    table = []
-    line_w = max(1, int(round(min(w, h) / 950)))
-
-    for r in rows:
-        rid = int(r.get("id", 0) or 0)
-        pts = _tg_norm_to_px(r.get("points_norm", []), w, h)
-        if len(pts) < 2:
-            continue
-        a, b = pts[0], pts[-1]
-        draw.line((a[0], a[1] + band_h, b[0], b[1] + band_h), fill=(245,245,245), width=line_w)
-
-        count = int(r.get("slot_count", 0) or 0)
-        vacant = set(_tg_clean_indices(r.get("vacant_indices", []), count))
-        positions = _ocv2_slot_positions(r, (w, h))
-        for idx, p in enumerate(positions, 1):
-            x = float(p[0]); y = float(p[1] + band_h)
-            if idx in vacant:
-                rr = 2.5; fill = (255, 145, 35)   # vacío
-            else:
-                rr = 1.8; fill = (45, 190, 255)   # ocupado
-            draw.ellipse((x-rr, y-rr, x+rr, y+rr), fill=fill)
-
-        # número solo arriba
-        top = a if a[1] <= b[1] else b
-        label = f"{rid:02d}"
-        bbox = draw.textbbox((0,0), label, font=font)
-        tw = max(10, bbox[2]-bbox[0])
-        tx = int(np.clip(top[0]-tw/2, 1, max(1, w-tw-2)))
-        ty = 5 if rid % 2 else 20
-        draw.text((tx,ty), label, fill=(255,255,255), font=font, stroke_width=2, stroke_fill=(35,20,25))
-
-        occ = max(0, count - len(vacant))
-        # Separamos dos conceptos para no confundir la detección de la línea
-        # con la confianza de la estimación de posiciones (slots).
-        # r["confidence"] viene del soporte visual de la línea del surco.
-        # r["slot_confidence"] viene de la periodicidad y contraste de los slots.
-        table.append({
-            tr("Surco", "Rang"): label,
-            tr("Slots", "Emplacements"): count,
-            tr("Ocupados", "Occupés"): occ,
-            tr("Vacíos", "Vides"): len(vacant),
-            tr("Confianza del surco", "Confiance du rang"): round(
-                float(np.clip(r.get("confidence", 0.0), 0.0, 1.0)) * 100.0, 1
-            ),
-            tr("Estado", "État"): tr("OpenCV local", "OpenCV local"),
-        })
-
-    if not table:
-        raise RuntimeError("OpenCV no pudo construir el Inventario de slots.")
-
-    return {
-        "pil": pil,
-        "rows": rows,
-        "image": canvas,
-        "table": pd.DataFrame(table),
-        "count": len(rows),
-        "confidence": float(np.mean(confs)) if confs else 0.0,
-        "coverage_score": 1.0,
-        "model": "OpenCV local — líneas rectas",
-        "warnings": [],
-        "debug": {
-            "pitch_px": float(forced_pitch or 0.0),
-            "row_spacing_px": float(base.get("row_spacing_px", 0.0) or 0.0),
-            "angle_deg": float(base.get("angle_deg", 0.0) or 0.0),
-            "motor": "opencv-v2-straight-grid",
-        },
-    }
+    La detección, normalización de resolución, generación de slots,
+    validaciones y diagnóstico se ejecutan desde terracore_engine.py,
+    el mismo motor utilizado por AppSheet.
+    """
+    return tc_engine._ocv2_inventory_from_file(uploaded_file)
 
 
 def _ocv2_slot_patch_scores(bgr, center, direction, row_spacing, slot_pitch):
