@@ -23,8 +23,8 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import find_peaks
 
 ENGINE_SOURCE = "app_surcos_VIDEO_V10.py"
-ENGINE_MODE = "opencv-v2-straight-grid-polygons"
-ENGINE_VERSION = "2026.11.06-parity-v1"
+ENGINE_MODE = "opencv-v2-upper-third-2pct-straight-grid-polygons"
+ENGINE_VERSION = "2026.11.06-upper-third-2pct-v1"
 
 __all__ = ["_ocv2_analyze_health","_ocv2_group_consecutive","_ocv2_inventory_from_file","_ocv2_polygon_for_group","_ocv2_slot_positions","_tc_quitar_nombre_motor_del_analisis","_tg_clean_indices","_tg_norm_to_px"]
 
@@ -826,64 +826,43 @@ def calcular_rejilla_global_surcos(
     components
 ):
     """
-    Construye una sola rejilla transversal para toda la imagen.
+    Construye la rejilla de surcos usando EXCLUSIVAMENTE el tercio
+    superior de la imagen ya alineada.
 
-    Esto evita contar dos o tres veces la misma hilera cuando el
-    detector divide el viñedo en varios componentes por vigor,
-    huecos secos o cambios de iluminación.
+    Parámetros calibrados con la validación visual de TerraCore:
+    - zona: tercio superior
+    - suavizado: sigma 2
+    - sensibilidad/prominencia: 2% del rango del perfil
+    - distancia mínima entre picos: 12 px
+
+    El número de picos detectados define el inventario de surcos.
+    No se fuerza un conteo fijo ni se rellenan surcos artificialmente.
     """
     if not components:
         return None
 
     h, w = green_mask.shape
 
-    angles = []
-    weights = []
-
-    for component in components:
-        angles.append(
-            float(component["angle"])
-        )
-        weights.append(
-            max(
-                1.0,
-                float(component.get("tiles", 1))
-            )
-        )
-
+    # Orientación media de los componentes, con promedio angular 0..180°.
     angles = np.asarray(
-        angles,
+        [float(component["angle"]) for component in components],
         dtype=np.float64
     )
     weights = np.asarray(
-        weights,
+        [max(1.0, float(component.get("tiles", 1))) for component in components],
         dtype=np.float64
     )
 
-    z = np.sum(
-        weights
-        *
-        np.exp(
-            1j * 2.0 * angles
-        )
-    )
-
+    z = np.sum(weights * np.exp(1j * 2.0 * angles))
     if abs(z) < 1e-8:
-        mean_angle = float(
-            angles[0]
-        )
+        mean_angle = float(angles[0])
     else:
-        mean_angle = float(
-            (np.angle(z) / 2.0) % np.pi
-        )
+        mean_angle = float((np.angle(z) / 2.0) % np.pi)
 
-    angle_deg = float(
-        np.rad2deg(mean_angle)
-    )
+    angle_deg = float(np.rad2deg(mean_angle))
 
-    # Después de rotar, las hileras quedan aproximadamente verticales.
+    # Alinear los surcos para que queden aproximadamente verticales.
     rotation = 90.0 - angle_deg
-
     M = cv2.getRotationMatrix2D(
         (w / 2.0, h / 2.0),
         rotation,
@@ -898,172 +877,61 @@ def calcular_rejilla_global_surcos(
         borderMode=cv2.BORDER_CONSTANT
     )
 
-    # Ignorar bordes extremos, donde suelen aparecer edificios/árboles.
-    ya = int(h * 0.06)
-    yb = int(h * 0.94)
+    # --------------------------------------------------------
+    # CONTEO EXCLUSIVO EN EL TERCIO SUPERIOR
+    # --------------------------------------------------------
+    top_end = max(1, int(round(h / 3.0)))
+    upper_zone = rotated[:top_end, :]
 
-    zone = (
-        rotated[ya:yb] > 0
-    ).astype(np.float32)
-
-    if zone.size == 0:
-        return None
-
-    profile = np.mean(
-        zone,
+    # Suma por columna: conserva la fuerza visual de cada posible surco.
+    profile = np.sum(
+        upper_zone > 0,
         axis=0
-    )
+    ).astype(np.float64)
 
     profile = gaussian_filter1d(
         profile,
-        sigma=1.0
+        sigma=2.0
     )
 
-    trend = gaussian_filter1d(
+    profile_range = float(np.ptp(profile))
+    prominence = max(
+        0.5,
+        profile_range * 0.02
+    )
+
+    peaks, properties = find_peaks(
         profile,
-        sigma=max(
-            7.0,
-            w / 55.0
-        )
+        distance=12,
+        prominence=prominence
     )
 
-    signal = profile - trend
-
-    spacing = estimar_espaciado_local(
-        signal
-    )
-
-    if spacing is None:
-        return None
-
-    # --------------------------------------------------------
-    # DETECCIÓN MULTIBANDA:
-    # el promedio de toda la imagen puede ocultar hileras cuando
-    # hay zonas secas, sombras o vegetación discontinua. Se buscan
-    # posiciones repetitivas en cinco franjas y se conservan las
-    # que aparecen en al menos dos franjas. Los picos globales
-    # originales se mantienen como evidencia adicional.
-    # --------------------------------------------------------
-    min_distance = max(6, int(round(spacing * 0.90)))
-    global_prominence = max(
-        0.004,
-        float(np.max(signal) - np.median(signal)) * 0.13
-    )
-    global_peaks, _ = find_peaks(
-        signal,
-        distance=min_distance,
-        prominence=global_prominence
-    )
-
-    band_votes = []
-    band_peaks_all = []
-    band_count = 5
-    y_start = int(h * 0.08)
-    y_end = int(h * 0.92)
-    band_edges = np.linspace(y_start, y_end, band_count + 1).astype(int)
-
-    for band_index in range(band_count):
-        by0 = int(band_edges[band_index])
-        by1 = int(band_edges[band_index + 1])
-        if by1 - by0 < 8:
-            continue
-
-        band_profile = np.mean(
-            (rotated[by0:by1] > 0).astype(np.float32),
-            axis=0
-        )
-        band_profile = gaussian_filter1d(band_profile, sigma=1.0)
-        band_trend = gaussian_filter1d(
-            band_profile,
-            sigma=max(7.0, w / 55.0)
-        )
-        band_signal = band_profile - band_trend
-        band_prominence = max(
-            0.002,
-            float(np.max(band_signal) - np.median(band_signal)) * 0.10
-        )
-        band_peaks, _ = find_peaks(
-            band_signal,
-            distance=max(5, int(round(spacing * 0.70))),
-            prominence=band_prominence
-        )
-        for peak in band_peaks:
-            band_votes.append((float(peak), band_index))
-            band_peaks_all.append(int(peak))
-
-    # Agrupar detecciones cercanas: una posición solo suma un voto
-    # por franja, aunque el perfil tenga varios máximos próximos.
-    band_candidates = []
-    for peak, band_index in sorted(band_votes, key=lambda item: item[0]):
-        if band_candidates and abs(peak - band_candidates[-1]["x"]) <= spacing * 0.38:
-            band_candidates[-1]["xs"].append(peak)
-            band_candidates[-1]["bands"].add(band_index)
-            band_candidates[-1]["x"] = float(np.median(band_candidates[-1]["xs"]))
-        else:
-            band_candidates.append({
-                "x": peak,
-                "xs": [peak],
-                "bands": {band_index},
-            })
-
-    supported_band_peaks = [
-        int(round(item["x"]))
-        for item in band_candidates
-        if len(item["bands"]) >= 2
-    ]
-
-    # Combinar picos globales y multibanda. Se aplica una separación
-    # mínima para no contar dos bordes de la misma hilera.
-    candidates = sorted(
-        set(int(p) for p in global_peaks)
-        | set(supported_band_peaks)
-    )
-    selected = []
-    for candidate in candidates:
-        if not selected or candidate - selected[-1] >= max(5, int(round(spacing * 0.72))):
-            selected.append(candidate)
-        else:
-            previous = selected[-1]
-            # Priorizar el candidato con mayor soporte en la imagen completa.
-            if profile[candidate] > profile[previous]:
-                selected[-1] = candidate
-
-    peaks = np.asarray(selected, dtype=np.int32)
+    peaks = np.asarray(peaks, dtype=np.int32)
 
     if len(peaks) < 4:
         return None
 
-    # Quitar picos globalmente débiles solo si tampoco tienen
-    # respaldo multibanda. Así se conservan hileras parcialmente secas.
-    profile_floor = float(np.percentile(profile, 32))
-    profile_span = max(
-        1e-6,
-        float(np.percentile(profile, 88) - profile_floor)
-    )
-    band_support_x = np.asarray(supported_band_peaks, dtype=np.float32)
-    keep = []
-    for p in peaks:
-        strength = (float(profile[p]) - profile_floor) / profile_span
-        has_band_support = (
-            len(band_support_x) > 0
-            and float(np.min(np.abs(band_support_x - float(p)))) <= spacing * 0.40
-        )
-        if strength >= 0.10 or has_band_support:
-            keep.append(int(p))
-
-    peaks = np.asarray(keep, dtype=np.int32)
-    if len(peaks) < 4:
-        return None
+    # Espaciamiento descriptivo calculado a partir de los picos reales.
+    # No se utiliza para inventar posiciones ni completar huecos.
+    differences = np.diff(peaks).astype(np.float64)
+    spacing = float(np.median(differences)) if len(differences) else 18.0
+    spacing = float(np.clip(spacing, 6.0, 80.0))
 
     return {
         "angle": mean_angle,
         "angle_deg": angle_deg,
         "M": M,
         "peaks": peaks,
-        "spacing": float(spacing),
-        "peak_count_global": int(len(global_peaks)),
-        "peak_count_multiband": int(len(supported_band_peaks)),
+        "spacing": spacing,
+        "peak_count_global": int(len(peaks)),
+        "peak_count_multiband": 0,
         "peak_count_final": int(len(peaks)),
+        "analysis_zone": "SUPERIOR",
+        "analysis_height_fraction": 1.0 / 3.0,
+        "sensitivity": 0.02,
+        "profile_sigma": 2.0,
+        "peak_distance_px": 12,
+        "peak_prominence": float(prominence),
     }
 
 def asignar_track_a_rejilla(
@@ -3140,7 +3008,7 @@ def _ocv2_detect_straight_rows(pil):
     M = np.asarray(grid["M"], dtype=np.float32)
     Minv = cv2.invertAffineTransform(M)
     spacing = float(grid.get("spacing", 18.0) or 18.0)
-    peaks = _ocv2_regularize_peaks(grid.get("peaks", []), spacing, w)
+    peaks = np.asarray(sorted(set(int(p) for p in grid.get("peaks", []))), dtype=np.float32)
 
     rot_green = cv2.warpAffine(
         (green > 0).astype(np.uint8),
