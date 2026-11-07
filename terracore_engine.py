@@ -3182,10 +3182,29 @@ def _ocv2_inventory_from_file(uploaded_file):
             exif_orientation = 1
         pil_original = source_image.convert("RGB")
 
-    # Mejorar la imagen antes de analizarla
+    # Normalizar resolución para que AppSheet y Streamlit usen la misma escala.
+    # El detector utiliza parámetros espaciales en píxeles (incluida distancia=12).
+    # Sin esta normalización, una foto de 600 px puede fusionar surcos que sí
+    # aparecen separados cuando la misma escena se procesa a 1280 px.
+    analysis_width = 1280
+    analysis_height = max(
+        1,
+        int(round(source_height * (analysis_width / float(source_width))))
+    ) if source_width > 0 else source_height
+    resize_scale = (
+        float(analysis_width) / float(source_width)
+        if source_width > 0 else 1.0
+    )
+    if source_width != analysis_width:
+        pil_original = pil_original.resize(
+            (analysis_width, analysis_height),
+            Image.Resampling.LANCZOS
+        )
+
+    # Mejorar la imagen normalizada antes de analizarla.
     pil = _tc_mejorar_calidad_imagen(pil_original)
 
-    # Ejecutar la detección sobre la imagen mejorada
+    # Ejecutar la detección sobre la imagen mejorada.
     w, h = pil.size
     base = _ocv2_detect_straight_rows(pil)
 
@@ -3304,12 +3323,20 @@ def _ocv2_inventory_from_file(uploaded_file):
             "pitch_px": float(forced_pitch or 0.0),
             "row_spacing_px": float(base.get("row_spacing_px", 0.0) or 0.0),
             "angle_deg": float(base.get("angle_deg", 0.0) or 0.0),
-            "motor": "opencv-v2-straight-grid",
+            "motor": ENGINE_MODE,
             "input_sha256": source_sha256,
             "input_bytes": int(source_bytes),
             "input_format": source_format,
             "input_width": int(source_width),
             "input_height": int(source_height),
+            "analysis_width": int(w),
+            "analysis_height": int(h),
+            "resize_scale": float(resize_scale),
+            "analysis_zone": "SUPERIOR",
+            "analysis_height_fraction": 1.0 / 3.0,
+            "sensitivity": 0.02,
+            "profile_sigma": 2.0,
+            "peak_distance_px": 12,
             "exif_orientation": int(exif_orientation),
             "detected_rows": int(len(rows)),
             "engine_version": ENGINE_VERSION,
