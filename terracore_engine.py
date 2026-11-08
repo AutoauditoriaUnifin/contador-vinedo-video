@@ -3273,10 +3273,19 @@ def _ocv2_inventory_from_file(uploaded_file):
         positions = _ocv2_slot_positions(r, (w, h))
         row_spacing = float(r.get("row_spacing_px", 18.0) or 18.0)
         if len(positions) >= 2:
-            _ocv2_draw_row_line_clipped(
-                canvas, positions[0], positions[-1], (245, 245, 245, 255),
-                line_w, row_spacing, y_offset=band_h,
+            limits = _ocv2_visual_row_limits(
+                positions[0], positions[-1], vegetation_mask, row_spacing
             )
+            if limits is not None:
+                q0 = np.asarray(positions[0], dtype=np.float32)
+                q1 = np.asarray(positions[-1], dtype=np.float32)
+                delta = q1 - q0
+                clipped_start = q0 + delta * limits[0]
+                clipped_end = q0 + delta * limits[1]
+                _ocv2_draw_row_line_clipped(
+                    canvas, clipped_start, clipped_end, (245, 245, 245, 255),
+                    line_w, row_spacing, y_offset=band_h,
+                )
         for idx, p in enumerate(positions, 1):
             x = float(p[0]); y = float(p[1] + band_h)
             if idx in vacant:
@@ -3353,6 +3362,56 @@ def _ocv2_inventory_from_file(uploaded_file):
     }
 
 
+def _ocv2_visual_row_limits(start, end, vegetation_mask, row_spacing):
+    """Obtiene inicio/fin visibles del surco usando solo evidencia visual.
+
+    Es un filtro de dibujo. No cambia points_norm, slots ni métricas.
+    """
+    if vegetation_mask is None:
+        return 0.0, 1.0
+    h, w = vegetation_mask.shape[:2]
+    p0 = np.asarray(start, dtype=np.float32)
+    p1 = np.asarray(end, dtype=np.float32)
+    vec = p1 - p0
+    length = float(np.linalg.norm(vec))
+    if length < 12.0:
+        return 0.0, 1.0
+    direction = vec / length
+    normal = np.asarray([-direction[1], direction[0]], dtype=np.float32)
+    half_width = max(3.0, min(12.0, float(row_spacing or 18.0) * 0.48))
+    samples = max(32, min(900, int(length / 2.0) + 1))
+    ts = np.linspace(0.0, 1.0, samples, dtype=np.float32)
+    offsets = np.arange(-half_width, half_width + 0.5, 1.0, dtype=np.float32)
+    valid = np.zeros(samples, dtype=bool)
+
+    for i, t in enumerate(ts):
+        center = p0 + vec * t
+        xy = center[None, :] + offsets[:, None] * normal[None, :]
+        xs = np.rint(xy[:, 0]).astype(np.int32)
+        ys = np.rint(xy[:, 1]).astype(np.int32)
+        inside = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
+        if np.any(inside):
+            coverage = float(np.mean(vegetation_mask[ys[inside], xs[inside]] > 0))
+            valid[i] = coverage >= 0.055
+
+    # Suavizar pequeños huecos de máscara sin unir surcos separados.
+    window = max(3, min(9, int(round(samples * 5.0 / max(length, 1.0))) | 1))
+    kernel = np.ones(window, dtype=np.float32) / float(window)
+    smooth = np.convolve(valid.astype(np.float32), kernel, mode="same")
+    supported = smooth >= 0.20
+    ids = np.flatnonzero(supported)
+    if len(ids) < max(3, int(samples * 0.025)):
+        # No inventar un recorte cuando la foto no ofrece señal suficiente.
+        return None
+    first, last = int(ids[0]), int(ids[-1])
+    if last - first < max(3, int(samples * 0.04)):
+        return None
+    margin = max(1, int(round(samples * 1.5 / max(length, 1.0))))
+    first = min(last, first + margin)
+    last = max(first, last - margin)
+    return float(ts[first]), float(ts[last])
+
+
 def _ocv2_draw_row_line_clipped(base_image, start, end, fill, width, row_spacing, y_offset=0):
     """Dibuja una línea SOLO dentro de una franja visual del surco.
 
@@ -3405,6 +3464,8 @@ def _ocv2_render_inventory_with_rows(pil_original, rows):
     draw = ImageDraw.Draw(canvas)
     font = ImageFont.load_default()
     line_w = max(1, int(round(min(w, h) / 950)))
+    inventory_bgr = cv2.cvtColor(np.asarray(pil), cv2.COLOR_RGB2BGR)
+    vegetation_mask = mascara_verde(inventory_bgr)
 
     for row in rows or []:
         rid = int(row.get("id", 0) or 0)
@@ -3645,6 +3706,8 @@ def _ocv2_draw_health_and_polygons(pil, rows, health_map):
     draw_l = ImageDraw.Draw(lines_img, "RGBA")
     font = ImageFont.load_default()
     line_w = max(2, int(round(min(w,h)/600)))
+    health_bgr = cv2.cvtColor(np.asarray(base), cv2.COLOR_RGB2BGR)
+    vegetation_mask = mascara_verde(health_bgr)
 
     total = 0
     red_total = 0
@@ -3669,8 +3732,18 @@ def _ocv2_draw_health_and_polygons(pil, rows, health_map):
 
         # Diagnóstico visual: trazo limitado a la franja del surco.
         row_spacing = float(r.get("row_spacing_px", 18.0) or 18.0)
+        visual_limits = _ocv2_visual_row_limits(
+            positions[0], positions[-1], vegetation_mask, row_spacing
+        )
+        if visual_limits is None:
+            continue
+        row_start = np.asarray(positions[0], dtype=np.float32)
+        row_end = np.asarray(positions[-1], dtype=np.float32)
+        row_delta = row_end - row_start
+        clipped_row_start = row_start + row_delta * visual_limits[0]
+        clipped_row_end = row_start + row_delta * visual_limits[1]
         _ocv2_draw_row_line_clipped(
-            lines_img, positions[0], positions[-1], (25, 220, 55, 255),
+            lines_img, clipped_row_start, clipped_row_end, (25, 220, 55, 255),
             line_w, row_spacing,
         )
         slot_pitch = float(r.get("slot_pitch_px", 0.0) or 0.0)
@@ -3685,10 +3758,15 @@ def _ocv2_draw_health_and_polygons(pil, rows, health_map):
             t1 = min(1.0, (last - 1 + 0.45) / max(1, count - 1))
             p0 = _tg_point_on_polyline(pts, t0)
             p1 = _tg_point_on_polyline(pts, t1)
-            _ocv2_draw_row_line_clipped(
-                lines_img, p0, p1, (245, 45, 45, 255),
-                max(3, line_w + 1), row_spacing,
-            )
+            red_t0 = max(float(visual_limits[0]), float(t0))
+            red_t1 = min(float(visual_limits[1]), float(t1))
+            if red_t1 > red_t0:
+                red_start = row_start + row_delta * red_t0
+                red_end = row_start + row_delta * red_t1
+                _ocv2_draw_row_line_clipped(
+                    lines_img, red_start, red_end, (245, 45, 45, 255),
+                    max(3, line_w + 1), row_spacing,
+                )
 
             poly = _ocv2_polygon_for_group(positions, group, row_spacing, slot_pitch)
             # Se conserva el cálculo geométrico para métricas/regiones,
