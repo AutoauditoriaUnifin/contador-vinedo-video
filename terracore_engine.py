@@ -3208,6 +3208,16 @@ def _ocv2_inventory_from_file(uploaded_file):
     w, h = pil.size
     base = _ocv2_detect_straight_rows(pil)
 
+    # Máscara exclusivamente visual para recortar los extremos de los trazos.
+    # Se reutiliza la máscara del detector cuando está disponible; no interviene
+    # en la geometría ni en el cálculo de slots.
+    vegetation_mask = np.asarray(
+        base.get("green_mask", mascara_verde(
+            cv2.cvtColor(np.asarray(pil), cv2.COLOR_RGB2BGR)
+        )),
+        dtype=np.uint8,
+    )
+
     # Continuar con el análisis original
     rows = [dict(r) for r in base["rows"]]
     response_map = np.asarray(
