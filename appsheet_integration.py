@@ -1389,6 +1389,83 @@ def _build_regions(
     return regions
 
 
+def _tc_localize_appsheet_health_result(
+    backend_result: dict[str, Any],
+    idioma: str,
+    row_count: int,
+) -> dict[str, Any]:
+    """Traduce únicamente los textos visibles de Salud para AppSheet; no altera métricas."""
+    result = dict(backend_result or {})
+    if str(idioma or "ES").strip().upper() != "FR":
+        return result
+
+    # Diagnóstico dinámico: conserva exactamente los conteos y el porcentaje del motor.
+    diagnosis = str(result.get("diagnostico_visual", "") or "")
+    pattern = (
+        r"Se evaluaron\s+([\d.,]+)\s+posiciones sobre\s+([\d.,]+)\s+surcos rectos\.\s*"
+        r"Se detectaron\s+([\d.,]+)\s+posiciones secas, débiles o vacías\s*"
+        r"\(([\d.,]+)%\s*rojo\)\.\s*"
+        r"Los polígonos rojos se limitan a los tramos afectados detectados sobre el mismo surco\."
+    )
+    match = re.search(pattern, diagnosis, flags=re.IGNORECASE)
+    if match:
+        total, detected_rows, affected, percentage = match.groups()
+        result["diagnostico_visual"] = (
+            f"{total} positions ont été évaluées sur {detected_rows} rangs droits. "
+            f"{affected} positions sèches, faibles ou vides ont été détectées "
+            f"({percentage} % en rouge). "
+            "Les polygones rouges sont limités aux segments affectés détectés sur chaque rang."
+        )
+
+    result["explicacion_nutrientes"] = (
+        "L’analyse est visuelle et ne permet pas, à elle seule, d’identifier "
+        "les carences en nutriments ou les maladies."
+    )
+    result["nota_diagnostico"] = (
+        "Diagnostic visuel automatisé ; une vérification sur le terrain est recommandée."
+    )
+
+    recommendation_translations = {
+        "Revisar en campo los polígonos rojos para distinguir planta seca de faltante real.":
+            "Vérifier sur le terrain les polygones rouges afin de distinguer les plants secs des emplacements réellement vides.",
+        "Comparar la misma parcela en capturas posteriores para confirmar si la afectación persiste.":
+            "Comparer cette même parcelle avec les prochaines prises de vue afin de confirmer si les zones affectées persistent.",
+    }
+    recommendations = result.get("recomendaciones_iniciales", []) or []
+    if isinstance(recommendations, str):
+        recommendations = [recommendations]
+    result["recomendaciones_iniciales"] = [
+        recommendation_translations.get(str(item), str(item))
+        for item in recommendations
+    ]
+
+    level_translations = {
+        "bajo": "faible",
+        "medio": "moyen",
+        "alto": "élevé",
+        "no determinado": "non déterminé",
+        "no determinada": "non déterminée",
+    }
+    level = str(result.get("nivel_afectacion_visual", "") or "").strip()
+    result["nivel_afectacion_visual"] = level_translations.get(level.casefold(), level)
+
+    zone = str(result.get("zona_mas_afectada", "") or "").strip()
+    zone_translations = {
+        "centro, zona media": "centre, zone médiane",
+        "centro": "centre",
+        "zona media": "zone médiane",
+        "zona central": "zone centrale",
+        "izquierda": "gauche",
+        "derecha": "droite",
+        "superior": "partie supérieure",
+        "inferior": "partie inférieure",
+        "no determinada": "non déterminée",
+        "no determinado": "non déterminé",
+    }
+    result["zona_mas_afectada"] = zone_translations.get(zone.casefold(), zone)
+    return result
+
+
 def _append_analysis_results(
     drive,
     sheets,
@@ -1422,6 +1499,12 @@ def _append_analysis_results(
     if not rows:
         raise RuntimeError("No hay geometría de Inventario confirmada para esta fotografía.")
     backend_result = _ocv2_analyze_health(uploaded, rows)
+    # Traducción de presentación para AppSheet; el motor y sus métricas permanecen intactos.
+    backend_result = _tc_localize_appsheet_health_result(
+        backend_result,
+        idioma,
+        len(rows),
+    )
 
     total_slots = sum(int(row.get("slot_count", 0) or 0) for row in rows)
     vacant_slots = sum(
