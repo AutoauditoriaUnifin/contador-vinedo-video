@@ -6395,15 +6395,72 @@ def _tc_resultado_a_fila_surcos(total_surcos):
 
 
 def _tc_metricas_tabla(df):
-    col_slots = tr("Slots", "Emplacements")
-    col_occ = tr("Ocupados", "Occupés")
-    col_empty = tr("Vacíos", "Vides")
+    """
+    Calcula las métricas del inventario aceptando encabezados en español
+    o francés. No modifica la detección ni los valores originales de la tabla.
+    """
     if df is None or df.empty:
         return 0, 0, 0, True
-    for c in (col_slots, col_occ, col_empty):
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
-    ok = bool((df[col_slots] == (df[col_occ] + df[col_empty])).all())
-    return int(df[col_slots].sum()), int(df[col_occ].sum()), int(df[col_empty].sum()), ok
+
+    import unicodedata
+
+    def _normalizar_columna(valor):
+        texto = unicodedata.normalize("NFKD", str(valor))
+        texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+        return " ".join(texto.casefold().replace("_", " ").replace("-", " ").split())
+
+    columnas = {_normalizar_columna(c): c for c in df.columns}
+
+    def _buscar_columna(nombres):
+        for nombre in nombres:
+            encontrada = columnas.get(_normalizar_columna(nombre))
+            if encontrada is not None:
+                return encontrada
+        return None
+
+    col_slots = _buscar_columna((
+        "Slots", "Slot", "Emplacements", "Emplacement",
+        "Nombre de slots", "Nombre d'emplacements",
+    ))
+    col_occ = _buscar_columna((
+        "Ocupados", "Ocupado", "Occupés", "Occupé",
+        "Places occupées", "Emplacements occupés",
+    ))
+    col_empty = _buscar_columna((
+        "Vacíos", "Vacío", "Vides", "Vide",
+        "Places vides", "Emplacements vides",
+    ))
+
+    def _serie_entera(columna):
+        if columna is None:
+            return None
+        return pd.to_numeric(df[columna], errors="coerce").fillna(0).astype(int)
+
+    slots = _serie_entera(col_slots)
+    ocupados = _serie_entera(col_occ)
+    vacios = _serie_entera(col_empty)
+
+    # Si falta un encabezado, solo se reconstruye cuando los otros dos
+    # valores permiten obtenerlo sin alterar los datos del motor.
+    if slots is None and ocupados is not None and vacios is not None:
+        slots = ocupados + vacios
+    elif ocupados is None and slots is not None and vacios is not None:
+        ocupados = (slots - vacios).clip(lower=0)
+    elif vacios is None and slots is not None and ocupados is not None:
+        vacios = (slots - ocupados).clip(lower=0)
+
+    # Si la tabla no contiene información suficiente, no detener Streamlit
+    # ni presentar una validación falsa como correcta.
+    if slots is None or ocupados is None or vacios is None:
+        return (
+            int(slots.sum()) if slots is not None else 0,
+            int(ocupados.sum()) if ocupados is not None else 0,
+            int(vacios.sum()) if vacios is not None else 0,
+            False,
+        )
+
+    ok = bool((slots == (ocupados + vacios)).all())
+    return int(slots.sum()), int(ocupados.sum()), int(vacios.sum()), ok
 
 
 
